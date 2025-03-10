@@ -1,16 +1,19 @@
 import glob
 import os
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 import torchaudio
 from datasets import Dataset, load_dataset
+from sklearn.decomposition import PCA
 from sklearn.linear_model import LinearRegression
+from sklearn.manifold import TSNE
 from sklearn.metrics import mean_squared_error, pairwise
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from tqdm.auto import tqdm
-import matplotlib.pyplot as plt
 
 DATASET_ROOT = os.path.realpath("/corpora/LibriSpeech/LibriSpeech")
 
@@ -225,14 +228,15 @@ def process_data():
 
 def train_probe():
     processed_data = process_data()
-    (X, feature_to_idx) = processed_data["ling_features"]['data']
-    text_embeds = processed_data["text_model"]['data']
-    speech_embeds = processed_data["speech_model"]['data']
+    (X, feature_to_idx) = processed_data["ling_features"]["data"]
+    text_embeds = processed_data["text_model"]["data"]
+    speech_embeds = processed_data["speech_model"]["data"]
 
     # Setup probe
     X = np.array(X)
     text_embeds = np.array(text_embeds)
     speech_embeds = np.array(speech_embeds)
+    scaler = MinMaxScaler(feature_range=(-1, 1))
 
     for modality in ["text", "speech"]:
         if modality == "text":
@@ -241,6 +245,9 @@ def train_probe():
             y = speech_embeds
         else:
             raise ValueError(f"Invalid modality: {modality}")
+
+        # Minmax scale embeddings
+        y = scaler.fit_transform(y)
 
         print(f"Modality: {modality}")
         (
@@ -262,11 +269,17 @@ def train_probe():
         print(f"MSE: {mse:.4f}")
         print(f"Average Cosine Similarity: {cos_sim:.4f}")
 
+        # Use representational similarity analysis (RSA) to compare the similarity of the embeddings
+        rsa = pairwise.cosine_similarity(y_test)
+        rsa_preds = pairwise.cosine_similarity(preds)
+        rsa_mse = mean_squared_error(rsa, rsa_preds)
+        print(f"RSA MSE: {rsa_mse:.4f}")
+
         # Visualize the probe weights and relabell the y axis with the feature names
         plt.figure(figsize=(20, 10))
         plt.imshow(probe.coef_.T, aspect="auto")
         plt.colorbar()
-        plt.yticks(range(len(feature_to_idx)), list(feature_to_idx.keys()), rotation=90)
+        plt.yticks(range(len(feature_to_idx)), list(feature_to_idx.keys()), rotation=45)
         plt.title("Probe Weights")
         plt.show()
 
@@ -275,10 +288,6 @@ def train_probe():
 
 def plot(y_test, preds):
     # Visualization of embedding space
-    from sklearn.manifold import TSNE
-    from sklearn.decomposition import PCA
-    from sklearn.preprocessing import StandardScaler, MinMaxScaler
-
 
     # Scale embeddings
     # scaler = StandardScaler()
@@ -301,17 +310,33 @@ def plot(y_test, preds):
 
     # Plot the t-SNE visualization
     plt.figure(figsize=(8, 6))
-    plt.scatter(reduced_emb1[:, 0], reduced_emb1[:, 1], c='blue', label='Real Embedding', alpha=0.6)
-    plt.scatter(reduced_emb2[:, 0], reduced_emb2[:, 1], c='red', label='Probe prediction', alpha=0.6)
+    plt.scatter(
+        reduced_emb1[:, 0],
+        reduced_emb1[:, 1],
+        c="blue",
+        label="Real Embedding",
+        alpha=0.6,
+    )
+    plt.scatter(
+        reduced_emb2[:, 0],
+        reduced_emb2[:, 1],
+        c="red",
+        label="Probe prediction",
+        alpha=0.6,
+    )
 
     # Optional: Add lines showing the shift between paired points
     for i in range(reduced_emb2.shape[0]):
-        plt.plot([reduced_emb1[i, 0], reduced_emb2[i, 0]],
-                [reduced_emb1[i, 1], reduced_emb2[i, 1]], 'k-', alpha=0.2)
+        plt.plot(
+            [reduced_emb1[i, 0], reduced_emb2[i, 0]],
+            [reduced_emb1[i, 1], reduced_emb2[i, 1]],
+            "k-",
+            alpha=0.2,
+        )
 
     plt.legend()
-    plt.title('Visualization of Two Embedding Spaces')
-    plt.xlabel('Reduced Dimension 1')
-    plt.ylabel('Reduced Dimension 2')
+    plt.title("Visualization of Two Embedding Spaces")
+    plt.xlabel("Reduced Dimension 1")
+    plt.ylabel("Reduced Dimension 2")
     plt.grid(True)
     plt.show()

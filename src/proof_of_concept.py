@@ -172,6 +172,7 @@ def process_data():
             "filename": f"{PROJECT_ROOT}/data/audio_features.pt",
         },
     }
+    os.makedirs(f"{PROJECT_ROOT}/data", exist_ok=True)
 
     for key in processed_data:
         if os.path.exists(processed_data[key]["filename"]):
@@ -267,8 +268,7 @@ def choose_probe(probe_name="linear"):
         return Lasso()
 
 
-def train_probe(scale_outputs=False):
-    processed_data = process_data()
+def train_probe(processed_data, scale_outputs=False):
     (text_features, feature_to_idx) = processed_data["text_features"]["data"]
     text_embeds = processed_data["text_model"]["data"]
     audio_embeds = processed_data["audio_model"]["data"]
@@ -464,7 +464,8 @@ def plot_probe_weights(probe, y_tick_labels=None):
 
 
 def main():
-    df = train_probe()
+    processed_data = process_data()
+    df = train_probe(processed_data)
     df.to_csv(f"{PROJECT_ROOT}/probe_results.csv")
     print(df)
     # plot(y_test, preds)

@@ -6,14 +6,92 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "datasets>=3.3.2",
+    "en-core-web-sm",
     "matplotlib>=3.10.1",
     "opensmile>=2.5.1",
     "pandas>=2.2.3",
+    "pip>=25.0.1",
     "scikit-learn>=1.6.1",
+    "setuptools>=76.0.0",
     "spacy>=3.8.4",
     "transformers>=4.49.0",
     "umap-learn>=0.5.7",
+    "wheel>=0.45.1",
 ]
+
+[project.optional-dependencies]
+cpu = [
+  "torch>=2.6.0",
+  "torchaudio>=2.6.0",
+  "torchvision>=0.21.0",
+]
+cu118 = [
+  "torch>=2.6.0",
+  "torchaudio>=2.6.0",
+  "torchvision>=0.21.0",
+]
+cu124 = [
+  "torch>=2.6.0",
+  "torchaudio>=2.6.0",
+  "torchvision>=0.21.0",
+]
+xpu = [
+  "torch>=2.6.0",
+  "torchaudio>=2.6.0",
+  "torchvision>=0.21.0",
+]
+
+[tool.uv]
+conflicts = [
+  [
+    { extra = "cpu" },
+    { extra = "cu118" },
+    { extra = "cu124" },
+    { extra = "xpu" },
+  ],
+]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu118", extra = "cu118" },
+  { index = "pytorch-cu118", extra = "cu124" },
+    { index = "pytorch-cu118", extra = "xpu" },
+]
+
+torchaudio = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu118", extra = "cu118" },
+  { index = "pytorch-cu118", extra = "cu124" },
+    { index = "pytorch-cu118", extra = "xpu" },
+]
+torchvision = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu118", extra = "cu118" },
+  { index = "pytorch-cu118", extra = "cu124" },
+    { index = "pytorch-cu118", extra = "xpu" },
+]
+en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu118"
+url = "https://download.pytorch.org/whl/cu118"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-xpu"
+url = "https://download.pytorch.org/whl/xpu"
+explicit = true
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.
@@ -50,8 +128,6 @@ exclude = [
 line-length = 88
 indent-width = 4
 
-# Assume Python 3.9
-target-version = "py39"
 
 [tool.ruff.lint]
 # Enable Pyflakes (`F`) and a subset of the pycodestyle (`E`)  codes by default.
@@ -93,3 +169,9 @@ docstring-code-format = false
 # This only has an effect when the `docstring-code-format` setting is
 # enabled.
 docstring-code-line-length = "dynamic"
+
+[dependency-groups]
+dev = [
+    "ipython>=9.0.2",
+    "jupyter>=1.1.1",
+]

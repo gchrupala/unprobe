@@ -12,3 +12,15 @@ As an example we can use a decoding probe to probe a spoken language model (SLM)
 An encoding probe, in contrast, is the reverse: it refers to reconstructing activation patterns from some information, or more typically from a combination of different types of information. In our example of spoken language we fit a multivariate regression model with the various types of information of interest as predictors: speaker identity, phonemes, words and syntax. The prediction targets are the activation patterns. With this approach we can quantify which predictor is the most informative for reconstructing the activations and compare them to each other. This approach also makes it easier to account for correlations between types of information. For example in a probing approach we may find that we can decode syntax quite well, but this may simply be due to the fact that the activation patterns encode words, and that words are themselves highly predictive of syntax.
 
 In the encoding probe setting we would have both words and syntax as predictors, and if syntax doesn't contribute to accuracy over and above words, we would conclude that it's not directly encoded.
+
+
+# Environment setup with `uv`
+
+Use [uv](https://docs.astral.sh/uv/) to setup the environment. PyTorch dependency is managed according to the uv [documentations](https://docs.astral.sh/uv/guides/integration/pytorch/)
+
+```
+uv sync --extra cpu # Works for cpu-only PyTorch installs
+uv sync --extra cu118 # Works for PyTorch installs compiled with CUDA version 11.8 (GPU partition of TiU DCA Server cluster)
+uv sync --extra cu124 # Works for PyTorch installs compiled with CUDA version 12.4
+uv sync --extra xpu # Works for PyTorch installs compiled with Intel [xpu](https://pytorch.org/docs/stable/notes/get_start_xpu.html)
+```

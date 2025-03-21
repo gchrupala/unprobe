@@ -1,9 +1,12 @@
 import glob
 import os
+import pickle
 
 import numpy as np
 import opensmile
 import pandas as pd
+import spacy
+import textgrids
 import torch
 import torchaudio
 from datasets import Dataset
@@ -17,6 +20,50 @@ from transformers import (
 
 DATASET_ROOT = os.path.realpath("/corpora/LibriSpeech/LibriSpeech")
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+
+def load_librispeech_tg(split="dev-clean"):
+    """Loading Librispeech dataset into Huggingface Dataset format
+
+    Args:
+        split (str, optional): split of librispeech to use. Defaults to "dev-clean".
+
+    Returns:
+        datasets.Dataset: Huggingface Dataset object containing columns of [fileID, sent, audio]
+    """
+    dataset_path = os.path.expanduser(f"~/corpora/librispeech_alignment/{split}")
+    transcription_files = glob.glob(f"{dataset_path}/**/*.TextGrid", recursive=True)
+
+    transcriptions = []
+
+    for file_path in tqdm(transcription_files):
+        tg = textgrids.TextGrid(file_path)
+
+        fileid = file_path.split("/")[-1].split(".")[0]
+        speakerid, chapter, utt = fileid.split("-")
+        utt_phones = []
+        utt_words = []
+        for phone in tg["phones"]:
+            if phone.text == "sil" or phone.text == "sp" or phone.text == "":
+                continue
+            utt_phones.append(phone.text)
+        for word in tg["words"]:
+            if word.text == "sil" or word.text == "" or word.text == "sp":
+                continue
+            utt_words.append(word.text)
+        transcriptions.append(
+            {
+                "fileid": fileid,
+                "phones": utt_phones,
+                "words": utt_words,
+                "non_acoustic": [int(speakerid), int(chapter)],
+            }
+        )
+
+    with open(
+        f"{PROJECT_ROOT}/data/librispeech_{split}_transcriptions.pickle", "wb"
+    ) as f:
+        pickle.dump(transcriptions, f)
 
 
 def load_librispeech(split="dev-clean"):
@@ -48,6 +95,10 @@ def load_librispeech(split="dev-clean"):
 
         return os.path.join(dataset_path, spkid, chapter, f"{fileid}.flac")
 
+    df["speakerid"] = df["fileID"].apply(lambda x: x.split("-")[0])
+    df["chapter"] = df["fileID"].apply(lambda x: x.split("-")[1])
+    df["utterance"] = df["fileID"].apply(lambda x: x.split("-")[2])
+
     df["audio"] = df["fileID"].map(get_wav_file)
 
     dataset = Dataset.from_pandas(df)
@@ -55,12 +106,12 @@ def load_librispeech(split="dev-clean"):
     return dataset
 
 
-def extract_opensmile_features(dataset, feature_set="ComParE_2016"):
+def extract_opensmile_features(dataset, feature_set="eGeMAPSv02", **kwargs):
     """Extracting opensmile features from audio file
 
     Args:
         dataset (datasets.Dataset): dataset containing audio
-        feature_set (str, optional): opensmile feature set to use. Defaults to "ComParE_2016".
+        feature_set (str, optional): opensmile feature set to use. Defaults to "eGeMAPSv02".
 
     Returns:
         pd.DataFrame: DataFrame containing opensmile features
@@ -81,7 +132,20 @@ def extract_opensmile_features(dataset, feature_set="ComParE_2016"):
     return opensmile_features.reset_index()
 
 
-def extract_audio_representation(dataset, model, feature_extractor, device="cuda"):
+def extract_spacy_features(dataset, spacy_modelname="en_core_web_sm", **kwargs):
+    """Extracting spacy features from text"""
+    nlp = spacy.load(spacy_modelname)
+    text = dataset["sent"]
+    spacy_features = []
+    for sentence in tqdm(text):
+        doc = nlp(sentence)
+        spacy_features.append(doc.vector)
+    return np.vstack(spacy_features)
+
+
+def extract_audio_representation(
+    dataset, model, feature_extractor, device="cuda", **kwargs
+):
     """Extracting audio representation from audio file
 
     Args:
@@ -122,7 +186,7 @@ def extract_audio_representation(dataset, model, feature_extractor, device="cuda
     return np.vstack(audio_representations)
 
 
-def extract_text_representation(dataset, model, tokenizer, device="cuda"):
+def extract_text_representation(dataset, model, tokenizer, device="cuda", **kwargs):
     """Extracting text representation from text
 
     Args:
@@ -152,34 +216,55 @@ def extract_text_representation(dataset, model, tokenizer, device="cuda"):
 
 
 def extract_all_features():
+    load_librispeech_tg("dev-clean")
     dataset = load_librispeech("dev-clean")
-    
     savepath = f"{PROJECT_ROOT}/data"
     if not os.path.exists(savepath):
         os.makedirs(savepath)
-    opensmile_features = extract_opensmile_features(dataset)
-    
+    probe_data_types = {
+        "audio_representation": {
+            "function": extract_audio_representation,
+            "save_dir": f"{savepath}/audio_representation.pickle",
+            "overwrite": False,
+            "device": "cuda",
+            "model": Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base"),
+            "feature_extractor": Wav2Vec2FeatureExtractor.from_pretrained(
+                "facebook/wav2vec2-base"
+            ),
+        },
+        "text_representation": {
+            "function": extract_text_representation,
+            "save_dir": f"{savepath}/text_representation.pickle",
+            "overwrite": False,
+            "device": "cuda",
+            "model": AutoModel.from_pretrained(
+                "answerdotai/ModernBERT-base", reference_compile=False
+            ),
+            "tokenizer": AutoTokenizer.from_pretrained("answerdotai/ModernBERT-base"),
+        },
+        "opensmile_features": {
+            "function": extract_opensmile_features,
+            "save_dir": f"{savepath}/opensmile_features.pickle",
+            "overwrite": False,
+            "feature_set": "eGeMAPSv02",
+        },
+    }
 
+    for probe_data_type in tqdm(probe_data_types):
+        feature = probe_data_types[probe_data_type]
+        if not os.path.exists(feature["save_dir"]) or feature["overwrite"]:
+            extracted_feature = feature["function"](dataset, **feature)
+            if isinstance(extracted_feature, pd.DataFrame):
+                # extracted_feature.to_csv(feature["save_dir"], index=False)
+                extracted_feature.to_pickle(feature["save_dir"])
+            else:
+                # torch.save(extracted_feature, feature["save_dir"])
+                with open(feature["save_dir"], "wb") as f:
+                    pickle.dump(extracted_feature, f)
+        else:
+            print(f"{feature['save_dir']} already exists, skipping...")
+    print("All features extracted!")
 
-    opensmile_features.to_csv(f"{savepath}/opensmile_features.csv", index=False)
-
-    speech_model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base")
-    speech_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
-        "facebook/wav2vec2-base"
-    )
-    audio_representation = extract_audio_representation(
-        dataset, speech_model, speech_feature_extractor
-    )
-    torch.save(audio_representation, f"{savepath}/audio_representation.pt")
-
-    text_model = AutoModel.from_pretrained(
-        "answerdotai/ModernBERT-base", reference_compile=False
-    )
-    text_tokenizer = AutoTokenizer.from_pretrained("answerdotai/ModernBERT-base")
-    text_representation = extract_text_representation(
-        dataset, text_model, text_tokenizer
-    )
-    torch.save(text_representation, f"{savepath}/text_representation.pt")
 
 if __name__ == "__main__":
     extract_all_features()

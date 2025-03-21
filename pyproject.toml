@@ -11,6 +11,7 @@ dependencies = [
     "opensmile>=2.5.1",
     "pandas>=2.2.3",
     "pip>=25.0.1",
+    "praat-textgrids>=1.4.0",
     "scikit-learn>=1.6.1",
     "setuptools>=76.0.0",
     "spacy>=3.8.4",
@@ -55,21 +56,21 @@ conflicts = [
 torch = [
   { index = "pytorch-cpu", extra = "cpu" },
   { index = "pytorch-cu118", extra = "cu118" },
-  { index = "pytorch-cu118", extra = "cu124" },
-    { index = "pytorch-cu118", extra = "xpu" },
+  { index = "pytorch-cu124", extra = "cu124" },
+    { index = "pytorch-xpu", extra = "xpu" },
 ]
 
 torchaudio = [
   { index = "pytorch-cpu", extra = "cpu" },
   { index = "pytorch-cu118", extra = "cu118" },
-  { index = "pytorch-cu118", extra = "cu124" },
-    { index = "pytorch-cu118", extra = "xpu" },
+  { index = "pytorch-cu124", extra = "cu124" },
+    { index = "pytorch-xpu", extra = "xpu" },
 ]
 torchvision = [
   { index = "pytorch-cpu", extra = "cpu" },
   { index = "pytorch-cu118", extra = "cu118" },
-  { index = "pytorch-cu118", extra = "cu124" },
-    { index = "pytorch-cu118", extra = "xpu" },
+  { index = "pytorch-cu124", extra = "cu124" },
+    { index = "pytorch-xpu", extra = "xpu" },
 ]
 en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
 

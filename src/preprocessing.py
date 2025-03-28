@@ -8,7 +8,6 @@ import pandas as pd
 import spacy
 import textgrids
 import torch
-import torchaudio
 from datasets import Dataset
 from tqdm.auto import tqdm
 from transformers import (
@@ -22,7 +21,7 @@ DATASET_ROOT = os.path.realpath("/corpora/LibriSpeech/LibriSpeech")
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 
-def load_librispeech_tg(split="dev-clean"):
+def load_librispeech_tg(split="dev-clean", transcription_savefile=None):
     """Loading Librispeech dataset into Huggingface Dataset format
 
     Args:
@@ -60,10 +59,12 @@ def load_librispeech_tg(split="dev-clean"):
             }
         )
 
-    with open(
-        f"{PROJECT_ROOT}/data/librispeech_{split}_transcriptions.pickle", "wb"
-    ) as f:
-        pickle.dump(transcriptions, f)
+    if transcription_savefile is None:
+        return transcriptions
+    else:
+        with open(transcription_savefile, "wb") as f:
+            pickle.dump(transcriptions, f)
+        return transcriptions
 
 
 def load_librispeech(split="dev-clean"):
@@ -105,6 +106,47 @@ def load_librispeech(split="dev-clean"):
 
     return dataset
 
+
+def extract_embeddings(dataset, embedding_size=100, **kwargs):
+    """Extracting embedding based on the string level
+
+    Args:
+        level (str, optional): _description_. Defaults to "words".
+
+    Returns:
+        _type_: _description_
+    """
+    with open(
+        f"{PROJECT_ROOT}/data/librispeech_dev-clean_transcriptions.pickle", "rb"
+    ) as f:
+        transcriptions = pickle.load(f)
+    level = kwargs["level"]
+    all_strings = [x[level] for x in transcriptions]
+    flattened_all_strings = [item for sublist in all_strings for item in sublist]
+    unique_strings = list(set(flattened_all_strings))
+    # Sort unique strings by alphabetical order
+    unique_strings.sort()
+    unique_strings = ["<pad>"] + unique_strings
+    embedding = torch.nn.Embedding(len(unique_strings), embedding_size)
+    emb_model = torch.nn.EmbeddingBag.from_pretrained(embedding.weight, mode="mean")
+
+    # Indexize the strings
+    indices = [[unique_strings.index(y) for y in x] for x in all_strings]
+
+    # pad indices to same length with <pad> token
+    max_len = max([len(x) for x in indices])
+    indices = [x + [0] * (max_len - len(x)) for x in indices]
+
+    utterance_embeddings = emb_model(torch.tensor(indices)).detach().numpy()
+
+    # # Save the embeddings
+    # with open(f"{PROJECT_ROOT}/data/{level}_embeddings.pickle", "wb") as f:
+    #     pickle.dump(utterance_embeddings, f)
+    # Save the embedding weights
+    with open(f"{PROJECT_ROOT}/data/{level}_embedding_weights.pickle", "wb") as f:
+        pickle.dump(embedding.weight.detach().numpy(), f)
+
+    return utterance_embeddings
 
 def extract_opensmile_features(dataset, feature_set="eGeMAPSv02", **kwargs):
     """Extracting opensmile features from audio file
@@ -161,15 +203,20 @@ def extract_audio_representation(
     model.eval()
 
     audio_representations = []
+    from datasets import Audio
+
+    dataset = dataset.cast_column("audio", Audio(sampling_rate=feature_extractor.sampling_rate))
 
     for audio_file in tqdm(dataset["audio"]):
-        waveform, sample_rate = torchaudio.load(audio_file)
+        # waveform, sample_rate = torchaudio.load(audio_file)
+        waveform = audio_file["array"]
+        # sample_rate = audio_file["sampling_rate"]
         waveform = waveform.squeeze()
-        # resample waveform
-        if sample_rate != feature_extractor.sampling_rate:
-            waveform = torchaudio.transforms.Resample(
-                orig_freq=sample_rate, new_freq=feature_extractor.sampling_rate
-            )(waveform)
+        # # resample waveform
+        # if sample_rate != feature_extractor.sampling_rate:
+        #     waveform = torchaudio.transforms.Resample(
+        #         orig_freq=sample_rate, new_freq=feature_extractor.sampling_rate
+        #     )(waveform)
         inputs = feature_extractor(
             waveform, sampling_rate=feature_extractor.sampling_rate, return_tensors="pt"
         )
@@ -216,11 +263,17 @@ def extract_text_representation(dataset, model, tokenizer, device="cuda", **kwar
 
 
 def extract_all_features():
-    load_librispeech_tg("dev-clean")
-    dataset = load_librispeech("dev-clean")
+    librispeech_split = "dev-clean"
+
     savepath = f"{PROJECT_ROOT}/data"
     if not os.path.exists(savepath):
         os.makedirs(savepath)
+
+    dataset = load_librispeech(librispeech_split)
+    transcription_savefile = f"{PROJECT_ROOT}/data/librispeech_{librispeech_split}_transcriptions.pickle"
+    if not os.path.exists(transcription_savefile):
+        transcriptions = load_librispeech_tg(librispeech_split)
+
     probe_data_types = {
         "audio_representation": {
             "function": extract_audio_representation,
@@ -247,6 +300,18 @@ def extract_all_features():
             "save_dir": f"{savepath}/opensmile_features.pickle",
             "overwrite": False,
             "feature_set": "eGeMAPSv02",
+        },
+        "word_embeddings": {
+            "function": extract_embeddings,
+            "save_dir": f"{savepath}/words_embeddings.pickle",
+            "overwrite": True,
+            "level": "words",
+        },
+        "phone_embeddings": {
+            "function": extract_embeddings,
+            "save_dir": f"{savepath}/phones_embeddings.pickle",
+            "overwrite": True,
+            "level": "phones",
         },
     }
 

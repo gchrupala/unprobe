@@ -1,3 +1,4 @@
+import argparse
 import glob
 import os
 import pickle
@@ -116,11 +117,26 @@ def extract_embeddings(dataset, embedding_size=100, **kwargs):
     Returns:
         _type_: _description_
     """
-    with open(
-        f"{PROJECT_ROOT}/data/librispeech_dev-clean_transcriptions.pickle", "rb"
-    ) as f:
-        transcriptions = pickle.load(f)
+    # Take into account transcriptions from all splits
+    transcription_pickles = glob.glob(
+        f"{PROJECT_ROOT}/data/librispeech*transcriptions.pickle", recursive=True
+    )
+    transcriptions = []
+    for transcription_pickle in transcription_pickles:
+        with open(transcription_pickles, "rb") as f:
+            transcriptions.extend(pickle.load(f))
+
+    # Check if embedding weights already exist
     level = kwargs["level"]
+
+    embedding_weights_path = f"{PROJECT_ROOT}/data/{level}_embedding_weights.pickle"
+    if os.path.exists(embedding_weights_path):
+        with open(embedding_weights_path, "rb") as f:
+            embedding_weights = pickle.load(f)
+        embedding = torch.nn.Embedding.from_pretrained(
+            torch.tensor(embedding_weights), freeze=True
+        )
+
     all_strings = [x[level] for x in transcriptions]
     flattened_all_strings = [item for sublist in all_strings for item in sublist]
     unique_strings = list(set(flattened_all_strings))
@@ -147,6 +163,7 @@ def extract_embeddings(dataset, embedding_size=100, **kwargs):
         pickle.dump(embedding.weight.detach().numpy(), f)
 
     return utterance_embeddings
+
 
 def extract_opensmile_features(dataset, feature_set="eGeMAPSv02", **kwargs):
     """Extracting opensmile features from audio file
@@ -205,7 +222,9 @@ def extract_audio_representation(
     audio_representations = []
     from datasets import Audio
 
-    dataset = dataset.cast_column("audio", Audio(sampling_rate=feature_extractor.sampling_rate))
+    dataset = dataset.cast_column(
+        "audio", Audio(sampling_rate=feature_extractor.sampling_rate)
+    )
 
     for audio_file in tqdm(dataset["audio"]):
         # waveform, sample_rate = torchaudio.load(audio_file)
@@ -262,22 +281,46 @@ def extract_text_representation(dataset, model, tokenizer, device="cuda", **kwar
     return np.vstack(text_representations)
 
 
-def extract_all_features():
-    librispeech_split = "dev-clean"
+def extract_all_features(librispeech_split="dev-clean"):
+    """_summary_
+
+    Args:
+        librispeech_split (str, optional): _description_. Defaults to "dev-clean".
+    """
 
     savepath = f"{PROJECT_ROOT}/data"
     if not os.path.exists(savepath):
         os.makedirs(savepath)
 
     dataset = load_librispeech(librispeech_split)
-    transcription_savefile = f"{PROJECT_ROOT}/data/librispeech_{librispeech_split}_transcriptions.pickle"
+    transcription_savefile = (
+        f"{PROJECT_ROOT}/data/librispeech-{librispeech_split}_transcriptions.pickle"
+    )
     if not os.path.exists(transcription_savefile):
-        transcriptions = load_librispeech_tg(librispeech_split)
+        transcriptions = load_librispeech_tg(librispeech_split, transcription_savefile)
 
     probe_data_types = {
+        "opensmile_features": {
+            "function": extract_opensmile_features,
+            "save_dir": f"{savepath}/librispeech-{librispeech_split}_opensmile_features.pickle",
+            "overwrite": False,
+            "feature_set": "eGeMAPSv02",
+        },
+        "word_embeddings": {
+            "function": extract_embeddings,
+            "save_dir": f"{savepath}/librispeech-{librispeech_split}_words_embeddings.pickle",
+            "overwrite": True,
+            "level": "words",
+        },
+        "phone_embeddings": {
+            "function": extract_embeddings,
+            "save_dir": f"{savepath}/librispeech-{librispeech_split}_phones_embeddings.pickle",
+            "overwrite": True,
+            "level": "phones",
+        },
         "audio_representation": {
             "function": extract_audio_representation,
-            "save_dir": f"{savepath}/audio_representation.pickle",
+            "save_dir": f"{savepath}/librispeech-{librispeech_split}_audio_representation.pickle",
             "overwrite": False,
             "device": "cuda",
             "model": Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base"),
@@ -285,37 +328,20 @@ def extract_all_features():
                 "facebook/wav2vec2-base"
             ),
         },
-        "text_representation": {
-            "function": extract_text_representation,
-            "save_dir": f"{savepath}/text_representation.pickle",
-            "overwrite": False,
-            "device": "cuda",
-            "model": AutoModel.from_pretrained(
-                "answerdotai/ModernBERT-base", reference_compile=False
-            ),
-            "tokenizer": AutoTokenizer.from_pretrained("answerdotai/ModernBERT-base"),
-        },
-        "opensmile_features": {
-            "function": extract_opensmile_features,
-            "save_dir": f"{savepath}/opensmile_features.pickle",
-            "overwrite": False,
-            "feature_set": "eGeMAPSv02",
-        },
-        "word_embeddings": {
-            "function": extract_embeddings,
-            "save_dir": f"{savepath}/words_embeddings.pickle",
-            "overwrite": True,
-            "level": "words",
-        },
-        "phone_embeddings": {
-            "function": extract_embeddings,
-            "save_dir": f"{savepath}/phones_embeddings.pickle",
-            "overwrite": True,
-            "level": "phones",
-        },
+        # "text_representation": {
+        #     "function": extract_text_representation,
+        #     "save_dir": f"{savepath}/librispeech-{librispeech_split}_text_representation.pickle",
+        #     "overwrite": False,
+        #     "device": "cuda",
+        #     "model": AutoModel.from_pretrained(
+        #         "answerdotai/ModernBERT-base", reference_compile=False
+        #     ),
+        #     "tokenizer": AutoTokenizer.from_pretrained("answerdotai/ModernBERT-base"),
+        # },
     }
 
     for probe_data_type in tqdm(probe_data_types):
+        tqdm.write(f"Extracting {probe_data_type} features...")
         feature = probe_data_types[probe_data_type]
         if not os.path.exists(feature["save_dir"]) or feature["overwrite"]:
             extracted_feature = feature["function"](dataset, **feature)
@@ -332,4 +358,12 @@ def extract_all_features():
 
 
 if __name__ == "__main__":
-    extract_all_features()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--librispeech_split",
+        type=str,
+        default="dev-clean",
+        help="Librispeech split to use",
+    )
+    args = parser.parse_args()
+    extract_all_features(args.librispeech_split)

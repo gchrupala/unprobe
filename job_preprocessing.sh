@@ -1,7 +1,7 @@
 #!/bin/bash
 
-#SBATCH --error=logdir/log.preproc.%A_%a_.err
-#SBATCH --output=logdir/log.preproc.%A_%a_.out
+#SBATCH --error=logdir/log.preproc.%A_%a.err
+#SBATCH --output=logdir/log.preproc.%A_%a.out
 #SBATCH --job-name="preproc"
 #SBATCH --gres=gpu:A40:1
 

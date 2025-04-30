@@ -22,16 +22,16 @@ DATASET_ROOT = os.path.realpath("/corpora/LibriSpeech/LibriSpeech")
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 
-def load_librispeech_tg(split="dev-clean", transcription_savefile=None):
+def load_librispeech_tg(librispeech_split="dev-clean", transcription_savefile=None):
     """Loading Librispeech dataset into Huggingface Dataset format
 
     Args:
-        split (str, optional): split of librispeech to use. Defaults to "dev-clean".
+        librispeech_split (str, optional): split of librispeech to use. Defaults to "dev-clean".
 
     Returns:
         datasets.Dataset: Huggingface Dataset object containing columns of [fileID, sent, audio]
     """
-    dataset_path = os.path.expanduser(f"~/corpora/librispeech_alignment/{split}")
+    dataset_path = os.path.expanduser(f"~/corpora/librispeech_alignment/{librispeech_split}")
     transcription_files = glob.glob(f"{dataset_path}/**/*.TextGrid", recursive=True)
 
     transcriptions = []
@@ -348,7 +348,14 @@ def extract_all_features(librispeech_split="dev-clean"):
             emb_savepath=phone_embedding_path,
             emb_weights_savepath=phone_embedding_weights_path,
         )
+    
+    # Remove fileid without alignment
+    dataset_ID = dataset["fileID"]
+    transcription_ID = [x["fileid"] for x in transcriptions]
+    difference = list(set(dataset_ID) - set(transcription_ID))
+    dataset = dataset.filter(lambda x: x["fileID"] not in difference)
 
+    # We then go on to extract the features
     probe_data_types = {
         "opensmile_features": {
             "function": extract_opensmile_features,

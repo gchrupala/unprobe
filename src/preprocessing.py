@@ -31,7 +31,9 @@ def load_librispeech_tg(librispeech_split="dev-clean", transcription_savefile=No
     Returns:
         datasets.Dataset: Huggingface Dataset object containing columns of [fileID, sent, audio]
     """
-    dataset_path = os.path.expanduser(f"~/corpora/librispeech_alignment/{librispeech_split}")
+    dataset_path = os.path.expanduser(
+        f"~/corpora/librispeech_alignment/{librispeech_split}"
+    )
     transcription_files = glob.glob(f"{dataset_path}/**/*.TextGrid", recursive=True)
 
     transcriptions = []
@@ -121,9 +123,16 @@ def extract_opensmile_features(
         pd.DataFrame: DataFrame containing opensmile features
     """
 
+    if kwargs["feature_level"] == "lld":
+        feature_level = opensmile.FeatureLevel.LowLevelDescriptors
+    elif kwargs["feature_level"] == "functionals":
+        feature_level = opensmile.FeatureLevel.Functionals
+    else:
+        feature_level = opensmile.FeatureLevel.Functionals
+
     smile = opensmile.Smile(
         feature_set=feature_set,
-        feature_level=opensmile.FeatureLevel.Functionals,
+        feature_level=feature_level,
         verbose=True,
         num_workers=8,
         sampling_rate=16000,
@@ -132,8 +141,10 @@ def extract_opensmile_features(
 
     files = dataset["audio"]
     opensmile_features = smile.process_files(files)
-
-    return opensmile_features.reset_index()
+    if kwargs["feature_level"] == "lld":
+        return opensmile_features
+    else:
+        return opensmile_features.reset_index()
 
 
 def extract_spacy_features(dataset, spacy_modelname="en_core_web_sm", **kwargs):
@@ -329,7 +340,11 @@ def extract_all_features(librispeech_split="dev-clean"):
     )
 
     # Check if the embeddings already exist
-    if os.path.exists(word_embedding_path) and os.path.exists(phone_embedding_path) and not args.overwrite:
+    if (
+        os.path.exists(word_embedding_path)
+        and os.path.exists(phone_embedding_path)
+        and not args.overwrite
+    ):
         print("String embeddings already exist, skipping...")
     else:
         print("String embeddings do not exist, extracting...")
@@ -348,7 +363,7 @@ def extract_all_features(librispeech_split="dev-clean"):
             emb_savepath=phone_embedding_path,
             emb_weights_savepath=phone_embedding_weights_path,
         )
-    
+
     # Remove fileid without alignment
     dataset_ID = dataset["fileID"]
     transcription_ID = [x["fileid"] for x in transcriptions]
@@ -361,6 +376,14 @@ def extract_all_features(librispeech_split="dev-clean"):
             "function": extract_opensmile_features,
             "save_dir": f"{savepath}/librispeech-{librispeech_split}_opensmile_features.pickle",
             "overwrite": args.overwrite,
+            "feature_level": "functionals",
+            "feature_set": "eGeMAPSv02",
+        },
+        "opensmile_features_lld": {
+            "function": extract_opensmile_features,
+            "save_dir": f"{savepath}/librispeech-{librispeech_split}_opensmile_features_lld.pickle",
+            "overwrite": args.overwrite,
+            "feature_level": "lld",
             "feature_set": "eGeMAPSv02",
         },
         "audio_representation": {

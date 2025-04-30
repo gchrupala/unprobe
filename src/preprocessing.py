@@ -108,64 +108,9 @@ def load_librispeech(split="dev-clean"):
     return dataset
 
 
-def extract_embeddings(dataset, embedding_size=100, **kwargs):
-    """Extracting embedding based on the string level
-
-    Args:
-        level (str, optional): _description_. Defaults to "words".
-
-    Returns:
-        _type_: _description_
-    """
-    # Take into account transcriptions from all splits
-    transcription_pickles = glob.glob(
-        f"{PROJECT_ROOT}/data/librispeech*transcriptions.pickle", recursive=True
-    )
-    transcriptions = []
-    for transcription_pickle in transcription_pickles:
-        with open(transcription_pickles, "rb") as f:
-            transcriptions.extend(pickle.load(f))
-
-    # Check if embedding weights already exist
-    level = kwargs["level"]
-
-    embedding_weights_path = f"{PROJECT_ROOT}/data/{level}_embedding_weights.pickle"
-    if os.path.exists(embedding_weights_path):
-        with open(embedding_weights_path, "rb") as f:
-            embedding_weights = pickle.load(f)
-        embedding = torch.nn.Embedding.from_pretrained(
-            torch.tensor(embedding_weights), freeze=True
-        )
-
-    all_strings = [x[level] for x in transcriptions]
-    flattened_all_strings = [item for sublist in all_strings for item in sublist]
-    unique_strings = list(set(flattened_all_strings))
-    # Sort unique strings by alphabetical order
-    unique_strings.sort()
-    unique_strings = ["<pad>"] + unique_strings
-    embedding = torch.nn.Embedding(len(unique_strings), embedding_size)
-    emb_model = torch.nn.EmbeddingBag.from_pretrained(embedding.weight, mode="mean")
-
-    # Indexize the strings
-    indices = [[unique_strings.index(y) for y in x] for x in all_strings]
-
-    # pad indices to same length with <pad> token
-    max_len = max([len(x) for x in indices])
-    indices = [x + [0] * (max_len - len(x)) for x in indices]
-
-    utterance_embeddings = emb_model(torch.tensor(indices)).detach().numpy()
-
-    # # Save the embeddings
-    # with open(f"{PROJECT_ROOT}/data/{level}_embeddings.pickle", "wb") as f:
-    #     pickle.dump(utterance_embeddings, f)
-    # Save the embedding weights
-    with open(f"{PROJECT_ROOT}/data/{level}_embedding_weights.pickle", "wb") as f:
-        pickle.dump(embedding.weight.detach().numpy(), f)
-
-    return utterance_embeddings
-
-
-def extract_opensmile_features(dataset, feature_set="eGeMAPSv02", **kwargs):
+def extract_opensmile_features(
+    dataset, feature_set="eGeMAPSv02", **kwargs
+) -> pd.DataFrame:
     """Extracting opensmile features from audio file
 
     Args:
@@ -204,7 +149,7 @@ def extract_spacy_features(dataset, spacy_modelname="en_core_web_sm", **kwargs):
 
 def extract_audio_representation(
     dataset, model, feature_extractor, device="cuda", **kwargs
-):
+) -> np.ndarray:
     """Extracting audio representation from audio file
 
     Args:
@@ -219,13 +164,15 @@ def extract_audio_representation(
     model.to(device)
     model.eval()
 
-    audio_representations = []
     from datasets import Audio
 
+    # Cast the audio column to the right sampling rate
+    print(f"Recasting audio sampling rate: {feature_extractor.sampling_rate}")
     dataset = dataset.cast_column(
         "audio", Audio(sampling_rate=feature_extractor.sampling_rate)
     )
 
+    audio_representations = []
     for audio_file in tqdm(dataset["audio"]):
         # waveform, sample_rate = torchaudio.load(audio_file)
         waveform = audio_file["array"]
@@ -241,18 +188,29 @@ def extract_audio_representation(
         )
         inputs = {k: v.to(device) for k, v in inputs.items()}
         with torch.no_grad():
-            outputs = model(**inputs)
-            # output shape need to be (batch_size, seq_len, hidden_size)
-            # Mean pool the last hidden states on the seq_len dimension
-            # Then convert to numpy
-            audio_representations.append(
-                outputs.last_hidden_state.mean(dim=1).cpu().squeeze().numpy()
-            )
+            outputs = model(**inputs, output_hidden_states=True)
+            # # output shape need to be (batch_size, seq_len, hidden_size)
+            # # Mean pool the last hidden states on the seq_len dimension
+            # # Then convert to numpy
+            # audio_representations.append(
+            #     outputs.last_hidden_state.mean(dim=1).cpu().squeeze().numpy()
+            # )
+            # Save all hidden states and preserve seq_len dimension with shape (batch_size, layer, seq_len, hidden_size)
+            hidden_states = outputs.hidden_states
+            hidden_states = torch.stack(hidden_states, dim=0)
+            # Take the mean over the seq_len dimension
+            hidden_states = hidden_states.mean(dim=2)
+            # Append everything to the list
+            audio_representations.append(hidden_states.cpu().squeeze().numpy())
 
-    return np.vstack(audio_representations)
+    return np.stack(audio_representations)
+    # Return a list of numpy arrays of audio representations
+    # return audio_representations
 
 
-def extract_text_representation(dataset, model, tokenizer, device="cuda", **kwargs):
+def extract_text_representation(
+    dataset, model, tokenizer, device="cuda", **kwargs
+) -> list:
     """Extracting text representation from text
 
     Args:
@@ -270,15 +228,69 @@ def extract_text_representation(dataset, model, tokenizer, device="cuda", **kwar
         inputs = tokenizer(sentence, return_tensors="pt", padding=True, truncation=True)
         inputs = {k: v.to(device) for k, v in inputs.items()}
         with torch.no_grad():
-            outputs = model(**inputs)
-            # output shape need to be (batch_size, seq_len, hidden_size)
-            # Take the [CLS] token representation
-            # Then convert to numpy
-            text_representations.append(
-                outputs.last_hidden_state[:, 0, :].cpu().squeeze().numpy()
-            )
+            outputs = model(**inputs, output_hidden_states=True)
+            # # output shape need to be (batch_size, seq_len, hidden_size)
+            # # Take the [CLS] token representation
+            # # Then convert to numpy
+            # text_representations.append(
+            #     outputs.last_hidden_state[:, 0, :].cpu().squeeze().numpy()
+            # )
+            # Save all hidden states and preserve seq_len dimension with shape (batch_size, layer, seq_len, hidden_size)
+            hidden_states = outputs.hidden_states
+            hidden_states = torch.stack(hidden_states, dim=1)
+            # Append everything to the list
+            text_representations.append(hidden_states.cpu().squeeze().numpy())
+    # return np.vstack(text_representations)
+    # Return a list of numpy arrays of text representations
+    return text_representations
 
-    return np.vstack(text_representations)
+
+def transcription_to_string_embeddings(
+    transcriptions, embedding_size=100, level="words", **kwargs
+) -> list:
+    """Extracting embedding based on the string level
+
+    Args:
+        level (str, optional): Select the level in transcription dictionary to turn into embedding. Defaults to "words".
+
+    Returns:
+        list: List of numpy arrays of embeddings
+    """
+
+    strings = [x[level] for x in transcriptions]
+    flattened_all_strings = [item for sublist in strings for item in sublist]
+    unique_strings = list(set(flattened_all_strings))
+    # Sort unique strings by alphabetical order
+    unique_strings.sort()
+    unique_strings = ["<pad>"] + unique_strings
+    embedding = torch.nn.Embedding(len(unique_strings), embedding_size)
+    embedding_bag = torch.nn.EmbeddingBag.from_pretrained(embedding.weight, mode="mean")
+    # Turn flattened_all_strings into embeddings
+    utterance_embeddings = []
+    for utterance in tqdm(strings, desc=f"Extracting {level} embeddings"):
+        # First indexize the strings
+        indices = [unique_strings.index(y) for y in utterance]
+        indices = torch.tensor(indices).unsqueeze(0)
+        # Finally turn the indices into embeddings
+        utterance_embeddings.append(embedding_bag(indices).detach().numpy().squeeze())
+
+    # # First pad the strings to the same length with <pad> token
+    # max_len = max([len(x) for x in strings])
+    # strings = [x + ["<pad>"] * (max_len - len(x)) for x in strings]
+    # # Then indexize the strings
+    # indices = [[unique_strings.index(y) for y in x] for x in strings]
+    # # Finally turn the indices into embeddings
+    # utterance_embeddings = embedding_bag(torch.tensor(indices)).detach().numpy()
+
+    # Save the embedding weights
+    if "emb_savepath" in kwargs:
+        with open(kwargs["emb_savepath"], "wb") as f:
+            pickle.dump(utterance_embeddings, f)
+    if "emb_weights_savepath" in kwargs:
+        with open(kwargs["emb_weights_savepath"], "wb") as f:
+            pickle.dump(embedding_bag.weight.detach().numpy(), f)
+
+    return utterance_embeddings
 
 
 def extract_all_features(librispeech_split="dev-clean"):
@@ -296,32 +308,58 @@ def extract_all_features(librispeech_split="dev-clean"):
     transcription_savefile = (
         f"{PROJECT_ROOT}/data/librispeech-{librispeech_split}_transcriptions.pickle"
     )
-    if not os.path.exists(transcription_savefile):
+    if os.path.exists(transcription_savefile):
+        with open(transcription_savefile, "rb") as f:
+            transcriptions = pickle.load(f)
+    else:
         transcriptions = load_librispeech_tg(librispeech_split, transcription_savefile)
+
+    # Extracting string embeddings
+    word_embedding_path = (
+        f"{savepath}/librispeech-{librispeech_split}_words_embeddings.pickle"
+    )
+    phone_embedding_path = (
+        f"{savepath}/librispeech-{librispeech_split}_phones_embeddings.pickle"
+    )
+    word_embedding_weights_path = (
+        f"{savepath}/librispeech-{librispeech_split}_words_embedding_weights.pickle"
+    )
+    phone_embedding_weights_path = (
+        f"{savepath}/librispeech-{librispeech_split}_phones_embedding_weights.pickle"
+    )
+
+    # Check if the embeddings already exist
+    if os.path.exists(word_embedding_path) and os.path.exists(phone_embedding_path) and not args.overwrite:
+        print("String embeddings already exist, skipping...")
+    else:
+        print("String embeddings do not exist, extracting...")
+        # Extracting string embeddings
+        word_string_embeddings = transcription_to_string_embeddings(
+            transcriptions=transcriptions,
+            embedding_size=100,
+            level="words",
+            emb_savepath=word_embedding_path,
+            emb_weights_savepath=word_embedding_weights_path,
+        )
+        phone_string_embeddings = transcription_to_string_embeddings(
+            transcriptions=transcriptions,
+            embedding_size=100,
+            level="phones",
+            emb_savepath=phone_embedding_path,
+            emb_weights_savepath=phone_embedding_weights_path,
+        )
 
     probe_data_types = {
         "opensmile_features": {
             "function": extract_opensmile_features,
             "save_dir": f"{savepath}/librispeech-{librispeech_split}_opensmile_features.pickle",
-            "overwrite": False,
+            "overwrite": args.overwrite,
             "feature_set": "eGeMAPSv02",
-        },
-        "word_embeddings": {
-            "function": extract_embeddings,
-            "save_dir": f"{savepath}/librispeech-{librispeech_split}_words_embeddings.pickle",
-            "overwrite": True,
-            "level": "words",
-        },
-        "phone_embeddings": {
-            "function": extract_embeddings,
-            "save_dir": f"{savepath}/librispeech-{librispeech_split}_phones_embeddings.pickle",
-            "overwrite": True,
-            "level": "phones",
         },
         "audio_representation": {
             "function": extract_audio_representation,
             "save_dir": f"{savepath}/librispeech-{librispeech_split}_audio_representation.pickle",
-            "overwrite": False,
+            "overwrite": args.overwrite,
             "device": "cuda",
             "model": Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base"),
             "feature_extractor": Wav2Vec2FeatureExtractor.from_pretrained(
@@ -364,6 +402,11 @@ if __name__ == "__main__":
         type=str,
         default="dev-clean",
         help="Librispeech split to use",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing features",
     )
     args = parser.parse_args()
     extract_all_features(args.librispeech_split)

@@ -19,6 +19,7 @@ def plot_results(probe = "ridge", librispeech_split = "train-clean-100"):
     # fill na in mode column with "None"
     df["mode"] = df["mode"].fillna("None")
     # Filter out the rows where mode is "None"
+    topline_df = df[df["mode"] == "None"]
     df = df[df["mode"] != "None"]
 
     df = df.sort_values(
@@ -33,6 +34,54 @@ def plot_results(probe = "ridge", librispeech_split = "train-clean-100"):
         "LinearRegression": "Linear Regression",
         "Lasso": "Lasso",
     }
+
+    #First plot the topline results
+    plt.figure(figsize=(10, 6))
+    # Set the style
+    sns.set(style="whitegrid")
+    sns.lineplot(
+        data=topline_df,
+        x="layer",
+        y="r^2_score",
+        markers=True,
+        dashes=False,
+        label="Test R^2 Score",
+        color="blue",
+    )
+    # Also show the difference between r^2 score and train_r^2_score in the lineplot
+    ax2 = plt.twinx()
+    topline_df['train_test_diff'] = (topline_df['train_r^2_score'] - topline_df['r^2_score'])/ topline_df['train_r^2_score']
+    sns.lineplot(
+        data=topline_df,
+        x="layer",
+        y="train_test_diff",
+        markers=True,
+        dashes=False,
+        color="red",
+        ax=ax2,
+        label="Train-Test Difference %",
+    )
+    plt.title(
+        f"Topline Results for {topline_df['pred_representation'].unique()[0].capitalize()} Representation on {probe_name_lookup[topline_df['probe'].unique()[0]]} with {librispeech_split.capitalize()} Split"
+    )
+    plt.xlabel("Layer")
+    # plt.ylabel("R^2 Score")
+    # plt.legend(title="Input Ablation")
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    # Save the figure
+    fig_savepath = os.path.join(
+        PROJECT_ROOT,
+        "results",
+        f"{librispeech_split}_{topline_df['pred_representation'].unique()[0]}_{topline_df['probe'].unique()[0]}_topline_results.png",
+    )
+    plt.savefig(
+        fig_savepath,
+        dpi=300,
+        bbox_inches="tight",
+    )
+    plt.show()
+
     for mode in df["mode"].unique():
         plotting_df = df[df["mode"] == mode]
         # Make a bar plot of the results with layer on the x axis and r^2_score_decrease on the y axis and facet by input_ablation and color by probe
@@ -71,12 +120,14 @@ def plot_results(probe = "ridge", librispeech_split = "train-clean-100"):
         )
 
         plt.tight_layout()
-        plt.show()
+
+        representation_name = plotting_df['pred_representation'].unique()[0]
+        probe_name = plotting_df['probe'].unique()[0]
 
         fig_savepath = os.path.join(
             PROJECT_ROOT,
             "results",
-            f"{plotting_df['pred_representation'].unique()[0]}_{plotting_df['probe'].unique()[0]}_{mode}_results.png",
+            f"{librispeech_split}_{representation_name}_{probe_name}_{mode}_results.png",
         )
 
         # Save the figure
@@ -85,6 +136,8 @@ def plot_results(probe = "ridge", librispeech_split = "train-clean-100"):
             dpi=300,
             bbox_inches="tight",
         )
+        plt.show()
+
 
 
 def check_params():

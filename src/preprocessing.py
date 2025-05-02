@@ -209,12 +209,27 @@ def extract_audio_representation(
             # Save all hidden states and preserve seq_len dimension with shape (batch_size, layer, seq_len, hidden_size)
             hidden_states = outputs.hidden_states
             hidden_states = torch.stack(hidden_states, dim=0)
-            # Take the mean over the seq_len dimension
-            hidden_states = hidden_states.mean(dim=2)
+            if kwargs.get("time_aggregation", "mean").lower() == "mean":
+                # Take the mean over the seq_len dimension
+                hidden_states = hidden_states.mean(dim=2)
+            elif kwargs.get("time_aggregation", "mean").lower() == "none":
+                pass
+            else:
+                raise ValueError(
+                    f"Unknown time_aggregation method: {kwargs.get('time_aggregation', 'mean')}"
+                )
+
             # Append everything to the list
             audio_representations.append(hidden_states.cpu().squeeze().numpy())
-
-    return np.stack(audio_representations)
+    try:
+        # Stack the audio representations into a numpy array
+        audio_representations = np.stack(audio_representations)
+    except ValueError:
+        # If the audio representations have different shapes, return a list of numpy arrays
+        print(
+            "Audio representations have different shapes, returning a list of numpy arrays"
+        )
+    return audio_representations
     # Return a list of numpy arrays of audio representations
     # return audio_representations
 
@@ -388,6 +403,17 @@ def extract_all_features(librispeech_split="dev-clean"):
         },
         "audio_representation": {
             "function": extract_audio_representation,
+            "save_dir": f"{savepath}/librispeech-{librispeech_split}_audio_representation_full.pickle",
+            "overwrite": args.overwrite,
+            "device": "cuda",
+            "model": Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base"),
+            "feature_extractor": Wav2Vec2FeatureExtractor.from_pretrained(
+                "facebook/wav2vec2-base"
+            ),
+            "time_aggregation": "none",
+        },
+        "audio_representation_mean": {
+            "function": extract_audio_representation,
             "save_dir": f"{savepath}/librispeech-{librispeech_split}_audio_representation.pickle",
             "overwrite": args.overwrite,
             "device": "cuda",
@@ -395,6 +421,7 @@ def extract_all_features(librispeech_split="dev-clean"):
             "feature_extractor": Wav2Vec2FeatureExtractor.from_pretrained(
                 "facebook/wav2vec2-base"
             ),
+            "time_aggregation": "mean",
         },
         # "text_representation": {
         #     "function": extract_text_representation,

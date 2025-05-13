@@ -59,6 +59,7 @@ def load_librispeech_tg(librispeech_split="dev-clean", transcription_savefile=No
                 "phones": utt_phones,
                 "words": utt_words,
                 "non_acoustic": [int(speakerid), int(chapter)],
+                "textgrid": tg,
             }
         )
 

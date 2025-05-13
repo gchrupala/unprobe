@@ -97,11 +97,12 @@ def run_probe(probe_name="ridge", librispeech_split="train-clean-100") -> None:
 
     if probe_name == "ridge":
         model = Ridge
-        n_jobs = -1
+        n_jobs = 16
         # model = Lasso()
         param_grid = {
             "alpha": [10**x for x in range(-5, 3)],
-            "solver": ["auto", "sag", "saga", "lsqr"],
+            # "solver": ["auto", "sag", "saga", "lsqr"],
+            "solver": ["auto"],
             "fit_intercept": [True, False],
         }
 
@@ -110,7 +111,7 @@ def run_probe(probe_name="ridge", librispeech_split="train-clean-100") -> None:
         n_jobs = -1
         # random forest params
         param_grid = {
-            "max_depth": [5, 7, 10, 15],
+            "max_depth": [10, 15],  # 5, 7,
             # "min_samples_split": [10, 20, 40, 80],
             # "min_samples_leaf": [5, 10, 20, 40],
             "max_features": [
@@ -141,7 +142,7 @@ def run_probe(probe_name="ridge", librispeech_split="train-clean-100") -> None:
         scoring="r2",
         n_jobs=n_jobs,
         cv=5,
-        verbose=1,
+        verbose=2,
         return_train_score=True,
     )
 
@@ -167,24 +168,28 @@ def run_probe(probe_name="ridge", librispeech_split="train-clean-100") -> None:
         X, y, test_size=0.2, random_state=42
     )
 
-    # Use the last layer to run gridsearch
-    y_gs_train = y_train[:, -1, :]
-    y_gs_test = y_test[:, -1, :]
+    # # Use the last layer to run gridsearch
+    # y_gs_train = y_train[:, -1, :]
+    # y_gs_test = y_test[:, -1, :]
 
-    GSregressor.fit(X_train, y_gs_train)
-    y_pred = GSregressor.predict(X_test)
-    # Check the best parameters
-    # print(GSregressor.best_params_)
-    # Check the best score
-    # print(GSregressor.best_score_)
-    # Check the score on the test set
-    score = GSregressor.score(X_test, y_gs_test)
-    print(f"Score for gridsearch: {score}")
-    print(f"Best params: {GSregressor.best_params_}")
-    # Use the best parameters to run the probe for each layer
+    # GSregressor.fit(X_train, y_gs_train)
+    # y_pred = GSregressor.predict(X_test)
+    # # Check the best parameters
+    # # print(GSregressor.best_params_)
+    # # Check the best score
+    # # print(GSregressor.best_score_)
+    # # Check the score on the test set
+    # score = GSregressor.score(X_test, y_gs_test)
+    # print(f"Score for gridsearch: {score}")
+    # print(f"Best params: {GSregressor.best_params_}")
+    # # Use the best parameters to run the probe for each layer
     results = []
     for num_layer in tqdm(range(y.shape[1])):
-        print(f"Running probe for layer {num_layer}")
+        tqdm.write(f"Running probe for layer {num_layer}")
+
+        # Run gridsearch for each layer
+        GSregressor.fit(X_train, y_train[:, num_layer, :])
+
         regressor = model(**GSregressor.best_params_)
         regressor.fit(X_train, y_train[:, num_layer])
         # y_pred = regressor.predict(X_test)
@@ -269,7 +274,6 @@ def run_probe(probe_name="ridge", librispeech_split="train-clean-100") -> None:
             )
 
     df = pd.DataFrame(results)
-    df = df[df["mode"] != "None"]
     df["r^2_score_decrease"] = (df["topline_score"] - df["r^2_score"]) / df[
         "topline_score"
     ]
@@ -328,5 +332,5 @@ if __name__ == "__main__":
     # run_probe(probe_name="ridge", librispeech_split="dev-clean")
     # run_probe(probe_name="rf", librispeech_split="dev-clean")
 
-    run_probe(probe_name="ridge", librispeech_split="train-clean-100")
+    # run_probe(probe_name="ridge", librispeech_split="train-clean-100")
     run_probe(probe_name="rf", librispeech_split="train-clean-100")

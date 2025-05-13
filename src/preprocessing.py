@@ -107,6 +107,8 @@ def load_librispeech(split="dev-clean"):
     df["audio"] = df["fileID"].map(get_wav_file)
 
     dataset = Dataset.from_pandas(df)
+    # Sort by fileID
+    dataset = dataset.sort('fileID')
 
     return dataset
 
@@ -316,6 +318,9 @@ def transcription_to_string_embeddings(
     if "emb_weights_savepath" in kwargs:
         with open(kwargs["emb_weights_savepath"], "wb") as f:
             pickle.dump(embedding_bag.weight.detach().numpy(), f)
+    if "emb_dict_savepath" in kwargs:
+        with open(kwargs["emb_dict_savepath"], "wb") as f:
+            pickle.dump(unique_strings, f)
 
     return utterance_embeddings
 
@@ -354,11 +359,25 @@ def extract_all_features(librispeech_split="dev-clean"):
     phone_embedding_weights_path = (
         f"{savepath}/librispeech-{librispeech_split}_phones_embedding_weights.pickle"
     )
+    word_embedding_dict_path = (
+        f"{savepath}/librispeech-{librispeech_split}_words_embedding_dict.pickle"
+    )
+    phone_embedding_dict_path = (
+        f"{savepath}/librispeech-{librispeech_split}_phones_embedding_dict.pickle"
+    )
+    embedding_paths = [
+        word_embedding_path,
+        phone_embedding_path,
+        word_embedding_weights_path,
+        phone_embedding_weights_path,
+        word_embedding_dict_path,
+        phone_embedding_dict_path,
+    ]
+    
 
     # Check if the embeddings already exist
     if (
-        os.path.exists(word_embedding_path)
-        and os.path.exists(phone_embedding_path)
+        all(os.path.exists(path) for path in embedding_paths)
         and not args.overwrite
     ):
         print("String embeddings already exist, skipping...")
@@ -371,6 +390,7 @@ def extract_all_features(librispeech_split="dev-clean"):
             level="words",
             emb_savepath=word_embedding_path,
             emb_weights_savepath=word_embedding_weights_path,
+            emb_dict_savepath=word_embedding_dict_path,
         )
         phone_string_embeddings = transcription_to_string_embeddings(
             transcriptions=transcriptions,
@@ -378,6 +398,7 @@ def extract_all_features(librispeech_split="dev-clean"):
             level="phones",
             emb_savepath=phone_embedding_path,
             emb_weights_savepath=phone_embedding_weights_path,
+            emb_dict_savepath=phone_embedding_dict_path,
         )
 
     # Remove fileid without alignment

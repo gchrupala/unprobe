@@ -13,6 +13,7 @@ dependencies = [
     "opensmile>=2.5.1",
     "pandas>=2.2.3",
     "pip>=25.0.1",
+    "praat-parselmouth>=0.4.5",
     "praat-textgrids>=1.4.0",
     "scikit-learn>=1.6.1",
     "seaborn>=0.13.2",

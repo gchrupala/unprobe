@@ -176,3 +176,4 @@ cython_debug/
 data/*.pickle
 data/*.pkl
 logdir/*
+LibriSpeech/*

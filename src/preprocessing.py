@@ -424,10 +424,12 @@ def syntax_parsing(utt_words):
     - Constituent label: The constituent label of the word
     - Constituency tree position: The position of the word in the constituency tree
     - Length of the sentence in numbers of words/tokens
-    - Length of the sentence in milliseconds
+    - Tree depth
+    - Tree depth normalized: The depth of the word in the constituency tree normalized by the height of the tree
+    - Word character length: The length of the word in characters #TODO move to metadata
     - Location in sentence: The location of the word in the sentence in words/tokens
-    - Location in sentence in milliseconds: The location of the word in the sentence in milliseconds
 
+    #TODO create subgrouping inside each "group" of features. e.g. word level features, sentence level features, etc.
     Args:
         utt_words (list(str)): List of strings of words in the utterance.
     """
@@ -447,7 +449,9 @@ def syntax_parsing(utt_words):
     syntax_feats = []
     for i, word in enumerate(sent):
         # Skip contractions like 's, 're, 've, 'll, 'd, 'm
-        # Hard coding for now, may need to change #TODO
+        # Hard coding for now, may need to change 
+        # #TODO try to map to phone alignments, that might be more accurate
+        # OR re-force align with these subword tokens
         if word.text in ["'s", "'re", "'ve", "'ll", "'d", "'m", "n't"]:
             continue
         # Use the text to get the constituency label from the nltk tree

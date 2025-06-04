@@ -1,6 +1,7 @@
 import json
 import os
 import pickle
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
@@ -92,9 +93,21 @@ def load_data(
     }
 
 
-def run_probe(probe_name="ridge", librispeech_split="train-clean-100") -> None:
-    probe_data = load_data(librispeech_split=librispeech_split)
+def select_regression_model(probe_name):
+    """
+    Selects the regression model and its parameters based on the probe name.
 
+    Args:
+        probe_name (str): Name of the probe, can be "ridge", "rf", or "kernel_ridge".
+    Returns:
+        model: The regression model class to be used.
+        n_jobs: Number of jobs to run in parallel for the model.
+        param_grid: Dictionary containing the parameters for grid search.
+
+    Raises:
+        ValueError: If the probe name is not recognized.
+
+    """
     if probe_name == "ridge":
         model = Ridge
         n_jobs = 16
@@ -134,6 +147,13 @@ def run_probe(probe_name="ridge", librispeech_split="train-clean-100") -> None:
 
     else:
         raise ValueError("Unknown probe name")
+    return model, n_jobs, param_grid
+
+
+def run_probe(
+    probe_data, probe_name="ridge", librispeech_split="train-clean-100"
+) -> None:
+    model, n_jobs, param_grid = select_regression_model(probe_name)
 
     # Create the gridsearch object
     GSregressor = GridSearchCV(
@@ -146,18 +166,11 @@ def run_probe(probe_name="ridge", librispeech_split="train-clean-100") -> None:
         return_train_score=True,
     )
 
-    exclude_feature_groups = []
-    # exclude_feature_groups = ["non_acoustic", "words", "phones"]
-
-    input_data = [
-        probe_data["input_data"][f]
-        for f in probe_data["input_data"]
-        if f not in exclude_feature_groups
-    ]
-    X = np.concatenate(input_data, axis=1)
-    y = probe_data["audio_rep"]
+    X, y = probe_data
     # Check if we have multiple layers in dim 1
     if len(y.shape) == 2:
+        # If we have only two dimensions, we need to add a third dimension to simulate multiple layers
+        # This is a workaround to make sure we have three dimensions (batch_size, num_layers, hidden_size)
         y = y.unsqueeze(1)
 
     # make sure y has three dimensions (batch_size, num_layers, hidden_size)
@@ -167,23 +180,7 @@ def run_probe(probe_name="ridge", librispeech_split="train-clean-100") -> None:
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
     )
-
-    # # Use the last layer to run gridsearch
-    # y_gs_train = y_train[:, -1, :]
-    # y_gs_test = y_test[:, -1, :]
-
-    # GSregressor.fit(X_train, y_gs_train)
-    # y_pred = GSregressor.predict(X_test)
-    # # Check the best parameters
-    # # print(GSregressor.best_params_)
-    # # Check the best score
-    # # print(GSregressor.best_score_)
-    # # Check the score on the test set
-    # score = GSregressor.score(X_test, y_gs_test)
-    # print(f"Score for gridsearch: {score}")
-    # print(f"Best params: {GSregressor.best_params_}")
-    # # Use the best parameters to run the probe for each layer
-    results = []
+    results: List[Dict] = []
     for num_layer in tqdm(range(y.shape[1])):
         tqdm.write(f"Running probe for layer {num_layer}")
 
@@ -192,64 +189,62 @@ def run_probe(probe_name="ridge", librispeech_split="train-clean-100") -> None:
 
         regressor = model(**GSregressor.best_params_)
         regressor.fit(X_train, y_train[:, num_layer])
-        # y_pred = regressor.predict(X_test)
         test_score = regressor.score(X_test, y_test[:, num_layer])
         train_score = regressor.score(X_train, y_train[:, num_layer])
 
         results.append(
             {
                 "probe": probe_name,
-                "pred_representation": "audio",
-                "r^2_score": test_score,
-                "input_ablation": "None",
-                "train_r^2_score": train_score,
-                "topline_score": test_score,
                 "layer": num_layer,
-                "mode": "None",
+                "train_score": train_score,
+                "test_score": test_score,
+                "best_params": GSregressor.best_params_,
+                "best_score": GSregressor.best_score_,
+                "coefficients": GSregressor.best_estimator_.coef_,
+                "manipulation_mode": "none",
+                "manipulated_feature_group": "none",
             }
         )
 
         # label the dimensions of X with groups
-        dimension_for_group = {}
-        start, end = 0, 0
-        for group in probe_data["input_data"]:
-            end += np.array(probe_data["input_data"][group]).shape[1]
-            dimension_for_group[group] = {
-                "start": start,
-                "end": end,
-            }
-            start = end
 
-        for group in dimension_for_group:
-            start = dimension_for_group[group]["start"]
-            end = dimension_for_group[group]["end"]
+        for range_start, range_end, name in [
+            (0, 125, "acoustic"),
+            (125, 225, "word_embedding"),
+            (225, 325, "phone_embedding"),
+            (325, 327, "metadata"),
+            (327, X_train.shape[1], "syntax_features"),
+        ]:
             X_test_permuted = X_test.copy()
-            X_test_permuted[:, start:end] = np.random.permutation(X_test[:, start:end])
-            score_permuted = regressor.score(X_test_permuted, y_test[:, num_layer])
+            X_test_permuted[:, range_start:range_end] = np.random.permutation(
+                X_test[:, range_start:range_end]
+            )
+            test_score_permuted = regressor.score(X_test_permuted, y_test[:, num_layer])
             # print(f"Score for {group} ablation: {score_permuted}")
             # print(f"Score decreased by: {(score - score_permuted) / score}%")
             results.append(
                 {
                     "probe": probe_name,
-                    "pred_representation": "audio",
-                    "r^2_score": score_permuted,
-                    "input_ablation": group,
-                    "train_r^2_score": train_score,
-                    "topline_score": test_score,
                     "layer": num_layer,
-                    "mode": "permutation",
+                    "train_score": train_score,
+                    "test_score": test_score_permuted,
+                    "best_params": GSregressor.best_params_,
+                    "best_score": GSregressor.best_score_,
+                    "coefficients": GSregressor.best_estimator_.coef_,
+                    "manipulation_mode": "permutation",
+                    "manipulated_feature_group": name,
                 }
             )
             # For each group, we also remove the group from the input data completely and refit the regressor
             # Concatenate all input data except the feature group we want to ablate
             X_train_ablated = np.delete(
                 X_train,
-                np.arange(dimension_for_group[group]["start"], end),
+                np.s_[range_start:range_end],
                 axis=1,
             )
             X_test_ablated = np.delete(
                 X_test,
-                np.arange(dimension_for_group[group]["start"], end),
+                np.s_[range_start:range_end],
                 axis=1,
             )
             ablated_regressor = model(**GSregressor.best_params_)
@@ -263,16 +258,22 @@ def run_probe(probe_name="ridge", librispeech_split="train-clean-100") -> None:
             results.append(
                 {
                     "probe": probe_name,
-                    "pred_representation": "audio",
-                    "r^2_score": test_score_ablated,
-                    "input_ablation": group,
-                    "train_r^2_score": train_score_ablated,
-                    "topline_score": test_score,
                     "layer": num_layer,
-                    "mode": "ablation",
+                    "train_score": train_score_ablated,
+                    "test_score": test_score_ablated,
+                    "best_params": GSregressor.best_params_,
+                    "best_score": GSregressor.best_score_,
+                    "coefficients": GSregressor.best_estimator_.coef_,
+                    "manipulation_mode": "ablation",
+                    "manipulated_feature_group": name,
                 }
             )
+    return results
 
+
+def postprocess_results(results, probe_name, librispeech_split):
+    # This function processes the results of the probe and saves them to a csv file
+    # Convert the results to a pandas DataFrame
     df = pd.DataFrame(results)
     df["r^2_score_decrease"] = (df["topline_score"] - df["r^2_score"]) / df[
         "topline_score"
@@ -292,17 +293,6 @@ def run_probe(probe_name="ridge", librispeech_split="train-clean-100") -> None:
         sep=";",
     )
 
-    # Save the cv_results to a pickle file
-    with open(
-        os.path.join(
-            PROJECT_ROOT,
-            "results",
-            f"{probe_name}_{librispeech_split}_grid_search_results.pickle",
-        ),
-        "wb",
-    ) as f:
-        pickle.dump(GSregressor.cv_results_, f)
-
 
 def submitit():
     # This function is used to submit the probe to a cluster
@@ -312,7 +302,6 @@ def submitit():
     executor = AutoExecutor(folder=f"{PROJECT_ROOT}/logdir/%A")
     executor.update_parameters(
         timeout_min=1200,
-        slurm_partition="CPU",
         name="gridsearch",
     )
 
@@ -323,14 +312,6 @@ def submitit():
     # executor.submit(run_gridsearch, probe_name = "rf", librispeech_split="train-clean-100")
 
 
-if __name__ == "__main__":
-    # results = run_probe()
-
-    # df = process_results(results)
-
-    # submitit()
-    # run_probe(probe_name="ridge", librispeech_split="dev-clean")
-    # run_probe(probe_name="rf", librispeech_split="dev-clean")
-
-    # run_probe(probe_name="ridge", librispeech_split="train-clean-100")
-    run_probe(probe_name="rf", librispeech_split="train-clean-100")
+# if __name__ == "__main__":
+#     pass
+    # results = run_probe(probe_name="ridge", librispeech_split="train-clean-100")

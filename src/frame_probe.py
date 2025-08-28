@@ -12,16 +12,25 @@ from tqdm.auto import tqdm
 
 from probe import PROJECT_ROOT, load_data
 
+hostname = os.uname().nodename
+
+
+if "snellius" in hostname:
+    SAVE_ROOT = '/projects/prjs1586/experimental_data'
+else:
+    SAVE_ROOT = f"{PROJECT_ROOT}/data"
+    
+
 librispeech_split = "dev-clean"
 probe_data = load_data(librispeech_split=librispeech_split)
 
 with open(
-    f"{PROJECT_ROOT}/data/librispeech-{librispeech_split}_audio_representation_full.pickle",
+    f"{SAVE_ROOT}/librispeech-{librispeech_split}_audio_representation_full.pickle",
     "rb",
 ) as f:
     audio_rep = pickle.load(f)
 with open(
-    f"{PROJECT_ROOT}/data/librispeech-{librispeech_split}_opensmile_features_lld.pickle",
+    f"{SAVE_ROOT}/librispeech-{librispeech_split}_opensmile_features_lld.pickle",
     "rb",
 ) as f:
     lld = pickle.load(f)
@@ -29,17 +38,17 @@ with open(
 
 # Load the word and phone embedding weights along with the dictionaries
 with open(
-    f"{PROJECT_ROOT}/data/librispeech-{librispeech_split}_words_embedding_dict.pickle",
+    f"{SAVE_ROOT}/librispeech-{librispeech_split}_words_embedding_dict.pickle",
     "rb",
 ) as f:
     word_dict = pickle.load(f)
 with open(
-    f"{PROJECT_ROOT}/data/librispeech-{librispeech_split}_phones_embedding_dict.pickle",
+    f"{SAVE_ROOT}/librispeech-{librispeech_split}_phones_embedding_dict.pickle",
     "rb",
 ) as f:
     phone_dict = pickle.load(f)
 with open(
-    f"{PROJECT_ROOT}/data/librispeech-{librispeech_split}_words_embedding_weights.pickle",
+    f"{SAVE_ROOT}/librispeech-{librispeech_split}_words_embedding_weights.pickle",
     "rb",
 ) as f:
     word_embedding_weights = pickle.load(f)
@@ -49,7 +58,7 @@ word_embedding = torch.nn.Embedding.from_pretrained(
 )
 
 with open(
-    f"{PROJECT_ROOT}/data/librispeech-{librispeech_split}_phones_embedding_weights.pickle",
+    f"{SAVE_ROOT}/librispeech-{librispeech_split}_phones_embedding_weights.pickle",
     "rb",
 ) as f:
     phone_embedding_weights = pickle.load(f)
@@ -88,9 +97,35 @@ def find_interval_at_time(tier, timestamp_sec):
                 return interval.text
     return None  # No interval found at this timestamp
 
+def find_alignment_interval(alignment, timestamp_sec):
+    """
+    Finds the alignment interval that contains the given timestamp.
+
+    Args:
+        alignment: A list of dictionaries containing alignment information.
+        timestamp_sec: The timestamp in seconds.
+
+    Returns:
+        The matching alignment dictionary, or None if no interval contains the timestamp.
+    """
+    for i, entry in alignment.iterrows():
+        if entry["start"] <= timestamp_sec < entry["end"]:
+            if (
+                entry["text"] == ""
+                or entry["text"] == "sil"
+                or entry["text"] == "sp"
+                or entry["text"] == "<unk>"
+                or str(entry["text"]) == "<p:>"
+                or str(entry["text"]) == "nan"
+            ):
+                # If the interval is empty or silent, we return padding token
+                return "<pad>"
+            else:
+                return entry['text']
+    return None
 
 transcription_file = (
-    f"{PROJECT_ROOT}/data/librispeech-{librispeech_split}_transcriptions.pickle"
+    f"{SAVE_ROOT}/librispeech-{librispeech_split}_transcriptions.pickle"
 )
 with open(transcription_file, "rb") as f:
     transcription_raw = pickle.load(f)
@@ -125,9 +160,16 @@ for i in tqdm(range(len(fileids))):
     # Remove start and end columns from x
     y = np.moveaxis(audio_rep[i], 0, 1)
 
-    textgrid = transcription.loc[
-        (transcription["fileid"] == bare_fileid), "textgrid"
+    # textgrid = transcription.loc[
+    #     (transcription["fileid"] == bare_fileid), "textgrid"
+    # ].item()
+    phone_alignment = transcription.loc[
+        (transcription["fileid"] == bare_fileid), "phone_alignment"
     ].item()
+    ort_alignment = transcription.loc[
+        (transcription["fileid"] == bare_fileid), "ort_alignment"
+    ].item()
+
     metadata = transcription.loc[
         (transcription["fileid"] == bare_fileid), "non_acoustic"
     ].item()
@@ -159,18 +201,28 @@ for i in tqdm(range(len(fileids))):
             continue
         # concatenate the previous, current, and next frame together
         concatenated_x = np.concat(all_frame)
-
+        # Make sure start_ms is in an interval of ort_alignment
+        if not any(
+            (ort_alignment["start"] <= start_ms / 1000) & (ort_alignment["end"] > start_ms / 1000)
+        ):
+            continue
         # find the corresponding word in the textgrid
-        word_str = find_interval_at_time(textgrid["words"], start_ms / 1000)
+        word_str = find_alignment_interval(
+            ort_alignment, start_ms / 1000
+        )
+        phone_str = find_alignment_interval(
+            phone_alignment, start_ms / 1000
+        )
+        # word_str = find_interval_at_time(textgrid["words"], start_ms / 1000)
         word = torch.tensor(word_dict.index(word_str))
-        phone_str = find_interval_at_time(textgrid["phones"], start_ms / 1000)
+        # phone_str = find_interval_at_time(textgrid["phones"], start_ms / 1000)
         phone = torch.tensor(phone_dict.index(phone_str))
         # If word is <pad>, there's no syntax features
         if word == 0:
             syntax_feat = np.zeros((syntax_feats.shape[1]))
         else:
             sent = [
-                x.text for x in textgrid["words"] if x.text != "" and x.text != "<unk>"
+                x.text for _,x in ort_alignment.iterrows() if x.text != "" and x.text != "<unk>" and str(x.text) != 'nan'
             ]
             # Find the index of word_str in sent
             word_idx = sent.index(word_str)
@@ -250,17 +302,67 @@ for layer in range(processed_y.shape[1]):
         permuted_x_train[:, range_start:range_end] = np.random.permutation(
             permuted_x_train[:, range_start:range_end]
         )
-        # print()
+        permuted_x_test = X_test.copy()
+        permuted_x_test[:, range_start:range_end] = np.random.permutation(
+            permuted_x_test[:, range_start:range_end]
+        )
+        GS_permute = GridSearchCV(
+            estimator=Ridge(),
+            param_grid={
+                "alpha": [10**x for x in range(-5, 3)],
+                # "solver": ["auto", "sag", "saga", "lsqr", "cholesky"],
+                # "max_iter": [1000, 2000, 3000],
+            },
+            n_jobs=-1,
+            cv=5,
+            verbose=1,
+        )
+        GS_permute.fit(permuted_x_train, y_train)
+        train_score_permuted = GS_permute.score(permuted_x_train, y_train)
+        test_score_permuted = GS_permute.score(permuted_x_test, y_test)
         result = {
             "layer": layer,
-            "train_score": GS.score(X_train, y_train),
-            "test_score": GS.score(permuted_x_train, y_train),
+            "train_score": train_score_permuted,
+            "test_score": test_score_permuted,
             "best_params": GS.best_params_,
             "best_score": GS.best_score_,
             "coefficients": GS.best_estimator_.coef_,
             # "intercept": GS.best_estimator_.intercept_,
             # "permutation": f"{range_start}-{range_end}"
             "manipulation_mode": "permutation",
+            "manipulated_feature_group": name,
+        }
+        results.append(result)
+
+        # Zeroing out features
+        zeroed_x_train = X_train.copy()
+        zeroed_x_train[:, range_start:range_end] = 0
+        zeroed_x_test = X_test.copy()
+        zeroed_x_test[:, range_start:range_end] = 0
+
+        GS_zero = GridSearchCV(
+            estimator=Ridge(),
+            param_grid={
+                "alpha": [10**x for x in range(-5, 3)],
+                # "solver": ["auto", "sag", "saga", "lsqr", "cholesky"],
+                # "max_iter": [1000, 2000, 3000],
+            },
+            n_jobs=-1,
+            cv=5,
+            verbose=1,
+        )
+        GS_zero.fit(zeroed_x_train, y_train)
+        zeroed_train_score = GS_zero.score(zeroed_x_train, y_train)
+        zeroed_test_score = GS_zero.score(zeroed_x_test, y_test)
+        result = {
+            "layer": layer,
+            "train_score": zeroed_train_score,
+            "test_score": zeroed_test_score,
+            "best_params": GS.best_params_,
+            "best_score": GS.best_score_,
+            "coefficients": GS_zero.best_estimator_.coef_,
+            # "intercept": GS_zero.best_estimator_.intercept_,
+            "manipulation_mode": "zeroing",
             "manipulated_feature_group": name,
         }
         results.append(result)

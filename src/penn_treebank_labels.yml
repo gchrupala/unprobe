@@ -1,0 +1,67 @@
+ADJP: Adjective phrase
+ADVP: Adverb phrase
+CC: Coordinating conjunction
+CD: Cardinal number
+CLR: Closely related
+CONJP: Conjunction phrase
+DT: Determiner
+EX: Existential there
+FRAG: Fragment
+FW: Foreign word
+HLN: Headline
+IN: Preposition/subordinating conjunction
+INTJ: Interjection
+JJ: Adjective
+JJR: Adjective, comparative
+JJS: Adjective, superlative
+LS: List item marker
+LST: List marker
+MD: Modal
+NAC: Not a constituent
+NN: Noun, singular or mass
+NNP: Proper noun, singular
+NNPS: Proper noun, plural
+NNS: Noun, plural
+NP: Noun phrase
+NX: Complex noun phrase
+PDT: Predeterminer
+POS: Possessive ending
+PP: Prepositional phrase
+PRN: Parenthetical
+PRP: Personal pronoun
+PRP$: Possessive pronoun
+PRT: Particle
+PUNC: Punctuation
+QP: Quantifier phrase
+RB: Adverb
+RBR: Adverb, comparative
+RBS: Adverb, superlative
+RP: Particle
+RRC: Reduced relative clause
+S: Simple declarative clause
+SBAR: Subordinate clause
+SBARQ: Direct question introduced by wh-word/phrase
+SINV: Inverted declarative sentence
+SQ: Inverted yes/no question
+SYM: Symbol
+TO: to
+TPC: Topic
+TTL: Title
+UCP: Unlike coordinated phrase
+UH: Interjection
+VB: Verb, base form
+VBD: Verb, past tense
+VBG: Verb, gerund/present participle
+VBN: Verb, past participle
+VBP: Verb, non-3rd person singular present
+VBZ: Verb, 3rd person singular present
+VP: Verb phrase
+WDT: Wh-determiner
+WHADJP: Wh-adjective phrase
+WHADVP: Wh-adverb phrase
+WHNP: Wh-noun phrase
+WHPP: Wh-prepositional phrase
+WHSBAR: Wh-subordinate clause
+WP: Wh-pronoun
+WP$: Possessive wh-pronoun
+WRB: Wh-adverb

@@ -13,7 +13,6 @@ import textgrids
 import torch
 import yaml
 from datasets import Dataset
-from sklearn import tree
 from tqdm.auto import tqdm
 from transformers import (
     AutoModel,
@@ -22,7 +21,19 @@ from transformers import (
     Wav2Vec2Model,
 )
 
-DATASET_ROOT = os.path.realpath("/corpora/LibriSpeech/LibriSpeech")
+# Get the hostname of the machine running the code
+hostname = os.uname()[1]
+
+if "snellius" in hostname:
+    # If running on Snellius, use the Snellius dataset root
+    DATASET_ROOT = os.path.realpath("/projects/prjs1586/corpora/LibriSpeech")
+    ALIGNMENT_ROOT = DATASET_ROOT.replace('LibriSpeech', "librispeech_textgrids")
+
+else:
+    # If running on local machine, use the local dataset root
+    DATASET_ROOT = os.path.realpath("/corpora/LibriSpeech/LibriSpeech")
+    ALIGNMENT_ROOT = os.path.expanduser(f"~/corpora/librispeech_alignment/")
+
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 nlp = spacy.load("en_core_web_sm")
@@ -50,9 +61,13 @@ def save_librispeech_tg_to_single_file(
     """
     if not os.path.exists(alignment_single_file_savepath):
         os.makedirs(alignment_single_file_savepath, exist_ok=True)
-    dataset_path = os.path.expanduser(
-        f"~/corpora/librispeech_alignment/{librispeech_split}"
-    )
+        
+    #TODO unify the split names with the ones in the dataset
+    if librispeech_split == "dev-clean":
+        librispeech_split = "dev"
+    elif librispeech_split == "train-clean-100":
+        librispeech_split = "train"
+    dataset_path = os.path.join(ALIGNMENT_ROOT, librispeech_split)
     transcription_files = glob.glob(f"{dataset_path}/**/*.TextGrid", recursive=True)
     # Sort transcription_files
     transcription_files = sorted(
@@ -94,6 +109,12 @@ def save_librispeech_tg_to_single_file(
         )
         df["tier"] = tier
 
+        # TODO: change librispeech_split to the correct split name
+        if librispeech_split == "dev":
+            librispeech_split = "dev-clean"
+        elif librispeech_split == "train":
+            librispeech_split = "train-clean-100"
+
         df.to_csv(
             os.path.join(
                 alignment_single_file_savepath,
@@ -104,54 +125,72 @@ def save_librispeech_tg_to_single_file(
         )
 
 
+def process_fileid(fileid, ort_alignment, phone_alignment):
+    speakerid, chapter, utt = fileid.split("-")
+    utt_phones = []
+    utt_words = []
+
+    for i, word_row in ort_alignment[ort_alignment.fileID == fileid].iterrows():
+        # Skip empty words, silences, and
+        word = word_row["text"]
+        if (
+            word == "sil"
+            or word == ""
+            or word == "sp"
+            or word == "<unk>"
+            or str(word).lower() == "nan"
+        ):
+            continue
+        utt_words.append(word)
+        for phone in phone_alignment[(phone_alignment.fileID == fileid) &
+                                    (word_row.start <= phone_alignment.start) &
+                                    (phone_alignment.start <= word_row.end)]["text"]:
+            if phone == "sil" or phone == "sp" or phone == "" or phone == "<p:>":
+                continue
+            utt_phones.append(phone)
+    # syntax_feats = syntax_parsing(utt_words)
+    return {
+        "fileid": fileid,
+        "phones": utt_phones,
+        "words": utt_words,
+        "non_acoustic": [int(speakerid), int(chapter)],
+        "phone_alignment": phone_alignment[(phone_alignment.fileID == fileid)].reset_index(
+            drop=True
+        ),
+        "ort_alignment": ort_alignment[(ort_alignment.fileID == fileid)].reset_index(
+            drop=True
+        ),
+        # "textgrid": tg,
+        # "syntax_feats": syntax_feats,
+    }
+
 def load_librispeech_tg(librispeech_split="dev-clean", transcription_savefile=None):
-    """Loading Librispeech dataset into Huggingface Dataset format
-
-    Args:
-        librispeech_split (str, optional): split of librispeech to use. Defaults to "dev-clean".
-
-    Returns:
-        datasets.Dataset: Huggingface Dataset object containing columns of [fileID, sent, audio]
     """
-    dataset_path = os.path.expanduser(
-        f"~/corpora/librispeech_alignment/{librispeech_split}"
+    """
+    ort_alignment = pd.read_csv(
+        f"{PROJECT_ROOT}/data/librispeech_{librispeech_split}_ORT-MAU_alignment.csv",
+        sep="\t",
     )
-    transcription_files = glob.glob(f"{dataset_path}/**/*.TextGrid", recursive=True)
+    phone_alignment = pd.read_csv(
+        f"{PROJECT_ROOT}/data/librispeech_{librispeech_split}_MAU_alignment.csv",
+        sep="\t",
+    )
 
-    transcriptions = []
+    unique_fileids = ort_alignment["fileID"].unique().tolist()
+    
+    # Use multiprocessing to speed up the processing of fileids
+    from multiprocessing import Pool
+    from functools import partial
+    
+    # Create a partial function with fixed arguments
+    process_func = partial(process_fileid, ort_alignment=ort_alignment, phone_alignment=phone_alignment)
+    
+    with Pool() as pool:
+        transcriptions = pool.map(process_func, tqdm(unique_fileids, desc="Processing fileids"))
 
-    for file_path in tqdm(transcription_files):
-        tg = textgrids.TextGrid(file_path)
 
-        fileid = file_path.split("/")[-1].split(".")[0]
-        speakerid, chapter, utt = fileid.split("-")
-        utt_phones = []
-        utt_words = []
-        for phone in tg["phones"]:
-            if phone.text == "sil" or phone.text == "sp" or phone.text == "":
-                continue
-            utt_phones.append(phone.text)
-        for word in tg["words"]:
-            if (
-                word.text == "sil"
-                or word.text == ""
-                or word.text == "sp"
-                or word.text == "<unk>"
-            ):
-                continue
-            utt_words.append(word.text)
-
-        syntax_feats = syntax_parsing(utt_words)
-        transcriptions.append(
-            {
-                "fileid": fileid,
-                "phones": utt_phones,
-                "words": utt_words,
-                "non_acoustic": [int(speakerid), int(chapter)],
-                "textgrid": tg,
-                "syntax_feats": syntax_feats,
-            }
-        )
+    for file in tqdm(transcriptions):
+        file['syntax_feats'] = syntax_parsing(file['words'])
 
     if transcription_savefile is None:
         return transcriptions
@@ -275,6 +314,7 @@ def extract_audio_representation(
     dataset = dataset.cast_column(
         "audio", Audio(sampling_rate=feature_extractor.sampling_rate)
     )
+    print("Audio column recasted to correct sampling rate.")
 
     audio_representations = []
     for audio_file in tqdm(dataset["audio"]):
@@ -449,7 +489,7 @@ def syntax_parsing(utt_words):
     syntax_feats = []
     for i, word in enumerate(sent):
         # Skip contractions like 's, 're, 've, 'll, 'd, 'm
-        # Hard coding for now, may need to change 
+        # Hard coding for now, may need to change
         # #TODO try to map to phone alignments, that might be more accurate
         # OR re-force align with these subword tokens
         if word.text in ["'s", "'re", "'ve", "'ll", "'d", "'m", "n't"]:
@@ -496,15 +536,17 @@ def extract_all_features(librispeech_split="dev-clean"):
         librispeech_split (str, optional): _description_. Defaults to "dev-clean".
     """
 
-    savepath = f"{PROJECT_ROOT}/data"
+    # savepath = f"{PROJECT_ROOT}/data"
+    savepath = "/projects/prjs1586/experimental_data"
     if not os.path.exists(savepath):
         os.makedirs(savepath)
 
     dataset = load_librispeech(librispeech_split)
     transcription_savefile = (
-        f"{PROJECT_ROOT}/data/librispeech-{librispeech_split}_transcriptions.pickle"
+        f"{savepath}/librispeech-{librispeech_split}_transcriptions.pickle"
     )
-    if os.path.exists(transcription_savefile):
+    if os.path.exists(transcription_savefile) and not args.overwrite:
+        print("Transcriptions already exist, loading from file...")
         with open(transcription_savefile, "rb") as f:
             transcriptions = pickle.load(f)
     else:

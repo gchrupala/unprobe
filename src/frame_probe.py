@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import torch
-from sklearn.linear_model import Lasso, Ridge
+from sklearn.linear_model import Ridge
 from sklearn.model_selection import GridSearchCV, train_test_split
 from tqdm.auto import tqdm
 
@@ -16,10 +16,10 @@ hostname = os.uname().nodename
 
 
 if "snellius" in hostname:
-    SAVE_ROOT = '/projects/prjs1586/experimental_data'
+    SAVE_ROOT = "/projects/prjs1586/experimental_data"
 else:
     SAVE_ROOT = f"{PROJECT_ROOT}/data"
-    
+
 
 librispeech_split = "dev-clean"
 probe_data = load_data(librispeech_split=librispeech_split)
@@ -97,6 +97,7 @@ def find_interval_at_time(tier, timestamp_sec):
                 return interval.text
     return None  # No interval found at this timestamp
 
+
 def find_alignment_interval(alignment, timestamp_sec):
     """
     Finds the alignment interval that contains the given timestamp.
@@ -121,8 +122,9 @@ def find_alignment_interval(alignment, timestamp_sec):
                 # If the interval is empty or silent, we return padding token
                 return "<pad>"
             else:
-                return entry['text']
+                return entry["text"]
     return None
+
 
 transcription_file = (
     f"{SAVE_ROOT}/librispeech-{librispeech_split}_transcriptions.pickle"
@@ -203,16 +205,13 @@ for i in tqdm(range(len(fileids))):
         concatenated_x = np.concat(all_frame)
         # Make sure start_ms is in an interval of ort_alignment
         if not any(
-            (ort_alignment["start"] <= start_ms / 1000) & (ort_alignment["end"] > start_ms / 1000)
+            (ort_alignment["start"] <= start_ms / 1000)
+            & (ort_alignment["end"] > start_ms / 1000)
         ):
             continue
         # find the corresponding word in the textgrid
-        word_str = find_alignment_interval(
-            ort_alignment, start_ms / 1000
-        )
-        phone_str = find_alignment_interval(
-            phone_alignment, start_ms / 1000
-        )
+        word_str = find_alignment_interval(ort_alignment, start_ms / 1000)
+        phone_str = find_alignment_interval(phone_alignment, start_ms / 1000)
         # word_str = find_interval_at_time(textgrid["words"], start_ms / 1000)
         word = torch.tensor(word_dict.index(word_str))
         # phone_str = find_interval_at_time(textgrid["phones"], start_ms / 1000)
@@ -222,7 +221,9 @@ for i in tqdm(range(len(fileids))):
             syntax_feat = np.zeros((syntax_feats.shape[1]))
         else:
             sent = [
-                x.text for _,x in ort_alignment.iterrows() if x.text != "" and x.text != "<unk>" and str(x.text) != 'nan'
+                x.text
+                for _, x in ort_alignment.iterrows()
+                if x.text != "" and x.text != "<unk>" and str(x.text) != "nan"
             ]
             # Find the index of word_str in sent
             word_idx = sent.index(word_str)
@@ -396,10 +397,9 @@ for layer in range(processed_y.shape[1]):
             "best_score": GS.best_score_,
             "coefficients": GS_ablate.best_estimator_.coef_,
             "manipulation_mode": "ablation",
-            "manipulated_feature_group": name
+            "manipulated_feature_group": name,
         }
         results.append(result)
-
 
 
 df = pd.DataFrame(results)
@@ -421,7 +421,9 @@ def plot_results(df, manipulation_mode=None):
         df = df[df["manipulation_mode"] == manipulation_mode].copy()
     # Put the manipulation mode under a facet grid
     plt.figure(figsize=(10, 8))
-    g = sns.FacetGrid(df, col="manipulation_mode", hue="manipulated_feature_group", height=4, aspect=1)
+    g = sns.FacetGrid(
+        df, col="manipulation_mode", hue="manipulated_feature_group", height=4, aspect=1
+    )
     g.map(sns.lineplot, "layer", "test_score", marker="o")
     # Add a baseline with a different color and linestyle based on the baseline
     sns.lineplot(
@@ -435,12 +437,32 @@ def plot_results(df, manipulation_mode=None):
     # Move legend to the side instead of on the figure
     plt.legend(title="Feature Group", bbox_to_anchor=(1.05, 1), loc=2)
     if manipulation_mode:
-        plt.title(f"Encoding probe test scores with {manipulation_mode.capitalize()} manipulation")
+        plt.title(
+            f"Encoding probe test scores with {manipulation_mode.capitalize()} manipulation"
+        )
     plt.grid(True)
     plt.show()
 
-plot_results(df, "ablation")
-plot_results(df, "permutation")
+    return g
+
+
+ablation_plot = plot_results(df, "ablation")
+permutation_plot = plot_results(df, "permutation")
+zeroing_plot = plot_results(df, "zeroing")
+
+# Save the plots to the results directory
+ablation_plot.savefig(
+    f"{PROJECT_ROOT}/results/librispeech-{librispeech_split}_frame_probe_ablation_plot.png",
+    bbox_inches="tight",
+)
+permutation_plot.savefig(
+    f"{PROJECT_ROOT}/results/librispeech-{librispeech_split}_frame_probe_permutation_plot.png",
+    bbox_inches="tight",
+)
+zeroing_plot.savefig(
+    f"{PROJECT_ROOT}/results/librispeech-{librispeech_split}_frame_probe_zeroing_plot.png",
+    bbox_inches="tight",
+)
 
 
 def plot_coefficients(coefficients):

@@ -9,5 +9,5 @@
 cd /home/gshen/work_dir/unprobe
 source .venv/bin/activate
 
-uv run src/preprocessing.py --librispeech_split dev-clean
-uv run src/preprocessing.py --librispeech_split train-clean-100
+# uv run src/preprocessing.py --librispeech_split dev-clean --overwrite
+uv run src/preprocessing.py --librispeech_split train-clean-100 --overwrite

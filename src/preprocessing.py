@@ -15,32 +15,34 @@ import yaml
 from datasets import Dataset
 from tqdm.auto import tqdm
 from transformers import (
-    AutoModel,
-    AutoTokenizer,
     Wav2Vec2FeatureExtractor,
     Wav2Vec2Model,
 )
 
 # Get the hostname of the machine running the code
-hostname = os.uname()[1]
+hostname = os.uname().nodename
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
 
 if "snellius" in hostname:
     # If running on Snellius, use the Snellius dataset root
-    DATASET_ROOT = os.path.realpath("/projects/prjs1586/corpora/LibriSpeech")
-    ALIGNMENT_ROOT = DATASET_ROOT.replace('LibriSpeech', "librispeech_textgrids")
+    DATASETPATH = os.path.realpath("/projects/prjs1586/corpora/LibriSpeech")
+    ALIGNMENTPATH = DATASETPATH.replace("LibriSpeech", "librispeech_textgrids")
+    SAVEPATH = "/projects/prjs1586/experimental_data"
 
 else:
     # If running on local machine, use the local dataset root
-    DATASET_ROOT = os.path.realpath("/corpora/LibriSpeech/LibriSpeech")
-    ALIGNMENT_ROOT = os.path.expanduser(f"~/corpora/librispeech_alignment/")
+    DATASETPATH = os.path.realpath("/corpora/LibriSpeech/LibriSpeech")
+    # ALIGNMENTPATH = os.path.expanduser(f"~/corpora/librispeech_alignment/")
+    ALIGNMENTPATH = os.path.join(PROJECT_ROOT, "data")
+    SAVEPATH = os.path.join(PROJECT_ROOT, "experimental_data")
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 nlp = spacy.load("en_core_web_sm")
 nlp.add_pipe("benepar", config={"model": "benepar_en3"})
-tagger_labels = nlp.get_pipe("tagger").labels
+tagger_labels = nlp.get_pipe("tagger").labels  # type: ignore
 tagget_label_dict = {label: i for i, label in enumerate(tagger_labels)}
-parser_labels = nlp.get_pipe("parser").labels
+parser_labels = nlp.get_pipe("parser").labels  # type: ignore
 parser_label_dict = {label: i for i, label in enumerate(parser_labels)}
 # Similarly also get all the benepar labels
 with open(f"{PROJECT_ROOT}/src/penn_treebank_labels.yml", "r") as f:
@@ -61,13 +63,13 @@ def save_librispeech_tg_to_single_file(
     """
     if not os.path.exists(alignment_single_file_savepath):
         os.makedirs(alignment_single_file_savepath, exist_ok=True)
-        
-    #TODO unify the split names with the ones in the dataset
+
+    # TODO unify the split names with the ones in the dataset
     if librispeech_split == "dev-clean":
         librispeech_split = "dev"
     elif librispeech_split == "train-clean-100":
         librispeech_split = "train"
-    dataset_path = os.path.join(ALIGNMENT_ROOT, librispeech_split)
+    dataset_path = os.path.join(ALIGNMENTPATH, librispeech_split)
     transcription_files = glob.glob(f"{dataset_path}/**/*.TextGrid", recursive=True)
     # Sort transcription_files
     transcription_files = sorted(
@@ -142,9 +144,11 @@ def process_fileid(fileid, ort_alignment, phone_alignment):
         ):
             continue
         utt_words.append(word)
-        for phone in phone_alignment[(phone_alignment.fileID == fileid) &
-                                    (word_row.start <= phone_alignment.start) &
-                                    (phone_alignment.start <= word_row.end)]["text"]:
+        for phone in phone_alignment[
+            (phone_alignment.fileID == fileid)
+            & (word_row.start <= phone_alignment.start)
+            & (phone_alignment.start <= word_row.end)
+        ]["text"]:
             if phone == "sil" or phone == "sp" or phone == "" or phone == "<p:>":
                 continue
             utt_phones.append(phone)
@@ -154,9 +158,9 @@ def process_fileid(fileid, ort_alignment, phone_alignment):
         "phones": utt_phones,
         "words": utt_words,
         "non_acoustic": [int(speakerid), int(chapter)],
-        "phone_alignment": phone_alignment[(phone_alignment.fileID == fileid)].reset_index(
-            drop=True
-        ),
+        "phone_alignment": phone_alignment[
+            (phone_alignment.fileID == fileid)
+        ].reset_index(drop=True),
         "ort_alignment": ort_alignment[(ort_alignment.fileID == fileid)].reset_index(
             drop=True
         ),
@@ -164,8 +168,11 @@ def process_fileid(fileid, ort_alignment, phone_alignment):
         # "syntax_feats": syntax_feats,
     }
 
+
 def load_librispeech_tg(librispeech_split="dev-clean", transcription_savefile=None):
     """
+    phone_alignment = "_MAU_alignment"
+    word_alignment = "_ORT-MAU_alignment"
     """
     ort_alignment = pd.read_csv(
         f"{PROJECT_ROOT}/data/librispeech_{librispeech_split}_ORT-MAU_alignment.csv",
@@ -177,20 +184,23 @@ def load_librispeech_tg(librispeech_split="dev-clean", transcription_savefile=No
     )
 
     unique_fileids = ort_alignment["fileID"].unique().tolist()
-    
-    # Use multiprocessing to speed up the processing of fileids
-    from multiprocessing import Pool
-    from functools import partial
-    
-    # Create a partial function with fixed arguments
-    process_func = partial(process_fileid, ort_alignment=ort_alignment, phone_alignment=phone_alignment)
-    
-    with Pool() as pool:
-        transcriptions = pool.map(process_func, tqdm(unique_fileids, desc="Processing fileids"))
 
+    # Use multiprocessing to speed up the processing of fileids
+    from functools import partial
+    from multiprocessing import Pool
+
+    # Create a partial function with fixed arguments
+    process_func = partial(
+        process_fileid, ort_alignment=ort_alignment, phone_alignment=phone_alignment
+    )
+
+    with Pool() as pool:
+        transcriptions = pool.map(
+            process_func, tqdm(unique_fileids, desc="Processing fileids")
+        )
 
     for file in tqdm(transcriptions):
-        file['syntax_feats'] = syntax_parsing(file['words'])
+        file["syntax_feats"] = syntax_parsing(file["words"])
 
     if transcription_savefile is None:
         return transcriptions
@@ -209,7 +219,7 @@ def load_librispeech(split="dev-clean"):
     Returns:
         datasets.Dataset: Huggingface Dataset object containing columns of [fileID, sent, audio]
     """
-    dataset_path = f"{DATASET_ROOT}/{split}"
+    dataset_path = f"{DATASETPATH}/{split}"
     transcription_files = glob.glob(f"{dataset_path}/**/*.trans.txt", recursive=True)
     fileids, sentences = [], []
     for file_path in transcription_files:
@@ -536,8 +546,7 @@ def extract_all_features(librispeech_split="dev-clean"):
         librispeech_split (str, optional): _description_. Defaults to "dev-clean".
     """
 
-    # savepath = f"{PROJECT_ROOT}/data"
-    savepath = "/projects/prjs1586/experimental_data"
+    savepath = SAVEPATH
     if not os.path.exists(savepath):
         os.makedirs(savepath)
 
@@ -550,6 +559,7 @@ def extract_all_features(librispeech_split="dev-clean"):
         with open(transcription_savefile, "rb") as f:
             transcriptions = pickle.load(f)
     else:
+        print("Transcriptions do not exist, extracting...")
         transcriptions = load_librispeech_tg(librispeech_split, transcription_savefile)
 
     # Extracting string embeddings

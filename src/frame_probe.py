@@ -10,27 +10,37 @@ from sklearn.linear_model import Ridge
 from sklearn.model_selection import GridSearchCV, train_test_split
 from tqdm.auto import tqdm
 
-from probe import PROJECT_ROOT, load_data
+from probe import load_data
 
+# Get the hostname of the machine running the code
 hostname = os.uname().nodename
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 
 if "snellius" in hostname:
-    SAVE_ROOT = "/projects/prjs1586/experimental_data"
+    # If running on Snellius, use the Snellius dataset root
+    DATASET_ROOT = os.path.realpath("/projects/prjs1586/corpora/LibriSpeech")
+    ALIGNMENT_ROOT = DATASET_ROOT.replace("LibriSpeech", "librispeech_textgrids")
+    SAVEPATH = "/projects/prjs1586/experimental_data"
+
 else:
-    SAVE_ROOT = f"{PROJECT_ROOT}/data"
+    # If running on local machine, use the local dataset root
+    DATASET_ROOT = os.path.realpath("/corpora/LibriSpeech/LibriSpeech")
+    # ALIGNMENT_ROOT = os.path.expanduser(f"~/corpora/librispeech_alignment/")
+    ALIGNMENT_ROOT = os.path.join(PROJECT_ROOT, "data")
+    SAVEPATH = os.path.join(PROJECT_ROOT, "experimental_data")
 
 
 librispeech_split = "dev-clean"
 probe_data = load_data(librispeech_split=librispeech_split)
 
 with open(
-    f"{SAVE_ROOT}/librispeech-{librispeech_split}_audio_representation_full.pickle",
+    f"{SAVEPATH}/librispeech-{librispeech_split}_audio_representation_full.pickle",
     "rb",
 ) as f:
     audio_rep = pickle.load(f)
 with open(
-    f"{SAVE_ROOT}/librispeech-{librispeech_split}_opensmile_features_lld.pickle",
+    f"{SAVEPATH}/librispeech-{librispeech_split}_opensmile_features_lld.pickle",
     "rb",
 ) as f:
     lld = pickle.load(f)
@@ -38,17 +48,18 @@ with open(
 
 # Load the word and phone embedding weights along with the dictionaries
 with open(
-    f"{SAVE_ROOT}/librispeech-{librispeech_split}_words_embedding_dict.pickle",
+    f"{SAVEPATH}/librispeech-{librispeech_split}_words_embedding_dict.pickle",
     "rb",
 ) as f:
     word_dict = pickle.load(f)
 with open(
-    f"{SAVE_ROOT}/librispeech-{librispeech_split}_phones_embedding_dict.pickle",
+    f"{SAVEPATH}/librispeech-{librispeech_split}_phones_embedding_dict.pickle",
     "rb",
 ) as f:
     phone_dict = pickle.load(f)
+
 with open(
-    f"{SAVE_ROOT}/librispeech-{librispeech_split}_words_embedding_weights.pickle",
+    f"{SAVEPATH}/librispeech-{librispeech_split}_words_embedding_weights.pickle",
     "rb",
 ) as f:
     word_embedding_weights = pickle.load(f)
@@ -56,9 +67,8 @@ word_embedding = torch.nn.Embedding.from_pretrained(
     torch.tensor(word_embedding_weights, dtype=torch.float32),
     freeze=True,
 )
-
 with open(
-    f"{SAVE_ROOT}/librispeech-{librispeech_split}_phones_embedding_weights.pickle",
+    f"{SAVEPATH}/librispeech-{librispeech_split}_phones_embedding_weights.pickle",
     "rb",
 ) as f:
     phone_embedding_weights = pickle.load(f)
@@ -126,9 +136,7 @@ def find_alignment_interval(alignment, timestamp_sec):
     return None
 
 
-transcription_file = (
-    f"{SAVE_ROOT}/librispeech-{librispeech_split}_transcriptions.pickle"
-)
+transcription_file = f"{SAVEPATH}/librispeech-{librispeech_split}_transcriptions.pickle"
 with open(transcription_file, "rb") as f:
     transcription_raw = pickle.load(f)
 
@@ -526,7 +534,7 @@ def plot_coefficients(coefficients):
 
 
 results_with_all_features = [
-    result for result in results if result["permutation"] == "none"
+    result for result in results if result["manipulation_mode"] == "none"
 ]
 coefficients = [result["coefficients"] for result in results_with_all_features]
 coefficients = np.stack(coefficients)

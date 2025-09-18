@@ -4,6 +4,8 @@ import os
 import pickle
 
 import benepar
+import fasttext
+import fasttext.util
 import nltk
 import numpy as np
 import opensmile
@@ -37,7 +39,7 @@ else:
     ALIGNMENTPATH = os.path.join(PROJECT_ROOT, "data")
     SAVEPATH = os.path.join(PROJECT_ROOT, "experimental_data")
 
-
+# Load syntax parsing models
 nlp = spacy.load("en_core_web_sm")
 nlp.add_pipe("benepar", config={"model": "benepar_en3"})
 tagger_labels = nlp.get_pipe("tagger").labels  # type: ignore
@@ -50,6 +52,11 @@ with open(f"{PROJECT_ROOT}/src/penn_treebank_labels.yml", "r") as f:
     benepar_labels["<unk>"] = "UNK"  # Add an unknown label
     benepar_labels["<pad>"] = "PAD"  # Add a padding label
     benepar_labels_dict = {label: i for i, label in enumerate(benepar_labels.keys())}
+
+# Load fasttext model for word embeddings
+fasttext.util.download_model("en", if_exists="ignore")  # English
+ft = fasttext.load_model("cc.en.300.bin")
+fasttext.util.reduce_model(ft, 100)  # Reduce to 100 dimensions
 
 
 def save_librispeech_tg_to_single_file(
@@ -298,6 +305,54 @@ def extract_spacy_features(dataset, spacy_modelname="en_core_web_sm", **kwargs):
         doc = nlp(sentence)
         spacy_features.append(doc.vector)
     return np.vstack(spacy_features)
+
+
+def extract_ppgs_features(dataset, **kwargs):
+    import ppgs
+    from datasets import Audio
+
+    # Cast the audio column to the right sampling rate
+    print(f"Recasting audio sampling rate: {ppgs.SAMPLE_RATE}")
+    dataset = dataset.cast_column("audio", Audio(sampling_rate=ppgs.SAMPLE_RATE))
+    print("Audio column recasted to correct sampling rate.")
+
+    """Extracting ppgs features from audio file"""
+    all_ppgs_features = []
+    for example in tqdm(dataset):
+        audio_tensor = torch.from_numpy(example["audio"]["array"]).unsqueeze(0)
+        ppgs_features = ppgs.from_audio(
+            audio_tensor, sample_rate=ppgs.SAMPLE_RATE, gpu=0
+        )
+
+        all_ppgs_features.append(ppgs_features.cpu().squeeze().numpy())
+
+
+def extract_spk_embs(dataset, **kwargs):
+    # Load speaker embedding model from pyannote
+    from datasets import Audio
+    from pyannote.audio import Model
+
+    # Cast the audio column to the right sampling rate
+    print("Recasting audio sampling rate: 16kHz")
+    dataset = dataset.cast_column("audio", Audio(sampling_rate=16000))
+    print("Audio column recasted to correct sampling rate.")
+
+    device = (
+        torch.accelerator.current_accelerator()
+        if torch.accelerator.is_available()
+        else torch.device("cpu")
+    )
+    spk_embd_model = Model.from_pretrained("pyannote/embedding")
+    spk_embd_model.to(device)
+
+    all_spk_embs = []
+    for example in tqdm(dataset):
+        audio_tensor = torch.from_numpy(example["audio"]["array"]).unsqueeze(0)
+        spk_embs = spk_embd_model(audio_tensor.to(device=device, dtype=torch.float32))
+
+        all_spk_embs.append(spk_embs.cpu().squeeze().numpy())
+
+    return all_spk_embs
 
 
 def extract_audio_representation(
@@ -581,6 +636,7 @@ def extract_all_features(librispeech_split="dev-clean"):
     phone_embedding_dict_path = (
         f"{savepath}/librispeech-{librispeech_split}_phones_embedding_dict.pickle"
     )
+
     embedding_paths = [
         word_embedding_path,
         phone_embedding_path,

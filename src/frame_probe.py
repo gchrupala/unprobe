@@ -77,6 +77,14 @@ phone_embedding = torch.nn.Embedding.from_pretrained(
     freeze=True,
 )
 
+# Load spk_emb and ppgs features
+with open(f"{SAVEPATH}/librispeech-{librispeech_split}_spk_embs.pickle", "rb") as f:
+    spk_emb = pickle.load(f)
+with open(
+    f"{SAVEPATH}/librispeech-{librispeech_split}_ppgs_features.pickle", "rb"
+) as f:
+    ppgs_features = pickle.load(f)
+
 
 def find_interval_at_time(tier, timestamp_sec):
     """
@@ -200,6 +208,8 @@ for i in tqdm(range(len(fileids))):
     # sort the random_choice
     random_choice = np.sort(random_choice)
 
+    spk_embedding = spk_emb[bare_fileid]
+
     for start_ms in random_choice:
         start = int((start_ms - 20) / 10)
         end = int((start_ms + 20) / 10 + 1)
@@ -210,7 +220,7 @@ for i in tqdm(range(len(fileids))):
         if all_frame.shape[0] != 5:
             continue
         # concatenate the previous, current, and next frame together
-        concatenated_x = np.concat(all_frame)
+        concatenated_lld = np.concat(all_frame)
         # Make sure start_ms is in an interval of ort_alignment
         if not any(
             (ort_alignment["start"] <= start_ms / 1000)
@@ -239,21 +249,71 @@ for i in tqdm(range(len(fileids))):
 
         # Embed the word and phone
         word_embedding_tensor = word_embedding(word)
-        phone_embedding_tensor = phone_embedding(phone)
+        # phone_embedding_tensor = phone_embedding(phone)
+        ppgs_tensor = ppgs_features[bare_fileid][:, int(start_ms / 10)]
 
         # Concatenate word, phone, audio features and metadata together
         concatenated_x = np.concatenate(
             (
-                concatenated_x,
+                concatenated_lld,
                 word_embedding_tensor.numpy(),
-                phone_embedding_tensor.numpy(),
-                np.array(metadata),
+                # phone_embedding_tensor.numpy(),
                 syntax_feat,
+                ppgs_tensor,
+                spk_embedding,
+                np.array(metadata),
             )
         )
 
         processed_X.append(concatenated_x)
         processed_y.append(y[w2v2_time == start_ms])
+
+sections_shapes = (
+    (0, concatenated_lld.shape[0], "acoustic"),
+    (
+        concatenated_lld.shape[0],
+        concatenated_lld.shape[0] + word_embedding_tensor.shape[0],
+        "word_embedding",
+    ),
+    (
+        concatenated_lld.shape[0] + word_embedding_tensor.shape[0],
+        concatenated_lld.shape[0]
+        + word_embedding_tensor.shape[0]
+        + syntax_feat.shape[0],
+        "syntax_features",
+    ),
+    (
+        concatenated_lld.shape[0]
+        + word_embedding_tensor.shape[0]
+        + syntax_feat.shape[0],
+        concatenated_lld.shape[0]
+        + word_embedding_tensor.shape[0]
+        + syntax_feat.shape[0]
+        + ppgs_tensor.shape[0],
+        "ppgs_features",
+    ),
+    (
+        concatenated_lld.shape[0]
+        + word_embedding_tensor.shape[0]
+        + syntax_feat.shape[0]
+        + ppgs_tensor.shape[0],
+        concatenated_lld.shape[0]
+        + word_embedding_tensor.shape[0]
+        + syntax_feat.shape[0]
+        + ppgs_tensor.shape[0]
+        + spk_embedding.shape[0],
+        "spk_embedding",
+    ),
+    (
+        concatenated_lld.shape[0]
+        + word_embedding_tensor.shape[0]
+        + syntax_feat.shape[0]
+        + ppgs_tensor.shape[0]
+        + spk_embedding.shape[0],
+        processed_X[0].shape[0],
+        "metadata",
+    ),
+)
 
 
 processed_X = np.array(processed_X)
@@ -299,13 +359,7 @@ for layer in range(processed_y.shape[1]):
     # plot_coefficients(GS.best_estimator_.coef_)
     results.append(result)
 
-    for range_start, range_end, name in [
-        (0, 125, "acoustic"),
-        (125, 225, "word_embedding"),
-        (225, 325, "phone_embedding"),
-        (325, 327, "metadata"),
-        (327, processed_X.shape[1], "syntax_features"),
-    ]:
+    for range_start, range_end, name in sections_shapes:
         # Permutation of features
         permuted_x_train = X_train.copy()
         permuted_x_train[:, range_start:range_end] = np.random.permutation(

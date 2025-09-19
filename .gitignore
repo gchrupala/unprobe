@@ -177,3 +177,9 @@ data/*.pickle
 data/*.pkl
 logdir/*
 LibriSpeech/*
+experimental_data/*
+data/*
+plots/*
+results/*
+*.bin 
+*.gz

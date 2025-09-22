@@ -1,6 +1,7 @@
 import os
 import pickle
 
+import fasttext
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -29,61 +30,6 @@ else:
     # ALIGNMENT_ROOT = os.path.expanduser(f"~/corpora/librispeech_alignment/")
     ALIGNMENT_ROOT = os.path.join(PROJECT_ROOT, "data")
     SAVEPATH = os.path.join(PROJECT_ROOT, "experimental_data")
-
-
-librispeech_split = "dev-clean"
-probe_data = load_data(librispeech_split=librispeech_split)
-
-with open(
-    f"{SAVEPATH}/librispeech-{librispeech_split}_audio_representation_full.pickle",
-    "rb",
-) as f:
-    audio_rep = pickle.load(f)
-with open(
-    f"{SAVEPATH}/librispeech-{librispeech_split}_opensmile_features_lld.pickle",
-    "rb",
-) as f:
-    lld = pickle.load(f)
-
-
-# Load the word and phone embedding weights along with the dictionaries
-with open(
-    f"{SAVEPATH}/librispeech-{librispeech_split}_words_embedding_dict.pickle",
-    "rb",
-) as f:
-    word_dict = pickle.load(f)
-with open(
-    f"{SAVEPATH}/librispeech-{librispeech_split}_phones_embedding_dict.pickle",
-    "rb",
-) as f:
-    phone_dict = pickle.load(f)
-
-with open(
-    f"{SAVEPATH}/librispeech-{librispeech_split}_words_embedding_weights.pickle",
-    "rb",
-) as f:
-    word_embedding_weights = pickle.load(f)
-word_embedding = torch.nn.Embedding.from_pretrained(
-    torch.tensor(word_embedding_weights, dtype=torch.float32),
-    freeze=True,
-)
-with open(
-    f"{SAVEPATH}/librispeech-{librispeech_split}_phones_embedding_weights.pickle",
-    "rb",
-) as f:
-    phone_embedding_weights = pickle.load(f)
-phone_embedding = torch.nn.Embedding.from_pretrained(
-    torch.tensor(phone_embedding_weights, dtype=torch.float32),
-    freeze=True,
-)
-
-# Load spk_emb and ppgs features
-with open(f"{SAVEPATH}/librispeech-{librispeech_split}_spk_embs.pickle", "rb") as f:
-    spk_emb = pickle.load(f)
-with open(
-    f"{SAVEPATH}/librispeech-{librispeech_split}_ppgs_features.pickle", "rb"
-) as f:
-    ppgs_features = pickle.load(f)
 
 
 def find_interval_at_time(tier, timestamp_sec):
@@ -144,6 +90,33 @@ def find_alignment_interval(alignment, timestamp_sec):
     return None
 
 
+librispeech_split = "dev-clean"
+modelname = "facebook/wav2vec2-base-960h".split("/")[-1]
+modelname = "facebook/wav2vec2-base".split("/")[-1]
+modelname = "answerdotai/ModernBERT-base".split("/")[-1]
+probe_data = load_data(librispeech_split=librispeech_split)
+
+
+with open(
+    f"{SAVEPATH}/librispeech-{librispeech_split}_opensmile_features_lld.pickle",
+    "rb",
+) as f:
+    lld = pickle.load(f)
+
+
+with open(
+    f"{SAVEPATH}/librispeech-{librispeech_split}_{modelname}_representation_full.pickle",
+    "rb",
+) as f:
+    dnn_hidden_states = pickle.load(f)
+
+with open(
+    f"{SAVEPATH}/librispeech-{librispeech_split}_special_features.pickle",
+    "rb",
+) as f:
+    special_features = pickle.load(f)
+
+
 transcription_file = f"{SAVEPATH}/librispeech-{librispeech_split}_transcriptions.pickle"
 with open(transcription_file, "rb") as f:
     transcription_raw = pickle.load(f)
@@ -176,39 +149,52 @@ for i in tqdm(range(len(fileids))):
         continue
     x = lld.loc[fileid].reset_index()
     # Remove start and end columns from x
-    y = np.moveaxis(audio_rep[i], 0, 1)
+    y = np.moveaxis(dnn_hidden_states[bare_fileid], 0, 1)
 
     # textgrid = transcription.loc[
     #     (transcription["fileid"] == bare_fileid), "textgrid"
     # ].item()
-    phone_alignment = transcription.loc[
+    phone_alignment: pd.DataFrame = transcription.loc[
         (transcription["fileid"] == bare_fileid), "phone_alignment"
-    ].item()
-    ort_alignment = transcription.loc[
+    ].item()  # type: ignore
+    ort_alignment: pd.DataFrame = transcription.loc[
         (transcription["fileid"] == bare_fileid), "ort_alignment"
-    ].item()
+    ].item()  # type: ignore
 
-    metadata = transcription.loc[
+    metadata: list = transcription.loc[
         (transcription["fileid"] == bare_fileid), "non_acoustic"
-    ].item()
-    syntax_feats = transcription.loc[
+    ].item()  # type: ignore
+    syntax_feats: np.ndarray = transcription.loc[
         (transcription["fileid"] == bare_fileid), "syntax_feats"
-    ].item()
+    ].item()  # type: ignore
 
-    ## convert wav2vec2 frame to ms
-    w2v2_time = np.array(np.asarray(list(range(y.shape[0]))) * 20, dtype=int)
     # convert opensmile frame to ms in integer
     x["start_ms"] = (x["start"] / np.timedelta64(1, "ns") / 1e6).astype(int)
 
-    # Find the union of the two time intervals
-    viable_timestamp = np.intersect1d(x["start_ms"].to_numpy(), w2v2_time)
+    if "wav2vec2" in modelname:
+        ## convert wav2vec2 frame to ms
+        w2v2_time = np.array(np.asarray(list(range(y.shape[0]))) * 20, dtype=int)
+        # Find the union of the two time intervals
+        viable_timestamp = np.intersect1d(x["start_ms"].to_numpy(), w2v2_time)
+        # Randomly sample 5 frames from the x
+        random_choice = np.random.choice(viable_timestamp, size=5, replace=False)
+        # sort the random_choice
+        random_choice = np.sort(random_choice)
+    else:
+        # Text only models only have one embedding per word
+        # We sample 5 random words from the ort_alignment
+        if len(ort_alignment) < 5:
+            num_choices = len(ort_alignment)
+        else:
+            num_choices = 5
+        random_choice = np.random.choice(
+            ort_alignment["start"] * 1000, size=num_choices, replace=False
+        )
+        random_choice = np.sort(random_choice)
 
-    # Randomly sample 5 frames from the x
-    random_choice = np.random.choice(viable_timestamp, size=5, replace=False)
-    # sort the random_choice
-    random_choice = np.sort(random_choice)
-
-    spk_embedding = spk_emb[bare_fileid]
+    spk_embedding = special_features[bare_fileid]["spk_emb"]
+    ppgs_features = special_features[bare_fileid]["ppgs"]
+    fasttext_embedding = special_features[bare_fileid]["fasttext"]
 
     for start_ms in random_choice:
         start = int((start_ms - 20) / 10)
@@ -230,33 +216,38 @@ for i in tqdm(range(len(fileids))):
         # find the corresponding word in the textgrid
         word_str = find_alignment_interval(ort_alignment, start_ms / 1000)
         phone_str = find_alignment_interval(phone_alignment, start_ms / 1000)
+        # Skip if word_str is "<pad>" or None
+        if word_str == "<pad>" or word_str is None:
+            continue
         # word_str = find_interval_at_time(textgrid["words"], start_ms / 1000)
-        word = torch.tensor(word_dict.index(word_str))
+        # word = torch.tensor(word_dict.index(word_str))
         # phone_str = find_interval_at_time(textgrid["phones"], start_ms / 1000)
-        phone = torch.tensor(phone_dict.index(phone_str))
+        # phone = torch.tensor(phone_dict.index(phone_str))
+
+        tokens = ort_alignment["text"].fillna("<pad>").tolist()
+        tokens_nopad = [str(token) for token in tokens if token != "<pad>"]
+        # Find the index of word_str in sent
+        word_idx = tokens.index(word_str)
+        word_idx_nopad = tokens_nopad.index(word_str)
+        word_embedding = fasttext_embedding[word_idx]
         # If word is <pad>, there's no syntax features
-        if word == 0:
+        if word_str not in ort_alignment["text"].values:
+            # If the word is a padding token, we use a zero vector for syntax features
             syntax_feat = np.zeros((syntax_feats.shape[1]))
         else:
-            sent = [
-                x.text
-                for _, x in ort_alignment.iterrows()
-                if x.text != "" and x.text != "<unk>" and str(x.text) != "nan"
-            ]
-            # Find the index of word_str in sent
-            word_idx = sent.index(word_str)
-            syntax_feat = syntax_feats[word_idx]
+            syntax_feat = syntax_feats[word_idx_nopad]
+            # phone_embedding = phone_embedding_weights[phone_idx]
 
         # Embed the word and phone
-        word_embedding_tensor = word_embedding(word)
+        # word_embedding_tensor = word_embedding(word)
         # phone_embedding_tensor = phone_embedding(phone)
-        ppgs_tensor = ppgs_features[bare_fileid][:, int(start_ms / 10)]
+        ppgs_tensor = ppgs_features[:, int(start_ms / 10)]
 
         # Concatenate word, phone, audio features and metadata together
         concatenated_x = np.concatenate(
             (
                 concatenated_lld,
-                word_embedding_tensor.numpy(),
+                word_embedding,
                 # phone_embedding_tensor.numpy(),
                 syntax_feat,
                 ppgs_tensor,
@@ -266,51 +257,38 @@ for i in tqdm(range(len(fileids))):
         )
 
         processed_X.append(concatenated_x)
-        processed_y.append(y[w2v2_time == start_ms])
+        if "wav2vec2" in modelname.lower():
+            assert w2v2_time, "wav2vec2 time array is empty!"  # type: ignore
+            processed_y.append(y[w2v2_time == start_ms])
+        else:
+            processed_y.append(y[word_idx])
+
 
 sections_shapes = (
-    (0, concatenated_lld.shape[0], "acoustic"),
+    (0, 125, "acoustic"),
     (
-        concatenated_lld.shape[0],
-        concatenated_lld.shape[0] + word_embedding_tensor.shape[0],
+        125,
+        100 + 125,
         "word_embedding",
     ),
     (
-        concatenated_lld.shape[0] + word_embedding_tensor.shape[0],
-        concatenated_lld.shape[0]
-        + word_embedding_tensor.shape[0]
-        + syntax_feat.shape[0],
+        100 + 125,
+        100 + 125 + 8,
         "syntax_features",
     ),
     (
-        concatenated_lld.shape[0]
-        + word_embedding_tensor.shape[0]
-        + syntax_feat.shape[0],
-        concatenated_lld.shape[0]
-        + word_embedding_tensor.shape[0]
-        + syntax_feat.shape[0]
-        + ppgs_tensor.shape[0],
+        100 + 125 + 8,
+        100 + 125 + 8 + 40,
         "ppgs_features",
     ),
     (
-        concatenated_lld.shape[0]
-        + word_embedding_tensor.shape[0]
-        + syntax_feat.shape[0]
-        + ppgs_tensor.shape[0],
-        concatenated_lld.shape[0]
-        + word_embedding_tensor.shape[0]
-        + syntax_feat.shape[0]
-        + ppgs_tensor.shape[0]
-        + spk_embedding.shape[0],
+        100 + 125 + 8 + 40,
+        100 + 125 + 8 + 40 + 100,
         "spk_embedding",
     ),
     (
-        concatenated_lld.shape[0]
-        + word_embedding_tensor.shape[0]
-        + syntax_feat.shape[0]
-        + ppgs_tensor.shape[0]
-        + spk_embedding.shape[0],
-        processed_X[0].shape[0],
+        100 + 125 + 8 + 40 + 100,
+        100 + 125 + 8 + 40 + 100 + 8 + 2,
         "metadata",
     ),
 )
@@ -467,7 +445,7 @@ for layer in range(processed_y.shape[1]):
 df = pd.DataFrame(results)
 df.drop(columns=["coefficients"], inplace=True)
 df.to_csv(
-    f"{PROJECT_ROOT}/results/librispeech-{librispeech_split}_frame_probe_results.csv",
+    f"{PROJECT_ROOT}/results/librispeech-{librispeech_split}_{modelname}_frame_probe_results.csv",
     index=False,
 )
 
@@ -476,7 +454,7 @@ df["score_diff"] = (df["best_score"] - df["test_score"]) / df["best_score"]
 
 
 # Plot the results, using layers as the x-axis and score_diff as the y-axis with permutation as hue
-def plot_results(df, manipulation_mode=None):
+def plot_results(df, manipulation_mode=None, y="test_score"):
     # Ignore the 'none' manipulation mode for the plot
     no_manip_df = df[df["manipulation_mode"] == "none"].copy()
     if manipulation_mode is not None:
@@ -486,12 +464,12 @@ def plot_results(df, manipulation_mode=None):
     g = sns.FacetGrid(
         df, col="manipulation_mode", hue="manipulated_feature_group", height=4, aspect=1
     )
-    g.map(sns.lineplot, "layer", "test_score", marker="o")
+    g.map(sns.lineplot, "layer", y, marker="o")
     # Add a baseline with a different color and linestyle based on the baseline
     sns.lineplot(
         data=no_manip_df,
         x="layer",
-        y="test_score",
+        y=y,
         color="black",
         linestyle="--",
         label="Baseline (No Manip.)",
@@ -512,17 +490,22 @@ ablation_plot = plot_results(df, "ablation")
 permutation_plot = plot_results(df, "permutation")
 zeroing_plot = plot_results(df, "zeroing")
 
+plot_results(df, "ablation", "score_diff")
+plot_results(df, "permutation", "score_diff")
+plot_results(df, "zeroing", "score_diff")
+
+
 # Save the plots to the results directory
 ablation_plot.savefig(
-    f"{PROJECT_ROOT}/results/librispeech-{librispeech_split}_frame_probe_ablation_plot.png",
+    f"{PROJECT_ROOT}/results/librispeech-{librispeech_split}_{modelname}_frame_probe_ablation_plot.png",
     bbox_inches="tight",
 )
 permutation_plot.savefig(
-    f"{PROJECT_ROOT}/results/librispeech-{librispeech_split}_frame_probe_permutation_plot.png",
+    f"{PROJECT_ROOT}/results/librispeech-{librispeech_split}_{modelname}_frame_probe_permutation_plot.png",
     bbox_inches="tight",
 )
 zeroing_plot.savefig(
-    f"{PROJECT_ROOT}/results/librispeech-{librispeech_split}_frame_probe_zeroing_plot.png",
+    f"{PROJECT_ROOT}/results/librispeech-{librispeech_split}_{modelname}_frame_probe_zeroing_plot.png",
     bbox_inches="tight",
 )
 
@@ -530,27 +513,30 @@ zeroing_plot.savefig(
 def plot_coefficients(coefficients):
     # Regressor coefficients sanity check visualization
     # First we aggregate the coefficients for each feature group
-    acoustic_features = coefficients[:, : lld.shape[1] * 5]
+
+    coefficient_dict = {}
+
+    for range_start, range_end, name in sections_shapes:
+        print(
+            f"Feature group: {name}, Coefficient mean: {np.mean(np.abs(coefficients[:, range_start:range_end]))}"
+        )
+        coefficient_dict[name] = np.mean(np.abs(coefficients[:, range_start:range_end]))
+
+    # Extract coefficients for each feature group using sections_shapes
+    acoustic_features = coefficients[:, sections_shapes[0][0] : sections_shapes[0][1]]
     word_embedding_features = coefficients[
-        :, lld.shape[1] * 5 : lld.shape[1] * 5 + word_embedding_weights.shape[1]
+        :, sections_shapes[1][0] : sections_shapes[1][1]
     ]
-    phone_embedding_features = coefficients[
-        :,
-        lld.shape[1] * 5 + word_embedding_weights.shape[1] : lld.shape[1] * 5
-        + word_embedding_weights.shape[1]
-        + phone_embedding_weights.shape[1],
+    syntax_features = coefficients[:, sections_shapes[2][0] : sections_shapes[2][1]]
+    ppgs_features = coefficients[:, sections_shapes[3][0] : sections_shapes[3][1]]
+    spk_embedding_features = coefficients[
+        :, sections_shapes[4][0] : sections_shapes[4][1]
     ]
-    metadata_features = coefficients[
-        :,
-        lld.shape[1] * 5
-        + word_embedding_weights.shape[1]
-        + phone_embedding_weights.shape[1] : -8,
-    ]
-    syntax_features = coefficients[:, -8:]
+    metadata_features = coefficients[:, sections_shapes[5][0] : sections_shapes[5][1]]
     # Sum the coefficients for each feature group
     acoustic_features = np.mean(acoustic_features, axis=1)
     word_embedding_features = np.mean(word_embedding_features, axis=1)
-    phone_embedding_features = np.mean(phone_embedding_features, axis=1)
+    # phone_embedding_features = np.mean(phone_embedding_features, axis=1)
     metadata_features = np.mean(metadata_features, axis=1)
     syntax_features = np.mean(syntax_features, axis=1)
 
@@ -558,7 +544,7 @@ def plot_coefficients(coefficients):
         (
             acoustic_features,
             word_embedding_features,
-            phone_embedding_features,
+            # phone_embedding_features,
             metadata_features,
             syntax_features,
         ),

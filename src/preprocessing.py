@@ -319,8 +319,8 @@ def extract_special_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray
             audio_tensor, sample_rate=ppgs.SAMPLE_RATE, gpu=0
         )
 
-        words = example["sent"].split(" ")  # type: ignore
-        fasttext_embeddings = [ft.get_word_vector(word) for word in words]
+        tokens = example["tokens"]  # type: ignore
+        fasttext_embeddings = [ft.get_word_vector(token) for token in tokens]
 
         with torch.no_grad():
             spk_embs = spk_embd_model(
@@ -436,10 +436,10 @@ def extract_text_representation(
 
     for example in tqdm(dataset):
         inputs = tokenizer(
-            example["sent"],
+            example["sent"],  # type: ignore
             return_tensors="pt",
             padding=True,
-            truncation=True,  # type: ignore
+            truncation=True,
         )
         fileid = example["fileID"]  # type: ignore
         inputs = {k: v.to(device) for k, v in inputs.items()}
@@ -619,6 +619,14 @@ def extract_all_features(librispeech_split="dev-clean"):
     transcription_ID = [x["fileid"] for x in transcriptions]
     difference = list(set(dataset_ID) - set(transcription_ID))
     dataset = dataset.filter(lambda x: x["fileID"] not in difference)
+
+    tokens_for_each_utt = [
+        {example["fileid"]: example["ort_alignment"]["text"].fillna("<pad>").tolist()}
+        for example in transcriptions
+    ]
+    assert transcription_ID == dataset["fileID"], "FileIDs do not match!"
+    # Add tokens for each utt to the dataset
+    dataset = dataset.add_column("tokens", tokens_for_each_utt)  # type: ignore
 
     # We then go on to extract the features
     probe_data_types = {

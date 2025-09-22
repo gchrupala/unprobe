@@ -16,15 +16,16 @@ import torch
 import yaml
 from datasets import Dataset
 from tqdm.auto import tqdm
-from transformers import (
-    Wav2Vec2FeatureExtractor,
-    Wav2Vec2Model,
-)
 
 # Get the hostname of the machine running the code
 hostname = os.uname().nodename
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
+device = (
+    torch.accelerator.current_accelerator()
+    if torch.accelerator.is_available()
+    else torch.device("cpu")
+)
 
 if "snellius" in hostname:
     # If running on Snellius, use the Snellius dataset root
@@ -52,11 +53,6 @@ with open(f"{PROJECT_ROOT}/src/penn_treebank_labels.yml", "r") as f:
     benepar_labels["<unk>"] = "UNK"  # Add an unknown label
     benepar_labels["<pad>"] = "PAD"  # Add a padding label
     benepar_labels_dict = {label: i for i, label in enumerate(benepar_labels.keys())}
-
-# Load fasttext model for word embeddings
-fasttext.util.download_model("en", if_exists="ignore")  # English
-ft = fasttext.load_model("cc.en.300.bin")
-fasttext.util.reduce_model(ft, 100)  # Reduce to 100 dimensions
 
 
 def save_librispeech_tg_to_single_file(
@@ -159,7 +155,6 @@ def process_fileid(fileid, ort_alignment, phone_alignment):
             if phone == "sil" or phone == "sp" or phone == "" or phone == "<p:>":
                 continue
             utt_phones.append(phone)
-    # syntax_feats = syntax_parsing(utt_words)
     return {
         "fileid": fileid,
         "phones": utt_phones,
@@ -171,12 +166,12 @@ def process_fileid(fileid, ort_alignment, phone_alignment):
         "ort_alignment": ort_alignment[(ort_alignment.fileID == fileid)].reset_index(
             drop=True
         ),
-        # "textgrid": tg,
-        # "syntax_feats": syntax_feats,
     }
 
 
-def load_librispeech_tg(librispeech_split="dev-clean", transcription_savefile=None):
+def load_librispeech_MAUS_alignment(
+    librispeech_split="dev-clean", transcription_savefile=None
+):
     """
     phone_alignment = "_MAU_alignment"
     word_alignment = "_ORT-MAU_alignment"
@@ -296,83 +291,87 @@ def extract_opensmile_features(
         return opensmile_features.reset_index()
 
 
-def extract_spacy_features(dataset, spacy_modelname="en_core_web_sm", **kwargs):
-    """Extracting spacy features from text"""
-    nlp = spacy.load(spacy_modelname)
-    text = dataset["sent"]
-    spacy_features = []
-    for sentence in tqdm(text):
-        doc = nlp(sentence)
-        spacy_features.append(doc.vector)
-    return np.vstack(spacy_features)
-
-
-def extract_ppgs_features(dataset, **kwargs):
+def extract_special_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]:
     import ppgs
+    import umap.umap_ as umap
     from datasets import Audio
+    from pyannote.audio import Model
 
+    spk_embd_model = Model.from_pretrained("pyannote/embedding")
+    spk_embd_model.to(device)
     # Cast the audio column to the right sampling rate
     print(f"Recasting audio sampling rate: {ppgs.SAMPLE_RATE}")
     dataset = dataset.cast_column("audio", Audio(sampling_rate=ppgs.SAMPLE_RATE))
     print("Audio column recasted to correct sampling rate.")
 
-    """Extracting ppgs features from audio file"""
-    all_ppgs_features = []
+    # Load fasttext model for word embeddings
+    fasttext.util.download_model("en", if_exists="ignore")  # English
+    ft = fasttext.load_model("cc.en.300.bin")
+    fasttext.util.reduce_model(ft, 100)  # Reduce to 100 dimensions
+
+    print("""Extracting ppgs features, speaker embedding from audio file""")
+    special_features = {}
+
     for example in tqdm(dataset):
-        audio_tensor = torch.from_numpy(example["audio"]["array"]).unsqueeze(0)
+        fileid = example["fileID"]  # type: ignore
+        audio_tensor = torch.from_numpy(example["audio"]["array"]).unsqueeze(0)  # type: ignore
         ppgs_features = ppgs.from_audio(
             audio_tensor, sample_rate=ppgs.SAMPLE_RATE, gpu=0
         )
 
-        all_ppgs_features.append(ppgs_features.cpu().squeeze().numpy())
+        words = example["sent"].split(" ")  # type: ignore
+        fasttext_embeddings = [ft.get_word_vector(word) for word in words]
 
+        with torch.no_grad():
+            spk_embs = spk_embd_model(
+                audio_tensor.to(device=device, dtype=torch.float32)
+            )
 
-def extract_spk_embs(dataset, **kwargs):
-    # Load speaker embedding model from pyannote
-    from datasets import Audio
-    from pyannote.audio import Model
+        special_features[fileid] = {
+            "ppgs": ppgs_features.cpu().squeeze().numpy(),
+            "spk_emb": spk_embs.cpu().squeeze().numpy(),
+            "fasttext": fasttext_embeddings,
+        }
+    spk_emb_array = np.array(
+        [special_features[key]["spk_emb"] for key in special_features]
+    )  # shape (n_speakers, emb_dim)
+    keys = list(special_features.keys())
 
-    # Cast the audio column to the right sampling rate
-    print("Recasting audio sampling rate: 16kHz")
-    dataset = dataset.cast_column("audio", Audio(sampling_rate=16000))
-    print("Audio column recasted to correct sampling rate.")
+    # Use UMAP to reduce speaker embedding to 100 dimensions
+    reducer = umap.UMAP(n_components=100, random_state=42)
+    reduced = reducer.fit_transform(spk_emb_array)
 
-    device = (
-        torch.accelerator.current_accelerator()
-        if torch.accelerator.is_available()
-        else torch.device("cpu")
-    )
-    spk_embd_model = Model.from_pretrained("pyannote/embedding")
-    spk_embd_model.to(device)
+    # Save the reduced speaker embeddings back to the dictionary
+    for i, key in enumerate(keys):
+        special_features[key]["spk_emb"] = reduced[i]
 
-    all_spk_embs = []
-    for example in tqdm(dataset):
-        audio_tensor = torch.from_numpy(example["audio"]["array"]).unsqueeze(0)
-        spk_embs = spk_embd_model(audio_tensor.to(device=device, dtype=torch.float32))
-
-        all_spk_embs.append(spk_embs.cpu().squeeze().numpy())
-
-    return all_spk_embs
+    return special_features
 
 
 def extract_audio_representation(
-    dataset, model, feature_extractor, device="cuda", **kwargs
-) -> np.ndarray:
+    dataset: Dataset,
+    modelname: str = "facebook/wav2vec2-base",
+    device=torch.device("cuda"),
+    **kwargs,
+) -> dict[str, np.ndarray]:
     """Extracting audio representation from audio file
 
     Args:
         dataset (datasets.Dataset): dataset containing audio
-        model (transformers.Wav2Vec2Model): model to extract audio representation
-        feature_extractor (transformers.Wav2Vec2FeatureExtractor): feature extractor to process audio file
+        modelname (str, optional): model name to use. Defaults to "facebook/wav2vec2-base".
         device (str, optional): device to run the model on. Defaults to "cuda".
 
     Returns:
         pd.DataFrame: DataFrame containing audio representation
     """
-    model.to(device)
-    model.eval()
-
     from datasets import Audio
+    from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2Model
+
+    feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(modelname)
+    model = Wav2Vec2Model.from_pretrained(modelname)
+
+    model.to(device)  # type: ignore
+    model.eval()
 
     # Cast the audio column to the right sampling rate
     print(f"Recasting audio sampling rate: {feature_extractor.sampling_rate}")
@@ -381,91 +380,87 @@ def extract_audio_representation(
     )
     print("Audio column recasted to correct sampling rate.")
 
-    audio_representations = []
-    for audio_file in tqdm(dataset["audio"]):
-        # waveform, sample_rate = torchaudio.load(audio_file)
-        waveform = audio_file["array"]
-        # sample_rate = audio_file["sampling_rate"]
+    audio_representations = {}
+    for example in tqdm(dataset):
+        waveform = example["audio"]["array"]  # type: ignore
+        fileID = example["fileID"]  # type: ignore
         waveform = waveform.squeeze()
-        # # resample waveform
-        # if sample_rate != feature_extractor.sampling_rate:
-        #     waveform = torchaudio.transforms.Resample(
-        #         orig_freq=sample_rate, new_freq=feature_extractor.sampling_rate
-        #     )(waveform)
         inputs = feature_extractor(
             waveform, sampling_rate=feature_extractor.sampling_rate, return_tensors="pt"
         )
         inputs = {k: v.to(device) for k, v in inputs.items()}
         with torch.no_grad():
             outputs = model(**inputs, output_hidden_states=True)
-            # # output shape need to be (batch_size, seq_len, hidden_size)
-            # # Mean pool the last hidden states on the seq_len dimension
-            # # Then convert to numpy
-            # audio_representations.append(
-            #     outputs.last_hidden_state.mean(dim=1).cpu().squeeze().numpy()
-            # )
+            # output shape need to be (batch_size, seq_len, hidden_size)
             # Save all hidden states and preserve seq_len dimension with shape (batch_size, layer, seq_len, hidden_size)
             hidden_states = outputs.hidden_states
             hidden_states = torch.stack(hidden_states, dim=0)
-            if kwargs.get("time_aggregation", "mean").lower() == "mean":
+            if kwargs.get("seq_aggregation", "mean").lower() == "mean":
                 # Take the mean over the seq_len dimension
                 hidden_states = hidden_states.mean(dim=2)
-            elif kwargs.get("time_aggregation", "mean").lower() == "none":
+            elif kwargs.get("seq_aggregation", "mean").lower() == "none":
                 pass
             else:
                 raise ValueError(
-                    f"Unknown time_aggregation method: {kwargs.get('time_aggregation', 'mean')}"
+                    f"Unknown seq_aggregation method: {kwargs.get('seq_aggregation', 'mean')}"
                 )
 
-            # Append everything to the list
-            audio_representations.append(hidden_states.cpu().squeeze().numpy())
-    try:
-        # Stack the audio representations into a numpy array
-        audio_representations = np.stack(audio_representations)
-    except ValueError:
-        # If the audio representations have different shapes, return a list of numpy arrays
-        print(
-            "Audio representations have different shapes, returning a list of numpy arrays"
-        )
+            # Store the hidden states in a dictionary with the fileID as key
+            audio_representations[fileID] = hidden_states.cpu().squeeze().numpy()
+
     return audio_representations
-    # Return a list of numpy arrays of audio representations
-    # return audio_representations
 
 
 def extract_text_representation(
-    dataset, model, tokenizer, device="cuda", **kwargs
-) -> list:
+    dataset: Dataset,
+    modelname: str = "answerdotai/ModernBERT-base",
+    device=torch.device("cuda"),
+    **kwargs,
+) -> dict[str, np.ndarray]:
     """Extracting text representation from text
 
     Args:
         dataset (datasets.Dataset): dataset containing text
-        model (TextModel): model to extract text representation
-        tokenizer (Tokenizer): tokenizer to process text
+        modelname (str, optional): model name to use. Defaults to "answerdotai/ModernBERT-base".
         device (str, optional): device to run the model on. Defaults to "cuda".
     """
+    from transformers import AutoModel, AutoTokenizer
+
+    model = AutoModel.from_pretrained(modelname, reference_compile=False)
+    tokenizer = AutoTokenizer.from_pretrained(modelname)
+
     model.to(device)
     model.eval()
 
-    text_representations = []
+    text_representations = {}
 
-    for sentence in tqdm(dataset["sent"]):
-        inputs = tokenizer(sentence, return_tensors="pt", padding=True, truncation=True)
+    for example in tqdm(dataset):
+        inputs = tokenizer(
+            example["sent"],
+            return_tensors="pt",
+            padding=True,
+            truncation=True,  # type: ignore
+        )
+        fileid = example["fileID"]  # type: ignore
         inputs = {k: v.to(device) for k, v in inputs.items()}
         with torch.no_grad():
             outputs = model(**inputs, output_hidden_states=True)
-            # # output shape need to be (batch_size, seq_len, hidden_size)
-            # # Take the [CLS] token representation
-            # # Then convert to numpy
-            # text_representations.append(
-            #     outputs.last_hidden_state[:, 0, :].cpu().squeeze().numpy()
-            # )
+            # output shape need to be (batch_size, seq_len, hidden_size)
             # Save all hidden states and preserve seq_len dimension with shape (batch_size, layer, seq_len, hidden_size)
             hidden_states = outputs.hidden_states
             hidden_states = torch.stack(hidden_states, dim=1)
-            # Append everything to the list
-            text_representations.append(hidden_states.cpu().squeeze().numpy())
-    # return np.vstack(text_representations)
-    # Return a list of numpy arrays of text representations
+            if kwargs.get("seq_aggregation", "mean").lower() == "mean":
+                # Take the mean over the seq_len dimension
+                hidden_states = hidden_states.mean(dim=2)
+            elif kwargs.get("seq_aggregation", "mean").lower() == "none":
+                pass
+            else:
+                raise ValueError(
+                    f"Unknown seq_aggregation method: {kwargs.get('seq_aggregation', 'mean')}"
+                )
+
+            # Store the hidden states in a dictionary with the fileID as key
+            text_representations[fileid] = hidden_states.cpu().squeeze().numpy()
     return text_representations
 
 
@@ -520,7 +515,7 @@ def transcription_to_string_embeddings(
     return utterance_embeddings
 
 
-def syntax_parsing(utt_words):
+def syntax_parsing(utt_words: list[str]) -> np.ndarray:
     """We aim to construct a syntactic feature extractor that functions similar to the openSMILE acoustic feature extractor. Using the textgrid information, we can extract the syntactic features of each token in the utterance and save the syntactic features in a similar way to the openSMILE acoustic feature extractor.
 
     We aim to have the following features for each token:
@@ -595,7 +590,7 @@ def syntax_parsing(utt_words):
 
 
 def extract_all_features(librispeech_split="dev-clean"):
-    """_summary_
+    """Extracting all features from the librispeech dataset and save them to disk.
 
     Args:
         librispeech_split (str, optional): _description_. Defaults to "dev-clean".
@@ -615,58 +610,8 @@ def extract_all_features(librispeech_split="dev-clean"):
             transcriptions = pickle.load(f)
     else:
         print("Transcriptions do not exist, extracting...")
-        transcriptions = load_librispeech_tg(librispeech_split, transcription_savefile)
-
-    # Extracting string embeddings
-    word_embedding_path = (
-        f"{savepath}/librispeech-{librispeech_split}_words_embeddings.pickle"
-    )
-    phone_embedding_path = (
-        f"{savepath}/librispeech-{librispeech_split}_phones_embeddings.pickle"
-    )
-    word_embedding_weights_path = (
-        f"{savepath}/librispeech-{librispeech_split}_words_embedding_weights.pickle"
-    )
-    phone_embedding_weights_path = (
-        f"{savepath}/librispeech-{librispeech_split}_phones_embedding_weights.pickle"
-    )
-    word_embedding_dict_path = (
-        f"{savepath}/librispeech-{librispeech_split}_words_embedding_dict.pickle"
-    )
-    phone_embedding_dict_path = (
-        f"{savepath}/librispeech-{librispeech_split}_phones_embedding_dict.pickle"
-    )
-
-    embedding_paths = [
-        word_embedding_path,
-        phone_embedding_path,
-        word_embedding_weights_path,
-        phone_embedding_weights_path,
-        word_embedding_dict_path,
-        phone_embedding_dict_path,
-    ]
-
-    # Check if the embeddings already exist
-    if all(os.path.exists(path) for path in embedding_paths) and not args.overwrite:
-        print("String embeddings already exist, skipping...")
-    else:
-        print("String embeddings do not exist, extracting...")
-        # Extracting string embeddings
-        word_string_embeddings = transcription_to_string_embeddings(
-            transcriptions=transcriptions,
-            embedding_size=100,
-            level="words",
-            emb_savepath=word_embedding_path,
-            emb_weights_savepath=word_embedding_weights_path,
-            emb_dict_savepath=word_embedding_dict_path,
-        )
-        phone_string_embeddings = transcription_to_string_embeddings(
-            transcriptions=transcriptions,
-            embedding_size=100,
-            level="phones",
-            emb_savepath=phone_embedding_path,
-            emb_weights_savepath=phone_embedding_weights_path,
-            emb_dict_savepath=phone_embedding_dict_path,
+        transcriptions = load_librispeech_MAUS_alignment(
+            librispeech_split, transcription_savefile
         )
 
     # Remove fileid without alignment
@@ -691,38 +636,35 @@ def extract_all_features(librispeech_split="dev-clean"):
             "feature_level": "lld",
             "feature_set": "eGeMAPSv02",
         },
-        "audio_representation": {
+        "PT_audio_representation": {
             "function": extract_audio_representation,
-            "save_dir": f"{savepath}/librispeech-{librispeech_split}_audio_representation_full.pickle",
+            "save_dir": f"{savepath}/librispeech-{librispeech_split}_wav2vec2-base_representation_full.pickle",
             "overwrite": args.overwrite,
-            "device": "cuda",
-            "model": Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base"),
-            "feature_extractor": Wav2Vec2FeatureExtractor.from_pretrained(
-                "facebook/wav2vec2-base"
-            ),
-            "time_aggregation": "none",
+            "device": device,
+            "modelname": "facebook/wav2vec2-base",
+            "seq_aggregation": "none",
         },
-        "audio_representation_mean": {
+        "FT_audio_representation": {
             "function": extract_audio_representation,
-            "save_dir": f"{savepath}/librispeech-{librispeech_split}_audio_representation.pickle",
+            "save_dir": f"{savepath}/librispeech-{librispeech_split}_wav2vec2-base-960h_representation_full.pickle",
             "overwrite": args.overwrite,
-            "device": "cuda",
-            "model": Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base"),
-            "feature_extractor": Wav2Vec2FeatureExtractor.from_pretrained(
-                "facebook/wav2vec2-base"
-            ),
-            "time_aggregation": "mean",
+            "device": device,
+            "modelname": "facebook/wav2vec2-base-960h",
+            "seq_aggregation": "none",
         },
-        # "text_representation": {
-        #     "function": extract_text_representation,
-        #     "save_dir": f"{savepath}/librispeech-{librispeech_split}_text_representation.pickle",
-        #     "overwrite": False,
-        #     "device": "cuda",
-        #     "model": AutoModel.from_pretrained(
-        #         "answerdotai/ModernBERT-base", reference_compile=False
-        #     ),
-        #     "tokenizer": AutoTokenizer.from_pretrained("answerdotai/ModernBERT-base"),
-        # },
+        "text_representation": {
+            "function": extract_text_representation,
+            "save_dir": f"{savepath}/librispeech-{librispeech_split}_ModernBERT-base_representation_full.pickle",
+            "overwrite": False,
+            "device": device,
+            "modelname": "answerdotai/ModernBERT-base",
+            "seq_aggregation": "none",
+        },
+        "special_features": {
+            "function": extract_special_features,
+            "save_dir": f"{savepath}/librispeech-{librispeech_split}_special_features.pickle",
+            "overwrite": True,
+        },
     }
 
     for probe_data_type in tqdm(probe_data_types):

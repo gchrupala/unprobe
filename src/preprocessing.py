@@ -1,7 +1,9 @@
 import argparse
 import glob
+import logging
 import os
 import pickle
+import sys
 
 import benepar
 import fasttext
@@ -16,6 +18,17 @@ import torch
 import yaml
 from datasets import Dataset
 from tqdm.auto import tqdm
+
+# Set up logger with time, name, level, and message
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] - %(name)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    # We want the logging info to be saved to stdout not stderr
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger(__name__)
+
 
 # Get the hostname of the machine running the code
 hostname = os.uname().nodename
@@ -198,10 +211,10 @@ def load_librispeech_MAUS_alignment(
 
     with Pool() as pool:
         transcriptions = pool.map(
-            process_func, tqdm(unique_fileids, desc="Processing fileids")
+            process_func, tqdm(unique_fileids, desc="Processing fileids", leave=False)
         )
 
-    for file in tqdm(transcriptions):
+    for file in tqdm(transcriptions, desc="Extracting syntax features", leave=False):
         file["syntax_feats"] = syntax_parsing(file["words"])
 
     if transcription_savefile is None:
@@ -300,19 +313,23 @@ def extract_special_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray
     spk_embd_model = Model.from_pretrained("pyannote/embedding")
     spk_embd_model.to(device)
     # Cast the audio column to the right sampling rate
-    print(f"Recasting audio sampling rate: {ppgs.SAMPLE_RATE}")
+    logger.info(f"Recasting audio sampling rate: {ppgs.SAMPLE_RATE}")
     dataset = dataset.cast_column("audio", Audio(sampling_rate=ppgs.SAMPLE_RATE))
-    print("Audio column recasted to correct sampling rate.")
+    logger.info("Audio column recasted to correct sampling rate.")
 
     # Load fasttext model for word embeddings
     fasttext.util.download_model("en", if_exists="ignore")  # English
     ft = fasttext.load_model("cc.en.300.bin")
     fasttext.util.reduce_model(ft, 100)  # Reduce to 100 dimensions
 
-    print("""Extracting ppgs features, speaker embedding from audio file""")
+    logger.info("""Extracting ppgs features, speaker embedding from audio file""")
     special_features = {}
 
-    for example in tqdm(dataset):
+    for example in tqdm(
+        dataset,
+        desc="Extracting special features (ppgs, spk_emb, fasttext)",
+        leave=False,
+    ):
         fileid = example["fileID"]  # type: ignore
         audio_tensor = torch.from_numpy(example["audio"]["array"]).unsqueeze(0)  # type: ignore
         ppgs_features = ppgs.from_audio(
@@ -338,12 +355,13 @@ def extract_special_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray
     keys = list(special_features.keys())
 
     # Use UMAP to reduce speaker embedding to 100 dimensions
+    logger.info("Reducing speaker embedding to 100 dimensions using UMAP")
     reducer = umap.UMAP(n_components=100, random_state=42)
     reduced = reducer.fit_transform(spk_emb_array)
 
     # Save the reduced speaker embeddings back to the dictionary
     for i, key in enumerate(keys):
-        special_features[key]["spk_emb"] = reduced[i]
+        special_features[key]["spk_emb"] = reduced[i]  # type: ignore
 
     return special_features
 
@@ -374,14 +392,16 @@ def extract_audio_representation(
     model.eval()
 
     # Cast the audio column to the right sampling rate
-    print(f"Recasting audio sampling rate: {feature_extractor.sampling_rate}")
+    logger.info(f"Recasting audio sampling rate: {feature_extractor.sampling_rate}")
     dataset = dataset.cast_column(
         "audio", Audio(sampling_rate=feature_extractor.sampling_rate)
     )
-    print("Audio column recasted to correct sampling rate.")
+    logger.info("Audio column recasted to correct sampling rate.")
 
     audio_representations = {}
-    for example in tqdm(dataset):
+    for example in tqdm(
+        dataset, desc=f"Extracting audio representations with {modelname}", leave=False
+    ):
         waveform = example["audio"]["array"]  # type: ignore
         fileID = example["fileID"]  # type: ignore
         waveform = waveform.squeeze()
@@ -434,7 +454,9 @@ def extract_text_representation(
 
     text_representations = {}
 
-    for example in tqdm(dataset):
+    for example in tqdm(
+        dataset, desc=f"Extracting text representations with {modelname}", leave=False
+    ):
         inputs = tokenizer(
             example["sent"],  # type: ignore
             return_tensors="pt",
@@ -605,11 +627,11 @@ def extract_all_features(librispeech_split="dev-clean"):
         f"{savepath}/librispeech-{librispeech_split}_transcriptions.pickle"
     )
     if os.path.exists(transcription_savefile) and not args.overwrite:
-        print("Transcriptions already exist, loading from file...")
+        logger.info("Transcriptions already exist, loading from file...")
         with open(transcription_savefile, "rb") as f:
             transcriptions = pickle.load(f)
     else:
-        print("Transcriptions do not exist, extracting...")
+        logger.info("Transcriptions do not exist, extracting...")
         transcriptions = load_librispeech_MAUS_alignment(
             librispeech_split, transcription_savefile
         )
@@ -652,6 +674,14 @@ def extract_all_features(librispeech_split="dev-clean"):
             "modelname": "facebook/wav2vec2-base",
             "seq_aggregation": "none",
         },
+        "PT_large_audio_representation": {
+            "function": extract_audio_representation,
+            "save_dir": f"{savepath}/librispeech-{librispeech_split}_wav2vec2-large_representation_full.pickle",
+            "overwrite": args.overwrite,
+            "device": device,
+            "modelname": "facebook/wav2vec2-large",
+            "seq_aggregation": "none",
+        },
         "FT_audio_representation": {
             "function": extract_audio_representation,
             "save_dir": f"{savepath}/librispeech-{librispeech_split}_wav2vec2-base-960h_representation_full.pickle",
@@ -675,7 +705,7 @@ def extract_all_features(librispeech_split="dev-clean"):
         },
     }
 
-    for probe_data_type in tqdm(probe_data_types):
+    for probe_data_type in tqdm(probe_data_types, desc="Running feature extraction:"):
         tqdm.write(f"Extracting {probe_data_type} features...")
         feature = probe_data_types[probe_data_type]
         if not os.path.exists(feature["save_dir"]) or feature["overwrite"]:
@@ -688,8 +718,8 @@ def extract_all_features(librispeech_split="dev-clean"):
                 with open(feature["save_dir"], "wb") as f:
                     pickle.dump(extracted_feature, f)
         else:
-            print(f"{feature['save_dir']} already exists, skipping...")
-    print("All features extracted!")
+            logger.info(f"{feature['save_dir']} already exists, skipping...")
+    logger.info("All features extracted!")
 
 
 if __name__ == "__main__":

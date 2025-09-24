@@ -1,6 +1,8 @@
 import argparse
+import logging
 import os
 import pickle
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,6 +12,18 @@ import torch
 from sklearn.linear_model import Ridge
 from sklearn.model_selection import GridSearchCV, train_test_split
 from tqdm.auto import tqdm, trange
+
+# Set up logger with time, name, level, and message
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] - %(name)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    # We want the logging info to be saved to stdout not stderr
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+
+logger = logging.getLogger(__name__)
+
 
 # Get the hostname of the machine running the code
 hostname = os.uname().nodename
@@ -307,7 +321,7 @@ def run_probe(
 ) -> list[dict]:
     results = []
     for layer in trange(processed_y.shape[1], desc="Layers"):
-        print(f"Layer {layer}")
+        logger.info(f"Probing with {probe_name} on DNN model layer {layer}")
         regressor, param_grid = pick_probe(probe_name)
         GS = GridSearchCV(
             estimator=regressor,
@@ -608,7 +622,7 @@ if __name__ == "__main__":
         "--modelname",
         type=str,
         default="facebook/wav2vec2-base",
-        help="The name of the model to use.",
+        help="The name of the model to use. Choose from 'facebook/wav2vec2-base', 'facebook/wav2vec2-large-960h', 'answerdotai/ModernBERT-base'",
     )
     parser.add_argument(
         "--probe_name",
@@ -621,23 +635,23 @@ if __name__ == "__main__":
     modelname = args.modelname
     probe_name = args.probe_name
 
-    print(f"Using LibriSpeech split: {librispeech_split}")
-    print(f"Using model: {modelname}")
-    print(f"Using probe: {probe_name}")
-    print("-" * 30)
+    logger.info(f"Using LibriSpeech split: {librispeech_split}")
+    logger.info(f"Using model: {modelname}")
+    logger.info(f"Using probe: {probe_name}")
+    logger.info("-" * 30)
 
-    print("Formatting data for probe...")
+    logger.info("Formatting data for probe...")
     processed_X, processed_y = format_data_for_probe(
         librispeech_split=librispeech_split, modelname=modelname
     )
 
-    print("Running probe...")
+    logger.info("Running probe...")
     results = run_probe(
         processed_X=processed_X,
         processed_y=processed_y,
         probe_name=probe_name,
     )
-    print("Saving and visualizing results...")
+    logger.info("Saving and visualizing results...")
     save_results(
         results=results,
         librispeech_split=librispeech_split,

@@ -69,7 +69,8 @@ with open(f"{PROJECT_ROOT}/src/penn_treebank_labels.yml", "r") as f:
 
 
 def save_librispeech_tg_to_single_file(
-    librispeech_split="dev-clean", alignment_single_file_savepath=f"{PROJECT_ROOT}/data"
+    librispeech_split: str = "dev-clean",
+    alignment_single_file_savepath: str = f"{PROJECT_ROOT}/data",
 ):
     """
     Extracting the textgrid files from the Librispeech dataset and save them to a single file for each tier.
@@ -143,48 +144,9 @@ def save_librispeech_tg_to_single_file(
         )
 
 
-def process_fileid(fileid, ort_alignment, phone_alignment):
-    speakerid, chapter, utt = fileid.split("-")
-    utt_phones = []
-    utt_words = []
-
-    for i, word_row in ort_alignment[ort_alignment.fileID == fileid].iterrows():
-        # Skip empty words, silences, and
-        word = word_row["text"]
-        if (
-            word == "sil"
-            or word == ""
-            or word == "sp"
-            or word == "<unk>"
-            or str(word).lower() == "nan"
-        ):
-            continue
-        utt_words.append(word)
-        for phone in phone_alignment[
-            (phone_alignment.fileID == fileid)
-            & (word_row.start <= phone_alignment.start)
-            & (phone_alignment.start <= word_row.end)
-        ]["text"]:
-            if phone == "sil" or phone == "sp" or phone == "" or phone == "<p:>":
-                continue
-            utt_phones.append(phone)
-    return {
-        "fileid": fileid,
-        "phones": utt_phones,
-        "words": utt_words,
-        "non_acoustic": [int(speakerid), int(chapter)],
-        "phone_alignment": phone_alignment[
-            (phone_alignment.fileID == fileid)
-        ].reset_index(drop=True),
-        "ort_alignment": ort_alignment[(ort_alignment.fileID == fileid)].reset_index(
-            drop=True
-        ),
-    }
-
-
 def load_librispeech_MAUS_alignment(
-    librispeech_split="dev-clean", transcription_savefile=None
-):
+    librispeech_split: str = "dev-clean", transcription_savefile: str = None
+) -> list[dict]:
     """
     phone_alignment = "_MAU_alignment"
     word_alignment = "_ORT-MAU_alignment"
@@ -198,24 +160,30 @@ def load_librispeech_MAUS_alignment(
         sep="\t",
     )
 
-    unique_fileids = ort_alignment["fileID"].unique().tolist()
-
-    # Use multiprocessing to speed up the processing of fileids
-    from functools import partial
-    from multiprocessing import Pool
-
-    # Create a partial function with fixed arguments
-    process_func = partial(
-        process_fileid, ort_alignment=ort_alignment, phone_alignment=phone_alignment
+    # Use groupby to get list of lists of phones/words for each fileID
+    words_df = ort_alignment.dropna().groupby("fileID")["text"].agg(list).reset_index()
+    phones_df = (
+        phone_alignment.dropna().groupby("fileID")["text"].agg(list).reset_index()
     )
+    # Rename the columns
+    words_df.columns = ["fileID", "words"]
+    phones_df.columns = ["fileID", "phones"]
+    # Join the two dataframes on fileID
+    transcriptions_df = words_df.merge(phones_df, on="fileID", how="inner")
 
-    with Pool() as pool:
-        transcriptions = pool.map(
-            process_func, tqdm(unique_fileids, desc="Processing fileids", leave=False)
-        )
+    # Turn the dataframe into a list of dictionaries
+    transcriptions = transcriptions_df.to_dict(orient="records")
 
-    for file in tqdm(transcriptions, desc="Extracting syntax features", leave=False):
-        file["syntax_feats"] = syntax_parsing(file["words"])
+    for example in tqdm(transcriptions, desc="Extracting syntax features", leave=False):
+        example["syntax_feats"] = syntax_parsing(example["words"])
+        speakerid, chapter, utt = example["fileID"].split("-")
+        example["non_acoustic"] = np.array([int(speakerid), int(chapter)])
+        example["ort_alignment"] = ort_alignment[
+            (ort_alignment.fileID == example["fileID"])
+        ].reset_index(drop=True)
+        example["phone_alignment"] = phone_alignment[
+            (phone_alignment.fileID == example["fileID"])
+        ].reset_index(drop=True)
 
     if transcription_savefile is None:
         return transcriptions
@@ -225,7 +193,7 @@ def load_librispeech_MAUS_alignment(
         return transcriptions
 
 
-def load_librispeech(split="dev-clean"):
+def load_librispeech(split: str = "dev-clean") -> Dataset:
     """Loading Librispeech dataset into Huggingface Dataset format
 
     Args:
@@ -268,7 +236,7 @@ def load_librispeech(split="dev-clean"):
 
 
 def extract_opensmile_features(
-    dataset, feature_set="eGeMAPSv02", **kwargs
+    dataset: Dataset, feature_set: str = "eGeMAPSv02", **kwargs
 ) -> pd.DataFrame:
     """Extracting opensmile features from audio file
 
@@ -324,6 +292,7 @@ def extract_special_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray
 
     logger.info("""Extracting ppgs features, speaker embedding from audio file""")
     special_features = {}
+    spk_embs_original = []
 
     for example in tqdm(
         dataset,
@@ -346,12 +315,12 @@ def extract_special_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray
 
         special_features[fileid] = {
             "ppgs": ppgs_features.cpu().squeeze().numpy(),
-            "spk_emb": spk_embs.cpu().squeeze().numpy(),
+            # "spk_emb": spk_embs.cpu().squeeze().numpy(),
             "fasttext": fasttext_embeddings,
         }
-    spk_emb_array = np.array(
-        [special_features[key]["spk_emb"] for key in special_features]
-    )  # shape (n_speakers, emb_dim)
+        spk_embs_original.append(spk_embs.cpu().squeeze().numpy())
+    spk_emb_array = np.array(spk_embs_original)  # shape (n_speakers, emb_dim)
+
     keys = list(special_features.keys())
 
     # Use UMAP to reduce speaker embedding to 100 dimensions
@@ -359,7 +328,7 @@ def extract_special_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray
     reducer = umap.UMAP(n_components=100, random_state=42)
     reduced = reducer.fit_transform(spk_emb_array)
 
-    # Save the reduced speaker embeddings back to the dictionary
+    # Save the reduced speaker embeddings to the dictionary
     for i, key in enumerate(keys):
         special_features[key]["spk_emb"] = reduced[i]  # type: ignore
 
@@ -646,15 +615,15 @@ def extract_features(
             librispeech_split, transcription_savefile
         )
 
-    # Remove fileid without alignment
+    # Remove fileID without alignment
     dataset_ID = dataset["fileID"]
-    transcription_ID = [x["fileid"] for x in transcriptions]
+    transcription_ID = [x["fileID"] for x in transcriptions]
     difference = list(set(dataset_ID) - set(transcription_ID))
     dataset = dataset.filter(lambda x: x["fileID"] not in difference)
 
     tokens_for_each_utt = [
-        {example["fileid"]: example["ort_alignment"]["text"].fillna("<pad>").tolist()}
-        for example in transcriptions
+        {example["fileID"]: example["ort_alignment"]["text"].fillna("<pad>").tolist()}
+        for example in tqdm(transcriptions)
     ]
     assert transcription_ID == dataset["fileID"], "FileIDs do not match!"
     # Add tokens for each utt to the dataset

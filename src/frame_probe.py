@@ -355,6 +355,33 @@ def run_probe(
         }
         results.append(result)
 
+        # Add random baseline with shuffled x to predict y
+
+        regressor, param_grid = pick_probe(probe_name)
+        # We can skip the GridSearchCV here and just use the best_params from above
+        regressor.set_params(**GS.best_params_)
+        # Shuffle processed_X
+        shuffled_X = processed_X.copy()
+        np.random.shuffle(shuffled_X)
+        X_train_rand, X_test_rand, y_train_rand, y_test_rand = train_test_split(
+            shuffled_X, processed_y[:, layer, :], test_size=0.2, random_state=42
+        )
+        regressor.fit(X_train_rand, y_train_rand)
+        random_train_score = regressor.score(X_train_rand, y_train_rand)
+        random_test_score = regressor.score(X_test_rand, y_test_rand)
+        result = {
+            "layer": layer,
+            "train_score": random_train_score,
+            "test_score": random_test_score,
+            "best_params": GS.best_params_,
+            "best_score": GS.best_score_,
+            # "coefficients": GS.best_estimator_.coef_,
+            # "intercept": GS.best_estimator_.intercept_,
+            "manipulation_mode": "random_baseline",
+            "manipulated_feature_group": "none",
+        }
+        results.append(result)
+
         for range_start, range_end, name in tqdm(
             sections_shapes, desc="Feature Groups", leave=False
         ):
@@ -491,6 +518,8 @@ def visualize_results(
     def plot_results(df, manipulation_mode=None, y="test_score"):
         # Ignore the 'none' manipulation mode for the plot
         no_manip_df = df[df["manipulation_mode"] == "none"].copy()
+        random_baseline_df = df[df["manipulation_mode"] == "random_baseline"].copy()
+
         if manipulation_mode is not None:
             df = df[df["manipulation_mode"] == manipulation_mode].copy()
         # Put the manipulation mode under a facet grid
@@ -510,7 +539,16 @@ def visualize_results(
             y=y,
             color="black",
             linestyle="--",
-            label="Baseline (No Manip.)",
+            label="Full Feature Set",
+        )
+        # Add random baseline with a different color and linestyle based on the baseline
+        sns.lineplot(
+            data=random_baseline_df,
+            x="layer",
+            y=y,
+            color="red",
+            linestyle="--",
+            label="Random Baseline",
         )
         # Move legend to the side instead of on the figure
         plt.legend(title="Feature Group", bbox_to_anchor=(1.05, 1), loc=2)

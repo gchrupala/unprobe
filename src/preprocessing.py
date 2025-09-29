@@ -369,7 +369,7 @@ def extract_special_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray
 def extract_audio_representation(
     dataset: Dataset,
     modelname: str = "facebook/wav2vec2-base",
-    device=torch.device("cuda"),
+    device: torch.device = torch.device("cuda"),
     **kwargs,
 ) -> dict[str, np.ndarray]:
     """Extracting audio representation from audio file
@@ -383,12 +383,13 @@ def extract_audio_representation(
         pd.DataFrame: DataFrame containing audio representation
     """
     from datasets import Audio
-    from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2Model
+    from transformers import AutoFeatureExtractor, AutoModel
 
-    feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(modelname)
-    model = Wav2Vec2Model.from_pretrained(modelname)
+    feature_extractor = AutoFeatureExtractor.from_pretrained(modelname)
+    model = AutoModel.from_pretrained(modelname)
 
     model.to(device)  # type: ignore
+    logger.info(f"Using device: {device}")
     model.eval()
 
     # Cast the audio column to the right sampling rate
@@ -434,7 +435,7 @@ def extract_audio_representation(
 def extract_text_representation(
     dataset: Dataset,
     modelname: str = "answerdotai/ModernBERT-base",
-    device=torch.device("cuda"),
+    device: torch.device = torch.device("cuda"),
     **kwargs,
 ) -> dict[str, np.ndarray]:
     """Extracting text representation from text
@@ -450,6 +451,7 @@ def extract_text_representation(
     tokenizer = AutoTokenizer.from_pretrained(modelname)
 
     model.to(device)
+    logger.info(f"Using device: {device}")
     model.eval()
 
     text_representations = {}
@@ -471,14 +473,14 @@ def extract_text_representation(
             # Save all hidden states and preserve seq_len dimension with shape (batch_size, layer, seq_len, hidden_size)
             hidden_states = outputs.hidden_states
             hidden_states = torch.stack(hidden_states, dim=1)
-            if kwargs.get("seq_aggregation", "mean").lower() == "mean":
+            if kwargs.get("seq_aggregation", "none").lower() == "mean":
                 # Take the mean over the seq_len dimension
                 hidden_states = hidden_states.mean(dim=2)
-            elif kwargs.get("seq_aggregation", "mean").lower() == "none":
+            elif kwargs.get("seq_aggregation", "none").lower() == "none":
                 pass
             else:
                 raise ValueError(
-                    f"Unknown seq_aggregation method: {kwargs.get('seq_aggregation', 'mean')}"
+                    f"Unknown seq_aggregation method: {kwargs.get('seq_aggregation')}"
                 )
 
             # Store the hidden states in a dictionary with the fileID as key
@@ -611,11 +613,19 @@ def syntax_parsing(utt_words: list[str]) -> np.ndarray:
     return syntax_feats
 
 
-def extract_all_features(librispeech_split="dev-clean"):
+def extract_features(
+    librispeech_split: str = "dev-clean",
+    modelname: str = "facebook/wav2vec2-base",
+    overwrite: bool = False,
+):
     """Extracting all features from the librispeech dataset and save them to disk.
 
     Args:
         librispeech_split (str, optional): _description_. Defaults to "dev-clean".
+        modelname (str, optional): The name of the model to use. Defaults to "facebook/wav2vec2-base".
+        overwrite (bool, optional): Whether to overwrite existing features. Defaults to False.
+    Raises:
+        ValueError: If the librispeech_split or modelname is invalid.
     """
 
     savepath = SAVEPATH
@@ -626,7 +636,7 @@ def extract_all_features(librispeech_split="dev-clean"):
     transcription_savefile = (
         f"{savepath}/librispeech-{librispeech_split}_transcriptions.pickle"
     )
-    if os.path.exists(transcription_savefile) and not args.overwrite:
+    if os.path.exists(transcription_savefile) and not overwrite:
         logger.info("Transcriptions already exist, loading from file...")
         with open(transcription_savefile, "rb") as f:
             transcriptions = pickle.load(f)
@@ -651,64 +661,34 @@ def extract_all_features(librispeech_split="dev-clean"):
     dataset = dataset.add_column("tokens", tokens_for_each_utt)  # type: ignore
 
     # We then go on to extract the features
-    probe_data_types = {
+    basic_probe_inputs = {
         "opensmile_features": {
             "function": extract_opensmile_features,
             "save_dir": f"{savepath}/librispeech-{librispeech_split}_opensmile_features.pickle",
-            "overwrite": args.overwrite,
+            "overwrite": overwrite,
             "feature_level": "functionals",
             "feature_set": "eGeMAPSv02",
         },
         "opensmile_features_lld": {
             "function": extract_opensmile_features,
             "save_dir": f"{savepath}/librispeech-{librispeech_split}_opensmile_features_lld.pickle",
-            "overwrite": args.overwrite,
+            "overwrite": overwrite,
             "feature_level": "lld",
             "feature_set": "eGeMAPSv02",
-        },
-        "PT_audio_representation": {
-            "function": extract_audio_representation,
-            "save_dir": f"{savepath}/librispeech-{librispeech_split}_wav2vec2-base_representation_full.pickle",
-            "overwrite": args.overwrite,
-            "device": device,
-            "modelname": "facebook/wav2vec2-base",
-            "seq_aggregation": "none",
-        },
-        "PT_large_audio_representation": {
-            "function": extract_audio_representation,
-            "save_dir": f"{savepath}/librispeech-{librispeech_split}_wav2vec2-large_representation_full.pickle",
-            "overwrite": args.overwrite,
-            "device": device,
-            "modelname": "facebook/wav2vec2-large",
-            "seq_aggregation": "none",
-        },
-        "FT_audio_representation": {
-            "function": extract_audio_representation,
-            "save_dir": f"{savepath}/librispeech-{librispeech_split}_wav2vec2-base-960h_representation_full.pickle",
-            "overwrite": args.overwrite,
-            "device": device,
-            "modelname": "facebook/wav2vec2-base-960h",
-            "seq_aggregation": "none",
-        },
-        "text_representation": {
-            "function": extract_text_representation,
-            "save_dir": f"{savepath}/librispeech-{librispeech_split}_ModernBERT-base_representation_full.pickle",
-            "overwrite": False,
-            "device": device,
-            "modelname": "answerdotai/ModernBERT-base",
-            "seq_aggregation": "none",
         },
         "special_features": {
             "function": extract_special_features,
             "save_dir": f"{savepath}/librispeech-{librispeech_split}_special_features.pickle",
-            "overwrite": True,
+            "overwrite": overwrite,
         },
     }
 
-    for probe_data_type in tqdm(probe_data_types, desc="Running feature extraction:"):
-        tqdm.write(f"Extracting {probe_data_type} features...")
-        feature = probe_data_types[probe_data_type]
+    for probe_data_type in tqdm(
+        basic_probe_inputs, desc="Running BASIC feature extraction:"
+    ):
+        feature = basic_probe_inputs[probe_data_type]
         if not os.path.exists(feature["save_dir"]) or feature["overwrite"]:
+            tqdm.write(f"Extracting {probe_data_type} features...")
             extracted_feature = feature["function"](dataset, **feature)
             if isinstance(extracted_feature, pd.DataFrame):
                 # extracted_feature.to_csv(feature["save_dir"], index=False)
@@ -719,6 +699,31 @@ def extract_all_features(librispeech_split="dev-clean"):
                     pickle.dump(extracted_feature, f)
         else:
             logger.info(f"{feature['save_dir']} already exists, skipping...")
+
+    logger.info("Basic feature extraction completed!")
+
+    # Extract Transformer model based features
+    # First determine if the modality is audio or text
+    if "BERT" in modelname:
+        extraction_function = extract_text_representation
+    elif "wav" in modelname.lower() or "hubert" in modelname.lower():
+        extraction_function = extract_audio_representation
+    else:
+        raise ValueError(f"Unknown modelname: {modelname}")
+
+    transformer_feature_savepath = f"{savepath}/librispeech-{librispeech_split}_{modelname.split('/')[-1]}_representation_full.pickle"
+    if not os.path.exists(transformer_feature_savepath) or overwrite:
+        transformer_features = extraction_function(
+            dataset,
+            modelname=modelname,
+            device=device,  # type: ignore
+            seq_aggregation="none",
+        )
+        with open(transformer_feature_savepath, "wb") as f:
+            pickle.dump(transformer_features, f)
+    else:
+        logger.info(f"{transformer_feature_savepath} already exists, skipping...")
+
     logger.info("All features extracted!")
 
 
@@ -731,9 +736,19 @@ if __name__ == "__main__":
         help="Librispeech split to use",
     )
     parser.add_argument(
+        "--modelname",
+        type=str,
+        default="facebook/wav2vec2-base",
+        help="The name of the model to use. Choose from 'facebook/wav2vec2-base', 'facebook/wav2vec2-large-960h', 'answerdotai/ModernBERT-base'",
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite existing features",
     )
     args = parser.parse_args()
-    extract_all_features(args.librispeech_split)
+    librispeech_split = args.librispeech_split
+    modelname = args.modelname
+    overwrite = args.overwrite
+
+    extract_features(librispeech_split, modelname, overwrite)

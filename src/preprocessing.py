@@ -53,20 +53,6 @@ else:
     ALIGNMENTPATH = os.path.join(PROJECT_ROOT, "data")
     SAVEPATH = os.path.join(PROJECT_ROOT, "experimental_data")
 
-# Load syntax parsing models
-nlp = spacy.load("en_core_web_sm")
-nlp.add_pipe("benepar", config={"model": "benepar_en3"})
-tagger_labels = nlp.get_pipe("tagger").labels  # type: ignore
-tagget_label_dict = {label: i for i, label in enumerate(tagger_labels)}
-parser_labels = nlp.get_pipe("parser").labels  # type: ignore
-parser_label_dict = {label: i for i, label in enumerate(parser_labels)}
-# Similarly also get all the benepar labels
-with open(f"{PROJECT_ROOT}/src/penn_treebank_labels.yml", "r") as f:
-    benepar_labels = yaml.safe_load(f)
-    benepar_labels["<unk>"] = "UNK"  # Add an unknown label
-    benepar_labels["<pad>"] = "PAD"  # Add a padding label
-    benepar_labels_dict = {label: i for i, label in enumerate(benepar_labels.keys())}
-
 
 def save_librispeech_tg_to_single_file(
     librispeech_split: str = "dev-clean",
@@ -144,8 +130,101 @@ def save_librispeech_tg_to_single_file(
         )
 
 
+def efficient_syntax_parsing(transcriptions: list[dict]) -> list[np.ndarray]:
+    """Efficiently extract syntax features from transcriptions.
+    We aim to construct a syntactic feature extractor that functions similar to the openSMILE acoustic feature extractor. Using the textgrid information, we can extract the syntactic features of each token in the utterance and save the syntactic features in a similar way to the openSMILE acoustic feature extractor.
+    We aim to have the following features for each token:
+    - POS tag: The part-of-speech tag of the word
+    - Dependency label: The dependency label of the word
+    - Constituent label: The constituent label of the word
+    - Constituency tree position: The position of the word in the constituency tree
+    - Length of the sentence in numbers of words/tokens
+    - Tree depth
+    - Tree depth normalized: The depth of the word in the constituency tree normalized by the height of the tree
+    - Word character length: The length of the word in characters #TODO move to metadata
+    - Location in sentence: The location of the word in the sentence in words/tokens
+    #TODO create subgrouping inside each "group" of features. e.g. word level features, sentence level features, etc.
+    Args:
+        transcriptions (list(dict)): List of dictionaries containing transcriptions.
+    Returns:
+        list(np.ndarray): List of numpy arrays containing syntax features for each transcription.
+    """
+
+    list_of_all_sents = [" ".join(x["words"]) for x in transcriptions]
+
+    # Load syntax parsing models
+    nlp = spacy.load("en_core_web_sm")
+    nlp.add_pipe("benepar", config={"model": "benepar_en3"})
+    tagger_labels = nlp.get_pipe("tagger").labels  # type: ignore
+    tagger_label_dict = {label: i for i, label in enumerate(tagger_labels)}
+    parser_labels = nlp.get_pipe("parser").labels  # type: ignore
+    parser_label_dict = {label: i for i, label in enumerate(parser_labels)}
+    # Similarly also get all the benepar labels
+    with open(f"{PROJECT_ROOT}/src/penn_treebank_labels.yml", "r") as f:
+        benepar_labels = yaml.safe_load(f)
+        benepar_labels["<unk>"] = "UNK"  # Add an unknown label
+        benepar_labels["<pad>"] = "PAD"  # Add a padding label
+        benepar_labels_dict = {
+            label: i for i, label in enumerate(benepar_labels.keys())
+        }
+
+    all_syntax_feats = []
+    for doc in tqdm(
+        nlp.pipe(
+            list_of_all_sents,
+            disable=["tok2vec", "senter", "attribute_ruler", "ner", "lemmatizer"],
+        ),
+        desc="Extracting syntax features",
+        total=len(list_of_all_sents),
+    ):
+        sent = list(doc.sents)[0]
+        nltk_tree = nltk.Tree.fromstring(sent._.parse_string)
+
+        # for every word in the sentence, print the word, dependency label, constituent label, depth in constituency tree, word_character_length, location in sentence,
+        syntax_feats = []
+        for i, word in enumerate(sent):
+            # Skip contractions like 's, 're, 've, 'll, 'd, 'm
+            # Hard coding for now, may need to change
+            # #TODO try to map to phone alignments, that might be more accurate
+            # OR re-force align with these subword tokens
+            if word.text in ["'s", "'re", "'ve", "'ll", "'d", "'m", "n't"]:
+                continue
+            # Use the text to get the constituency label from the nltk tree
+            tree_node = nltk_tree.leaf_treeposition(i)
+
+            constituent_label = nltk_tree[tree_node[:-1]]._label
+            constituent_label = benepar_labels_dict.get(constituent_label, 67)
+
+            tree_depth = len(tree_node)
+            tree_depth_norm = tree_depth / (nltk_tree.height() - 1)
+
+            word_length = len(word.text)
+            word_location_in_sentence = i + 1
+            word_location_in_sentence_norm = word_location_in_sentence / len(sent)
+            # Print the features
+            # print(f"{word.text} - {word.pos} - {word.dep} - {constituent_label} - {depth} - {word_length} - {word_location_in_sentence_normalized:.2f}")
+
+            # Construct word features with vectorized features
+            word_features = np.array(
+                [
+                    word.pos,
+                    word.dep,
+                    constituent_label,
+                    tree_depth,
+                    tree_depth_norm,
+                    word_length,
+                    word_location_in_sentence,
+                    word_location_in_sentence_norm,
+                ]
+            )
+            syntax_feats.append(word_features)
+
+        all_syntax_feats.append(np.array(syntax_feats))
+    return all_syntax_feats
+
+
 def load_librispeech_MAUS_alignment(
-    librispeech_split: str = "dev-clean", transcription_savefile: str = None
+    librispeech_split: str = "dev-clean", transcription_savefile: str | None = None
 ) -> list[dict]:
     """
     phone_alignment = "_MAU_alignment"
@@ -174,8 +253,10 @@ def load_librispeech_MAUS_alignment(
     # Turn the dataframe into a list of dictionaries
     transcriptions = transcriptions_df.to_dict(orient="records")
 
-    for example in tqdm(transcriptions, desc="Extracting syntax features", leave=False):
-        example["syntax_feats"] = syntax_parsing(example["words"])
+    all_syntax_feats = efficient_syntax_parsing(transcriptions)
+
+    for example, syntax_feats in zip(transcriptions, all_syntax_feats):
+        example["syntax_feats"] = syntax_feats
         speakerid, chapter, utt = example["fileID"].split("-")
         example["non_acoustic"] = np.array([int(speakerid), int(chapter)])
         example["ort_alignment"] = ort_alignment[
@@ -506,80 +587,6 @@ def transcription_to_string_embeddings(
             pickle.dump(unique_strings, f)
 
     return utterance_embeddings
-
-
-def syntax_parsing(utt_words: list[str]) -> np.ndarray:
-    """We aim to construct a syntactic feature extractor that functions similar to the openSMILE acoustic feature extractor. Using the textgrid information, we can extract the syntactic features of each token in the utterance and save the syntactic features in a similar way to the openSMILE acoustic feature extractor.
-
-    We aim to have the following features for each token:
-    - POS tag: The part-of-speech tag of the word
-    - Dependency label: The dependency label of the word
-    - Constituent label: The constituent label of the word
-    - Constituency tree position: The position of the word in the constituency tree
-    - Length of the sentence in numbers of words/tokens
-    - Tree depth
-    - Tree depth normalized: The depth of the word in the constituency tree normalized by the height of the tree
-    - Word character length: The length of the word in characters #TODO move to metadata
-    - Location in sentence: The location of the word in the sentence in words/tokens
-
-    #TODO create subgrouping inside each "group" of features. e.g. word level features, sentence level features, etc.
-    Args:
-        utt_words (list(str)): List of strings of words in the utterance.
-    """
-    # nlp = spacy.load("en_core_web_sm")
-    # nlp.add_pipe("benepar", config={"model": "benepar_en3"})
-    utt = " ".join(utt_words)
-
-    doc = nlp(utt)
-    sent = list(doc.sents)[0]
-
-    # Convert benepar parse tree to NLTK format
-    nltk_tree = nltk.Tree.fromstring(sent._.parse_string)
-    # Print the parse tree
-    # print(nltk_tree.pretty_print())
-
-    # for every word in the sentence, print the word, dependency label, constituent label, depth in constituency tree, word_character_length, location in sentence,
-    syntax_feats = []
-    for i, word in enumerate(sent):
-        # Skip contractions like 's, 're, 've, 'll, 'd, 'm
-        # Hard coding for now, may need to change
-        # #TODO try to map to phone alignments, that might be more accurate
-        # OR re-force align with these subword tokens
-        if word.text in ["'s", "'re", "'ve", "'ll", "'d", "'m", "n't"]:
-            continue
-        # Use the text to get the constituency label from the nltk tree
-        tree_node = nltk_tree.leaf_treeposition(i)
-
-        constituent_label = nltk_tree[tree_node[:-1]]._label
-        constituent_label = benepar_labels_dict.get(constituent_label, 67)
-
-        tree_depth = len(tree_node)
-        tree_depth_norm = tree_depth / (nltk_tree.height() - 1)
-
-        word_length = len(word.text)
-        word_location_in_sentence = i + 1
-        word_location_in_sentence_norm = word_location_in_sentence / len(sent)
-        # Print the features
-        # print(f"{word.text} - {word.pos} - {word.dep} - {constituent_label} - {depth} - {word_length} - {word_location_in_sentence_normalized:.2f}")
-
-        # Construct word features with vectorized features
-        word_features = np.array(
-            [
-                word.pos,
-                word.dep,
-                constituent_label,
-                tree_depth,
-                tree_depth_norm,
-                word_length,
-                word_location_in_sentence,
-                word_location_in_sentence_norm,
-            ]
-        )
-        syntax_feats.append(word_features)
-
-    # Convert the list of features to a numpy array
-    syntax_feats = np.array(syntax_feats)
-    return syntax_feats
 
 
 def extract_features(

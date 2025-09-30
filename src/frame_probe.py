@@ -147,7 +147,7 @@ def format_data_for_probe(
     # Sort the list of dictionary by the fileid key
     transcription = sorted(
         transcription_raw,
-        key=lambda x: x["fileid"],
+        key=lambda x: x["fileID"],
     )
 
     # Remove entries where the length of words and syntax_feats are not equal
@@ -155,7 +155,7 @@ def format_data_for_probe(
         x for x in transcription if len(x["words"]) == len(x["syntax_feats"])
     ]
     transcription = pd.DataFrame(transcription)
-    valid_fileids = transcription["fileid"].unique().tolist()
+    valid_fileids = transcription["fileID"].unique().tolist()
 
     # Sort the lld by fileid
     lld = lld.sort_values(["file", "start"])
@@ -173,17 +173,17 @@ def format_data_for_probe(
         y = np.moveaxis(dnn_hidden_states[bare_fileid], 0, 1)
 
         phone_alignment: pd.DataFrame = transcription.loc[
-            (transcription["fileid"] == bare_fileid), "phone_alignment"
+            (transcription["fileID"] == bare_fileid), "phone_alignment"
         ].item()  # type: ignore
         ort_alignment: pd.DataFrame = transcription.loc[
-            (transcription["fileid"] == bare_fileid), "ort_alignment"
+            (transcription["fileID"] == bare_fileid), "ort_alignment"
         ].item()  # type: ignore
 
         metadata: list = transcription.loc[
-            (transcription["fileid"] == bare_fileid), "non_acoustic"
+            (transcription["fileID"] == bare_fileid), "non_acoustic"
         ].item()  # type: ignore
         syntax_feats: np.ndarray = transcription.loc[
-            (transcription["fileid"] == bare_fileid), "syntax_feats"
+            (transcription["fileID"] == bare_fileid), "syntax_feats"
         ].item()  # type: ignore
 
         # Convert opensmile frame to ms in integer

@@ -253,24 +253,40 @@ def load_librispeech_MAUS_alignment(
     # Turn the dataframe into a list of dictionaries
     transcriptions = transcriptions_df.to_dict(orient="records")
 
-    all_syntax_feats = efficient_syntax_parsing(transcriptions)
+    # Turn ort_alignment and phone_alignment into a dictionary of dataframes for each fileID
+    ort_alignment = {
+        fileid: df.drop(columns=["fileID"]).reset_index(drop=True)
+        for fileid, df in ort_alignment.groupby("fileID")
+    }
+    phone_alignment = {
+        fileid: df.drop(columns=["fileID"]).reset_index(drop=True)
+        for fileid, df in phone_alignment.groupby("fileID")
+    }
 
-    for example, syntax_feats in zip(transcriptions, all_syntax_feats):
-        example["syntax_feats"] = syntax_feats
+    all_syntax_feats = efficient_syntax_parsing(transcriptions)
+    logger.info("Syntax features extracted.")
+
+    for example in tqdm(transcriptions, desc="Adding non-acoustic features:"):
         speakerid, chapter, utt = example["fileID"].split("-")
         example["non_acoustic"] = np.array([int(speakerid), int(chapter)])
-        example["ort_alignment"] = ort_alignment[
-            (ort_alignment.fileID == example["fileID"])
-        ].reset_index(drop=True)
-        example["phone_alignment"] = phone_alignment[
-            (phone_alignment.fileID == example["fileID"])
-        ].reset_index(drop=True)
+        example["ort_alignment"] = ort_alignment[example["fileID"]]
+        example["phone_alignment"] = phone_alignment[example["fileID"]]
+
+    logger.info("Non-acoustic features added to transcriptions.")
+
+    # Merge all_syntax_feats into transcriptions
+    for i, example in enumerate(transcriptions):
+        example["syntax_feats"] = all_syntax_feats[i]
+
+    logger.info("Syntax features added to transcriptions.")
+    logger.info("Saving transcriptions...")
 
     if transcription_savefile is None:
         return transcriptions
     else:
         with open(transcription_savefile, "wb") as f:
             pickle.dump(transcriptions, f)
+        logger.info(f"Transcriptions saved to {transcription_savefile}")
         return transcriptions
 
 
@@ -613,11 +629,13 @@ def extract_features(
         f"{savepath}/librispeech-{librispeech_split}_transcriptions.pickle"
     )
     if os.path.exists(transcription_savefile) and not overwrite:
-        logger.info("Transcriptions already exist, loading from file...")
+        logger.info(
+            "Transcriptions already exist and not overwriting, loading from file..."
+        )
         with open(transcription_savefile, "rb") as f:
             transcriptions = pickle.load(f)
     else:
-        logger.info("Transcriptions do not exist, extracting...")
+        logger.info("Transcriptions do not exist or overwrite selected, extracting...")
         transcriptions = load_librispeech_MAUS_alignment(
             librispeech_split, transcription_savefile
         )

@@ -391,43 +391,41 @@ def extract_special_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray
     special_features = {}
     spk_embs_original = []
 
-    for example in tqdm(
-        dataset,
-        desc="Extracting special features (ppgs, spk_emb, fasttext)",
-        leave=False,
-    ):
-        fileid = example["fileID"]  # type: ignore
-        audio_tensor = torch.from_numpy(example["audio"]["array"]).unsqueeze(0)  # type: ignore
+    def _map_example(example: dict) -> dict:
+        audio_tensor = torch.from_numpy(example["audio"]["array"]).unsqueeze(0)
         ppgs_features = ppgs.from_audio(
             audio_tensor, sample_rate=ppgs.SAMPLE_RATE, gpu=0
         )
+        example["ppgs"] = ppgs_features.cpu().squeeze().numpy()
 
-        tokens = example["tokens"]  # type: ignore
-        fasttext_embeddings = [ft.get_word_vector(token) for token in tokens]
+        fasttext_embeddings = [ft.get_word_vector(token) for token in example["tokens"]]
+        example["fasttext"] = fasttext_embeddings
 
         with torch.no_grad():
             spk_embs = spk_embd_model(
                 audio_tensor.to(device=device, dtype=torch.float32)
             )
+        example["spk_emb"] = spk_embs.cpu().squeeze().numpy()
 
-        special_features[fileid] = {
-            "ppgs": ppgs_features.cpu().squeeze().numpy(),
-            # "spk_emb": spk_embs.cpu().squeeze().numpy(),
-            "fasttext": fasttext_embeddings,
-        }
-        spk_embs_original.append(spk_embs.cpu().squeeze().numpy())
-    spk_emb_array = np.array(spk_embs_original)  # shape (n_speakers, emb_dim)
+        return example
 
-    keys = list(special_features.keys())
+    dataset = dataset.map(_map_example, remove_columns=["tokens"])
 
+    spk_emb_array = np.array(dataset["spk_emb"])
     # Use UMAP to reduce speaker embedding to 100 dimensions
     logger.info("Reducing speaker embedding to 100 dimensions using UMAP")
-    reducer = umap.UMAP(n_components=100, random_state=42)
+    reducer = umap.UMAP(n_components=100)  # , random_state=42)
     reduced = reducer.fit_transform(spk_emb_array)
 
-    # Save the reduced speaker embeddings to the dictionary
-    for i, key in enumerate(keys):
-        special_features[key]["spk_emb"] = reduced[i]  # type: ignore
+    # Put the reduced speaker embeddings into special_features
+    special_features = {}
+    for i in range(len(dataset)):
+        fileID = dataset[i]["fileID"]
+        special_features[fileID] = {
+            "ppgs": dataset[i]["ppgs"],
+            "fasttext": np.array(dataset[i]["fasttext"]),
+            "spk_emb": reduced[i],  # type: ignore
+        }
 
     return special_features
 
@@ -647,7 +645,7 @@ def extract_features(
     dataset = dataset.filter(lambda x: x["fileID"] not in difference)
 
     tokens_for_each_utt = [
-        {example["fileID"]: example["ort_alignment"]["text"].fillna("<pad>").tolist()}
+        example["ort_alignment"]["text"].fillna("<pad>").tolist()
         for example in tqdm(transcriptions)
     ]
     assert transcription_ID == dataset["fileID"], "FileIDs do not match!"

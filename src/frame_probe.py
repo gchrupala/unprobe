@@ -212,9 +212,9 @@ def format_data_for_probe(
             )
             random_choice = np.sort(random_choice)
 
-        spk_embedding = special_features[bare_fileid]["spk_emb"]
-        ppgs_features = special_features[bare_fileid]["ppgs"]
-        fasttext_embedding = special_features[bare_fileid]["fasttext"]
+        spk_embedding = np.array(special_features[bare_fileid]["spk_emb"])
+        ppgs_features = np.array(special_features[bare_fileid]["ppgs"])
+        fasttext_embedding = np.array(special_features[bare_fileid]["fasttext"])
 
         for start_ms in random_choice:
             start = int((start_ms - 20) / 10)

@@ -83,13 +83,13 @@ def save_librispeech_tg_to_single_file(
     extracted_alignments = []
     for file_path in tqdm(transcription_files, desc="Reading textgrid files:"):
         tg = textgrids.TextGrid(file_path)
-        fileid = file_path.split("/")[-1].split(".")[0]
-        speakerid, chapter, utt = fileid.split("-")
+        fileID = file_path.split("/")[-1].split(".")[0]
+        speakerid, chapter, utt = fileID.split("-")
         tg_dict = {}
         for tier in tg:
             tg_dict[tier] = np.array(
                 [
-                    (fileid, speakerid, chapter, utt, x.xmin, x.xmax, x.text)
+                    (fileID, speakerid, chapter, utt, x.xmin, x.xmax, x.text)
                     for x in tg[tier]
                 ]
             )
@@ -255,12 +255,12 @@ def load_librispeech_MAUS_alignment(
 
     # Turn ort_alignment and phone_alignment into a dictionary of dataframes for each fileID
     ort_alignment = {
-        fileid: df.drop(columns=["fileID"]).reset_index(drop=True)
-        for fileid, df in ort_alignment.groupby("fileID")
+        fileID: df.drop(columns=["fileID"]).reset_index(drop=True)
+        for fileID, df in ort_alignment.groupby("fileID")
     }
     phone_alignment = {
-        fileid: df.drop(columns=["fileID"]).reset_index(drop=True)
-        for fileid, df in phone_alignment.groupby("fileID")
+        fileID: df.drop(columns=["fileID"]).reset_index(drop=True)
+        for fileID, df in phone_alignment.groupby("fileID")
     }
 
     all_syntax_feats = efficient_syntax_parsing(transcriptions)
@@ -301,23 +301,23 @@ def load_librispeech(split: str = "dev-clean") -> Dataset:
     """
     dataset_path = f"{DATASETPATH}/{split}"
     transcription_files = glob.glob(f"{dataset_path}/**/*.trans.txt", recursive=True)
-    fileids, sentences = [], []
+    fileIDs, sentences = [], []
     for file_path in transcription_files:
         with open(file_path, "r") as f:
             rows = f.read().splitlines()
         for row in rows:
-            fileid, sentence = row.split(" ", 1)
-            fileids.append(fileid)
+            fileID, sentence = row.split(" ", 1)
+            fileIDs.append(fileID)
             sentences.append(sentence)
 
-    transcript_data = tuple(zip(fileids, sentences))
+    transcript_data = tuple(zip(fileIDs, sentences))
 
     df = pd.DataFrame(transcript_data, columns=["fileID", "sent"])
 
-    def get_wav_file(fileid):
-        spkid, chapter, utt = fileid.split("-")
+    def get_wav_file(fileID):
+        spkid, chapter, utt = fileID.split("-")
 
-        return os.path.join(dataset_path, spkid, chapter, f"{fileid}.flac")
+        return os.path.join(dataset_path, spkid, chapter, f"{fileID}.flac")
 
     df["speakerid"] = df["fileID"].apply(lambda x: x.split("-")[0])
     df["chapter"] = df["fileID"].apply(lambda x: x.split("-")[1])
@@ -444,13 +444,15 @@ def extract_audio_representation(
         device (str, optional): device to run the model on. Defaults to "cuda".
 
     Returns:
-        pd.DataFrame: DataFrame containing audio representation
+        dict[str, np.ndarray]: Dictionary containing audio representations and the corresponding frame timestamps in ms
     """
     from datasets import Audio
     from transformers import AutoFeatureExtractor, AutoModel
 
     feature_extractor = AutoFeatureExtractor.from_pretrained(modelname)
     model = AutoModel.from_pretrained(modelname)
+    seq_sampling = kwargs.get("seq_sampling", "random_frames").lower()
+    n_frames = kwargs.get("n_frames", 5)
 
     model.to(device)  # type: ignore
     logger.info(f"Using device: {device}")
@@ -465,7 +467,7 @@ def extract_audio_representation(
 
     audio_representations = {}
     for example in tqdm(
-        dataset, desc=f"Extracting audio representations with {modelname}", leave=False
+        dataset, desc=f"Extracting audio representations with {modelname}"
     ):
         waveform = example["audio"]["array"]  # type: ignore
         fileID = example["fileID"]  # type: ignore
@@ -476,22 +478,57 @@ def extract_audio_representation(
         inputs = {k: v.to(device) for k, v in inputs.items()}
         with torch.no_grad():
             outputs = model(**inputs, output_hidden_states=True)
-            # output shape need to be (batch_size, seq_len, hidden_size)
-            # Save all hidden states and preserve seq_len dimension with shape (batch_size, layer, seq_len, hidden_size)
-            hidden_states = outputs.hidden_states
-            hidden_states = torch.stack(hidden_states, dim=0)
-            if kwargs.get("seq_aggregation", "mean").lower() == "mean":
-                # Take the mean over the seq_len dimension
-                hidden_states = hidden_states.mean(dim=2)
-            elif kwargs.get("seq_aggregation", "mean").lower() == "none":
-                pass
-            else:
-                raise ValueError(
-                    f"Unknown seq_aggregation method: {kwargs.get('seq_aggregation', 'mean')}"
-                )
+        # output shape need to be (batch_size, seq_len, hidden_size)
+        # Save all hidden states and preserve seq_len dimension with shape (batch_size, layer, seq_len, hidden_size)
+        hidden_states = outputs.hidden_states
+        hidden_states = torch.stack(hidden_states, dim=0)
+        raw_hidden_state_shape = hidden_states.shape
+        hidden_states = hidden_states.to("cpu")
+        if seq_sampling == "mean":
+            # Take the mean over the seq_len dimension
+            hidden_states = hidden_states.mean(dim=2, keepdim=True)
+            frame_indices = None
+        elif seq_sampling == "none":
+            frame_indices = np.arange(hidden_states.shape[2])
+        elif seq_sampling == "random_frames":
+            # We randomly select n_frames from the hidden states
+            if n_frames > len(example["tokens"]):  # type: ignore
+                n_frames = len(example["tokens"])  # type: ignore
+            # Randomly select n_frames from the hidden states along the seq_len dimension
+            # We do this to avoid using too much memory and disk space
+            frame_indices = np.random.choice(
+                hidden_states.shape[2], n_frames, replace=False
+            )
+            frame_indices = np.sort(frame_indices)
+        else:
+            raise ValueError(f"Unknown seq_sampling method: {seq_sampling}")
 
-            # Store the hidden states in a dictionary with the fileID as key
-            audio_representations[fileID] = hidden_states.cpu().squeeze().numpy()
+        # Select the frames from the hidden states
+        selected_hidden_states = hidden_states[:, :, frame_indices, :]
+
+        # We also want to convert the indices to the original time stamps in ms
+        # So we can use the timestamps to lookup the corresponding text tokens
+        # We will bypass the issue of wav2vec2 "frame rates" by using the total number of frames and the original audio length
+        audio_length_ms = (
+            len(waveform) / feature_extractor.sampling_rate * 1000
+        )  # in ms
+        frame_indices_in_ms = (
+            (frame_indices / raw_hidden_state_shape[2]) * audio_length_ms
+            if frame_indices is not None
+            else None
+        )
+        # Round the frame_indices_in_ms to the nearest 20ms
+        frame_indices_in_ms = (
+            np.round(frame_indices_in_ms / 20) * 20
+            if frame_indices_in_ms is not None
+            else None
+        )
+
+        # Store the hidden states in a dictionary with the fileID as key
+        audio_representations[fileID] = {
+            "hidden_states": selected_hidden_states.cpu().squeeze().numpy(),
+            "frame_token_indices": frame_indices_in_ms,
+        }
 
     return audio_representations
 
@@ -508,11 +545,16 @@ def extract_text_representation(
         dataset (datasets.Dataset): dataset containing text
         modelname (str, optional): model name to use. Defaults to "answerdotai/ModernBERT-base".
         device (str, optional): device to run the model on. Defaults to "cuda".
+    Returns:
+        dict[str, np.ndarray]: Dictionary containing text representations and the corresponding token indices
     """
     from transformers import AutoModel, AutoTokenizer
 
     model = AutoModel.from_pretrained(modelname, reference_compile=False)
     tokenizer = AutoTokenizer.from_pretrained(modelname)
+
+    n_frames = kwargs.get("n_frames", 5)
+    seq_sampling = kwargs.get("seq_sampling", "random_sampling").lower()
 
     model.to(device)
     logger.info(f"Using device: {device}")
@@ -521,7 +563,7 @@ def extract_text_representation(
     text_representations = {}
 
     for example in tqdm(
-        dataset, desc=f"Extracting text representations with {modelname}", leave=False
+        dataset, desc=f"Extracting text representations with {modelname}"
     ):
         inputs = tokenizer(
             example["sent"],  # type: ignore
@@ -529,26 +571,41 @@ def extract_text_representation(
             padding=True,
             truncation=True,
         )
-        fileid = example["fileID"]  # type: ignore
+        fileID = example["fileID"]  # type: ignore
         inputs = {k: v.to(device) for k, v in inputs.items()}
         with torch.no_grad():
             outputs = model(**inputs, output_hidden_states=True)
             # output shape need to be (batch_size, seq_len, hidden_size)
             # Save all hidden states and preserve seq_len dimension with shape (batch_size, layer, seq_len, hidden_size)
             hidden_states = outputs.hidden_states
-            hidden_states = torch.stack(hidden_states, dim=1)
-            if kwargs.get("seq_aggregation", "none").lower() == "mean":
-                # Take the mean over the seq_len dimension
-                hidden_states = hidden_states.mean(dim=2)
-            elif kwargs.get("seq_aggregation", "none").lower() == "none":
-                pass
-            else:
-                raise ValueError(
-                    f"Unknown seq_aggregation method: {kwargs.get('seq_aggregation')}"
-                )
+        hidden_states = torch.stack(hidden_states, dim=1)
+        if seq_sampling == "mean":
+            # Take the mean over the seq_len dimension
+            hidden_states = hidden_states.mean(dim=2)
+            frame_indices = None
+        elif seq_sampling == "random_sampling":
+            if n_frames > hidden_states.shape[2]:
+                n_frames = hidden_states.shape[2]
+            frame_indices = np.random.choice(
+                hidden_states.shape[2], n_frames, replace=False
+            )
+            frame_indices = np.sort(frame_indices)
+        elif seq_sampling == "none":
+            frame_indices = np.arange(hidden_states.shape[2])
+            pass
 
-            # Store the hidden states in a dictionary with the fileID as key
-            text_representations[fileid] = hidden_states.cpu().squeeze().numpy()
+        else:
+            raise ValueError(f"Unknown sequence sampling method: {seq_sampling}")
+        if frame_indices is not None:
+            selected_hidden_states = hidden_states[:, :, frame_indices, :]
+        else:
+            selected_hidden_states = hidden_states
+
+        # Store the hidden states in a dictionary with the fileID as key
+        text_representations[fileID] = {
+            "hidden_states": selected_hidden_states.cpu().squeeze().numpy(),
+            "frame_token_indices": frame_indices,
+        }
     return text_representations
 
 
@@ -607,6 +664,7 @@ def extract_features(
     librispeech_split: str = "dev-clean",
     modelname: str = "facebook/wav2vec2-base",
     overwrite: bool = False,
+    seq_sampling: str = "random_frames",
 ):
     """Extracting all features from the librispeech dataset and save them to disk.
 
@@ -703,7 +761,7 @@ def extract_features(
     else:
         raise ValueError(f"Unknown modelname: {modelname}")
 
-    transformer_feature_savepath = f"{savepath}/librispeech-{librispeech_split}_{modelname.split('/')[-1]}_representation_full.pickle"
+    transformer_feature_savepath = f"{savepath}/librispeech-{librispeech_split}_{modelname.split('/')[-1]}_representation_{seq_sampling}.pickle"
     if not os.path.exists(transformer_feature_savepath) or overwrite:
         transformer_features = extraction_function(
             dataset,
@@ -738,9 +796,16 @@ if __name__ == "__main__":
         action="store_true",
         help="Overwrite existing features",
     )
+    parser.add_argument(
+        "--seq_sampling",
+        type=str,
+        default="random_frames",
+        help="Sequence sampling method to use. Choose from 'mean', 'random_frames', 'none'",
+    )
     args = parser.parse_args()
     librispeech_split = args.librispeech_split
     modelname = args.modelname
     overwrite = args.overwrite
+    seq_sampling = args.seq_sampling
 
-    extract_features(librispeech_split, modelname, overwrite)
+    extract_features(librispeech_split, modelname, overwrite, seq_sampling)

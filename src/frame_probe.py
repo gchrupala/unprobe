@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-import torch
 from sklearn.linear_model import Ridge
 from sklearn.model_selection import GridSearchCV, train_test_split
 from tqdm.auto import tqdm, trange
@@ -668,27 +667,52 @@ if __name__ == "__main__":
         default="ridge",
         help="The name of the probe to use. Options are 'ridge' and 'random_forest'.",
     )
+    parser.add_argument(
+        "--select_layers",
+        type=int,
+        nargs="+",
+        default=None,
+        help="The layers to use for probing.",
+    )
     args = parser.parse_args()
     librispeech_split = args.librispeech_split
     modelname = args.modelname
     probe_name = args.probe_name
+    select_layers = args.select_layers if args.select_layers is not None else None
 
     logger.info(f"Using LibriSpeech split: {librispeech_split}")
     logger.info(f"Using model: {modelname}")
     logger.info(f"Using probe: {probe_name}")
+    logger.info(
+        f"Using selected layers: {select_layers if select_layers is not None else 'all layers'}"
+    )
     logger.info("-" * 30)
 
     logger.info("Formatting data for probe...")
-    processed_X, processed_y = format_data_for_probe(
-        librispeech_split=librispeech_split, modelname=modelname
+    # processed_X, processed_y = format_data_for_probe(
+    #     librispeech_split=librispeech_split, modelname=modelname
+    # )
+
+    from load_probe_data import format_data
+
+    processed_X, processed_Y, data_shape = format_data(
+        librispeech_split=librispeech_split,
+        modelname=modelname,
+        seq_sampling="random_frames",
+        select_layers=select_layers,
     )
 
     logger.info("Running probe...")
     results = run_probe(
         processed_X=processed_X,
-        processed_y=processed_y,
+        processed_y=processed_Y,
         probe_name=probe_name,
     )
+
+    # Rename the layer number to reflect the actual layer number in the model using select_layers
+    for result in results:
+        if select_layers is not None:
+            result["layer"] = select_layers[result["layer"]]
     logger.info("Saving and visualizing results...")
     save_results(
         results=results,

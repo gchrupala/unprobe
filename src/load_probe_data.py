@@ -59,9 +59,31 @@ def format_data(
         data_shape: A dictionary containing the shape of each feature component.
 
     """
+
+    acoustic_feature_path = (
+        f"{SAVEPATH}/librispeech-{librispeech_split}_opensmile_features_lld.pickle"
+    )
+    special_features_path = (
+        f"{SAVEPATH}/librispeech-{librispeech_split}_special_features.pickle"
+    )
+    transcription_path = (
+        f"{SAVEPATH}/librispeech-{librispeech_split}_transcriptions.pickle"
+    )
+    dnn_hidden_states_path = f"{SAVEPATH}/librispeech-{librispeech_split}_{modelname.split('/')[-1]}_representation_{seq_sampling}.pickle"
+
+    # Make sure all the required files exist
+    for path in [
+        acoustic_feature_path,
+        special_features_path,
+        transcription_path,
+        dnn_hidden_states_path,
+    ]:
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Required file not found: {path}")
+
     # Load the acoustic features low level descriptors (LLD)
     with open(
-        f"{SAVEPATH}/librispeech-{librispeech_split}_opensmile_features_lld.pickle",
+        acoustic_feature_path,
         "rb",
     ) as f:
         lld = pickle.load(f)
@@ -74,16 +96,13 @@ def format_data(
 
     # Load the special features including word embedding, phonetic posterior grams (PPG), and speaker embeddings
     with open(
-        f"{SAVEPATH}/librispeech-{librispeech_split}_special_features.pickle",
+        special_features_path,
         "rb",
     ) as f:
         special_features = pickle.load(f)
 
     # Load the transcriptions with syntax features
-    transcription_file = (
-        f"{SAVEPATH}/librispeech-{librispeech_split}_transcriptions.pickle"
-    )
-    with open(transcription_file, "rb") as f:
+    with open(transcription_path, "rb") as f:
         transcription_raw = pickle.load(f)
 
     # Sort the list of dictionary by the fileID key
@@ -91,6 +110,7 @@ def format_data(
         transcription_raw,
         key=lambda x: x["fileID"],
     )
+    logger.info("Loaded and sorted transcription data")
 
     # Remove entries where the length of words and syntax_feats are not equal
     transcription = [
@@ -106,10 +126,13 @@ def format_data(
 
     # Load the transformer model hidden states
     with open(
-        f"{SAVEPATH}/librispeech-{librispeech_split}_{modelname.split('/')[-1]}_representation_{seq_sampling}.pickle",
+        dnn_hidden_states_path,
         "rb",
     ) as f:
         dnn_hidden_states = pickle.load(f)
+
+    logger.info("Loaded all data files")
+    logger.info(f"Number of valid fileIDs: {len(valid_fileIDs)}")
 
     processed_X, processed_Y = [], []
 
@@ -221,5 +244,14 @@ def format_data(
 
 
 if __name__ == "__main__":
-    _, _, data_shape = format_data()  # For testing purposes
+    librispeech_split = "dev-clean"
+    modelname = "facebook/hubert-base-ls960"
+    seq_sampling = "random_frames"
+    select_layers = [0, 6, 12]
+    _, _, data_shape = format_data(
+        librispeech_split=librispeech_split,
+        modelname=modelname,
+        seq_sampling=seq_sampling,
+        select_layers=select_layers,
+    )  # For testing purposes
     print(data_shape)

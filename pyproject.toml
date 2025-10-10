@@ -15,6 +15,7 @@ dependencies = [
     "opensmile>=2.5.1",
     "pandas>=2.2.3",
     "pip>=25.0.1",
+    "plotnine>=0.15.0",
     "ppgs>=0.0.9",
     "praat-parselmouth>=0.4.5",
     "praat-textgrids>=1.4.0",

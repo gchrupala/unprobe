@@ -183,3 +183,4 @@ plots/*
 results/*
 *.bin 
 *.gz
+uv.lock

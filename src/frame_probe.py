@@ -296,9 +296,9 @@ def pick_probe(probe_name: str = "ridge"):
     elif probe_name == "random_forest":
         from sklearn.ensemble import RandomForestRegressor
 
-        model = RandomForestRegressor(n_jobs=-1)
+        model = RandomForestRegressor(n_jobs=-1, verbose=5)
         param_grid = {
-            "max_depth": [10, 15],  # 5, 7,
+            "max_depth": [10, 15, 20],  # 5, 7,
             # "min_samples_split": [10, 20, 40, 80],
             # "min_samples_leaf": [5, 10, 20, 40],
             "max_features": [
@@ -317,10 +317,18 @@ def run_probe(
     processed_X: np.ndarray,
     processed_y: np.ndarray,
     probe_name: str = "ridge",
+    select_layers: list[int] | None = None,
+    zeroing: bool = True,
+    ablation: bool = True,
+    permutation: bool = True,
 ) -> list[dict]:
     results = []
-    for layer in trange(processed_y.shape[1], desc="Layers"):
-        logger.info(f"Probing with {probe_name} on DNN model layer {layer}")
+    for layer in trange(processed_y.shape[1], desc="Layers in selected layers"):
+        layer_results = []
+        current_layer = select_layers[layer] if select_layers is not None else layer
+        logger.info(
+            f"Probing with {probe_name} on selected DNN model layer {current_layer}..."
+        )
         regressor, param_grid = pick_probe(probe_name)
         GS = GridSearchCV(
             estimator=regressor,
@@ -352,7 +360,7 @@ def run_probe(
             "manipulation_mode": "none",
             "manipulated_feature_group": "none",
         }
-        results.append(result)
+        layer_results.append(result)
 
         # Add random baseline with shuffled x to predict y
 
@@ -379,110 +387,118 @@ def run_probe(
             "manipulation_mode": "random_baseline",
             "manipulated_feature_group": "none",
         }
-        results.append(result)
+        layer_results.append(result)
 
         for range_start, range_end, name in tqdm(
             sections_shapes, desc="Feature Groups", leave=False
         ):
-            # Permutation of features
-            permuted_x_train = X_train.copy()
-            permuted_x_train[:, range_start:range_end] = np.random.permutation(
-                permuted_x_train[:, range_start:range_end]
+            assert any((zeroing, ablation, permutation)), (
+                "At least one manipulation mode must be True"
             )
-            permuted_x_test = X_test.copy()
-            permuted_x_test[:, range_start:range_end] = np.random.permutation(
-                permuted_x_test[:, range_start:range_end]
-            )
-            # Reinitialize the regressor here
-            regressor, param_grid = pick_probe(probe_name)
-            GS_permute = GridSearchCV(
-                estimator=regressor,
-                param_grid=param_grid,
-                # n_jobs=-1,
-                cv=5,
-                verbose=1,
-            )
-            GS_permute.fit(permuted_x_train, y_train)
-            train_score_permuted = GS_permute.score(permuted_x_train, y_train)
-            test_score_permuted = GS_permute.score(permuted_x_test, y_test)
-            result = {
-                "layer": layer,
-                "train_score": train_score_permuted,
-                "test_score": test_score_permuted,
-                "best_params": GS.best_params_,
-                "best_score": GS.best_score_,
-                # "coefficients": GS.best_estimator_.coef_,
-                # "intercept": GS.best_estimator_.intercept_,
-                # "permutation": f"{range_start}-{range_end}"
-                "manipulation_mode": "permutation",
-                "manipulated_feature_group": name,
-            }
-            results.append(result)
+            if permutation:
+                # Permutation of features
+                permuted_x_train = X_train.copy()
+                permuted_x_train[:, range_start:range_end] = np.random.permutation(
+                    permuted_x_train[:, range_start:range_end]
+                )
+                permuted_x_test = X_test.copy()
+                permuted_x_test[:, range_start:range_end] = np.random.permutation(
+                    permuted_x_test[:, range_start:range_end]
+                )
+                # Reinitialize the regressor here
+                regressor, param_grid = pick_probe(probe_name)
+                GS_permute = GridSearchCV(
+                    estimator=regressor,
+                    param_grid=param_grid,
+                    # n_jobs=-1,
+                    cv=5,
+                    verbose=1,
+                )
+                GS_permute.fit(permuted_x_train, y_train)
+                train_score_permuted = GS_permute.score(permuted_x_train, y_train)
+                test_score_permuted = GS_permute.score(permuted_x_test, y_test)
+                result = {
+                    "layer": layer,
+                    "train_score": train_score_permuted,
+                    "test_score": test_score_permuted,
+                    "best_params": GS.best_params_,
+                    "best_score": GS.best_score_,
+                    # "coefficients": GS.best_estimator_.coef_,
+                    # "intercept": GS.best_estimator_.intercept_,
+                    # "permutation": f"{range_start}-{range_end}"
+                    "manipulation_mode": "permutation",
+                    "manipulated_feature_group": name,
+                }
+                layer_results.append(result)
+            if zeroing:
+                # Zeroing out features
+                zeroed_x_train = X_train.copy()
+                zeroed_x_train[:, range_start:range_end] = 0
+                zeroed_x_test = X_test.copy()
+                zeroed_x_test[:, range_start:range_end] = 0
 
-            # Zeroing out features
-            zeroed_x_train = X_train.copy()
-            zeroed_x_train[:, range_start:range_end] = 0
-            zeroed_x_test = X_test.copy()
-            zeroed_x_test[:, range_start:range_end] = 0
+                # Reinitialize the regressor again
+                regressor, param_grid = pick_probe(probe_name)
+                GS_zero = GridSearchCV(
+                    estimator=regressor,
+                    param_grid=param_grid,
+                    # n_jobs=-1,
+                    cv=5,
+                    verbose=1,
+                )
 
-            # Reinitialize the regressor again
-            regressor, param_grid = pick_probe(probe_name)
-            GS_zero = GridSearchCV(
-                estimator=regressor,
-                param_grid=param_grid,
-                # n_jobs=-1,
-                cv=5,
-                verbose=1,
-            )
+                GS_zero.fit(zeroed_x_train, y_train)
+                zeroed_train_score = GS_zero.score(zeroed_x_train, y_train)
+                zeroed_test_score = GS_zero.score(zeroed_x_test, y_test)
+                result = {
+                    "layer": layer,
+                    "train_score": zeroed_train_score,
+                    "test_score": zeroed_test_score,
+                    "best_params": GS.best_params_,
+                    "best_score": GS.best_score_,
+                    # "coefficients": GS_zero.best_estimator_.coef_,
+                    # "intercept": GS_zero.best_estimator_.intercept_,
+                    "manipulation_mode": "zeroing",
+                    "manipulated_feature_group": name,
+                }
+                layer_results.append(result)
 
-            GS_zero.fit(zeroed_x_train, y_train)
-            zeroed_train_score = GS_zero.score(zeroed_x_train, y_train)
-            zeroed_test_score = GS_zero.score(zeroed_x_test, y_test)
-            result = {
-                "layer": layer,
-                "train_score": zeroed_train_score,
-                "test_score": zeroed_test_score,
-                "best_params": GS.best_params_,
-                "best_score": GS.best_score_,
-                # "coefficients": GS_zero.best_estimator_.coef_,
-                # "intercept": GS_zero.best_estimator_.intercept_,
-                "manipulation_mode": "zeroing",
-                "manipulated_feature_group": name,
-            }
-            results.append(result)
+            if ablation:
+                # Ablation of features
+                ablated_x_train = X_train.copy()
+                ablated_x_train = np.delete(
+                    ablated_x_train, np.s_[range_start:range_end], axis=1
+                )
+                ablated_x_test = X_test.copy()
+                ablated_x_test = np.delete(
+                    ablated_x_test, np.s_[range_start:range_end], axis=1
+                )
+                # Reinitialize the regressor again
+                regressor, param_grid = pick_probe(probe_name)
+                GS_ablate = GridSearchCV(
+                    estimator=regressor,
+                    param_grid=param_grid,
+                    # n_jobs=-1,
+                    cv=5,
+                    verbose=1,
+                )
+                GS_ablate.fit(ablated_x_train, y_train)
+                ablated_train_score = GS_ablate.score(ablated_x_train, y_train)
+                ablated_test_score = GS_ablate.score(ablated_x_test, y_test)
+                result = {
+                    "layer": layer,
+                    "train_score": ablated_train_score,
+                    "test_score": ablated_test_score,
+                    "best_params": GS_ablate.best_params_,
+                    "best_score": GS.best_score_,
+                    # "coefficients": GS_ablate.best_estimator_.coef_,
+                    "manipulation_mode": "ablation",
+                    "manipulated_feature_group": name,
+                }
+                layer_results.append(result)
 
-            # Ablation of features
-            ablated_x_train = X_train.copy()
-            ablated_x_train = np.delete(
-                ablated_x_train, np.s_[range_start:range_end], axis=1
-            )
-            ablated_x_test = X_test.copy()
-            ablated_x_test = np.delete(
-                ablated_x_test, np.s_[range_start:range_end], axis=1
-            )
-            # Reinitialize the regressor again
-            regressor, param_grid = pick_probe(probe_name)
-            GS_ablate = GridSearchCV(
-                estimator=regressor,
-                param_grid=param_grid,
-                # n_jobs=-1,
-                cv=5,
-                verbose=1,
-            )
-            GS_ablate.fit(ablated_x_train, y_train)
-            ablated_train_score = GS_ablate.score(ablated_x_train, y_train)
-            ablated_test_score = GS_ablate.score(ablated_x_test, y_test)
-            result = {
-                "layer": layer,
-                "train_score": ablated_train_score,
-                "test_score": ablated_test_score,
-                "best_params": GS_ablate.best_params_,
-                "best_score": GS.best_score_,
-                # "coefficients": GS_ablate.best_estimator_.coef_,
-                "manipulation_mode": "ablation",
-                "manipulated_feature_group": name,
-            }
-            results.append(result)
+
+        results.extend(layer_results)
     return results
 
 
@@ -647,7 +663,7 @@ def plot_coefficients(coefficients):
     return coefficient_dict
 
 
-if __name__ == "__main__":
+def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--librispeech_split",
@@ -674,11 +690,34 @@ if __name__ == "__main__":
         default=None,
         help="The layers to use for probing.",
     )
+    parser.add_argument(
+        "--zeroing",
+        action="store_true",
+        help="Whether to perform zeroing manipulation.",
+    )
+    parser.add_argument(
+        "--ablation",
+        action="store_true",
+        help="Whether to perform ablation manipulation.",
+    )
+    parser.add_argument(
+        "--permutation",
+        action="store_true",
+        help="Whether to perform permutation manipulation.",
+    )
     args = parser.parse_args()
+    return args
+
+
+if __name__ == "__main__":
+    args = parse_args()
     librispeech_split = args.librispeech_split
     modelname = args.modelname
     probe_name = args.probe_name
     select_layers = args.select_layers if args.select_layers is not None else None
+    zeroing = args.zeroing
+    ablation = args.ablation
+    permutation = args.permutation
 
     logger.info(f"Using LibriSpeech split: {librispeech_split}")
     logger.info(f"Using model: {modelname}")
@@ -707,6 +746,10 @@ if __name__ == "__main__":
         processed_X=processed_X,
         processed_y=processed_Y,
         probe_name=probe_name,
+        select_layers=select_layers,
+        zeroing=zeroing,
+        ablation=ablation,
+        permutation=permutation,
     )
 
     # Rename the layer number to reflect the actual layer number in the model using select_layers

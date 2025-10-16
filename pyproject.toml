@@ -41,7 +41,7 @@ cu118 = [
   "torchaudio>=2.6.0",
   "torchvision>=0.21.0",
 ]
-cu126 = [
+cu128 = [
   "torch>=2.6.0",
   "torchaudio>=2.6.0",
   "torchvision>=0.21.0",
@@ -52,7 +52,7 @@ conflicts = [
   [
     { extra = "cpu" },
     { extra = "cu118" },
-    { extra = "cu126" },
+    { extra = "cu128" },
   ],
 ]
 
@@ -60,18 +60,18 @@ conflicts = [
 torch = [
   { index = "pytorch-cpu", extra = "cpu" },
   { index = "pytorch-cu118", extra = "cu118" },
-  { index = "pytorch-cu126", extra = "cu126" },
+  { index = "pytorch-cu128", extra = "cu128" },
 ]
 
 torchaudio = [
   { index = "pytorch-cpu", extra = "cpu" },
   { index = "pytorch-cu118", extra = "cu118" },
-  { index = "pytorch-cu126", extra = "cu126" },
+  { index = "pytorch-cu128", extra = "cu128" },
 ]
 torchvision = [
   { index = "pytorch-cpu", extra = "cpu" },
   { index = "pytorch-cu118", extra = "cu118" },
-  { index = "pytorch-cu126", extra = "cu126" },
+  { index = "pytorch-cu128", extra = "cu128" },
 ]
 en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
 
@@ -86,8 +86,8 @@ url = "https://download.pytorch.org/whl/cu118"
 explicit = true
 
 [[tool.uv.index]]
-name = "pytorch-cu126"
-url = "https://download.pytorch.org/whl/cu126"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 

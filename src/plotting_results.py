@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import plotnine as p9
-from cv2 import line
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -26,20 +25,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def load_result_files() -> pd.DataFrame:
-    logger.info(f"Loading result files from {RESULTS_DIR}...")
-    if not os.path.exists(RESULTS_DIR):
-        logger.error(f"Results directory {RESULTS_DIR} does not exist.")
-        raise FileNotFoundError(f"Results directory {RESULTS_DIR} does not exist.")
+def load_result_files(results_dir: str) -> pd.DataFrame:
+    logger.info(f"Loading result files from {results_dir}...")
+    if not os.path.exists(results_dir):
+        logger.error(f"Results directory {results_dir} does not exist.")
+        raise FileNotFoundError(f"Results directory {results_dir} does not exist.")
 
-    all_results_files = glob.glob(os.path.join(RESULTS_DIR, "*.csv"))
-    joined_df = pd.DataFrame()
+    # all_results_files = glob.glob(os.path.join(results_dir, "*.csv"))
+    all_results_files = glob.glob(
+        os.path.join(results_dir, "librispeech-*/**/*.csv"), recursive=True
+    )
+    all_results_files = [x for x in all_results_files if "all_layers" not in x]
+
+    all_results_df = pd.DataFrame()
     for result_file in all_results_files:
         logger.info(f"Found results file: {result_file}")
-        name_parse = os.path.basename(result_file).replace(".csv", "").split("_")
-        librispeech_split = name_parse[0].replace("librispeech-", "")
-        modelname = name_parse[1]
-        probename = name_parse[4]
+        librispeech_split = result_file.split("/")[-4]
+        modelname = result_file.split("/")[-3]
+        probename, _, _, normalization = result_file.split("/")[-2].split("_")
         if "random" in probename:
             probename = "random_forest"
 
@@ -50,46 +53,47 @@ def load_result_files() -> pd.DataFrame:
         df["modelname"] = modelname
         df["librispeech_split"] = librispeech_split
         df["probename"] = probename
-        joined_df = pd.concat([joined_df, df], ignore_index=True)
-    return joined_df
+        df["normalization"] = normalization
+        all_results_df = pd.concat([all_results_df, df], ignore_index=True)
+    return all_results_df
 
 
-def plot_results(joined_df: pd.DataFrame) -> None:
+def plot_results(all_results_df: pd.DataFrame) -> None:
     """Plot the results from the joined DataFrame.
 
     Args:
-        joined_df (pd.DataFrame): The DataFrame containing the results to plot.
+        all_results_df (pd.DataFrame): The DataFrame containing the results to plot.
     """
     logger.info("Plotting results...")
 
     # Split into subsets based on probe name
-    probes = joined_df["probename"].unique()
-    librispeech_splits = joined_df["librispeech_split"].unique()
+    probes = all_results_df["probename"].unique()
+    librispeech_splits = all_results_df["librispeech_split"].unique()
     manipulations = ["zeroing", "permutation", "ablation"]
 
     # Normalize the layer numbers to start from 0 and end at max layer for each model
-    joined_df["norm_layer"] = joined_df.groupby("modelname")["layer"].transform(
-        lambda x: (x - x.min()) / (x.max() - x.min())
-    )
+    all_results_df["norm_layer"] = all_results_df.groupby("modelname")[
+        "layer"
+    ].transform(lambda x: (x - x.min()) / (x.max() - x.min()))
 
     for probe, librispeech_split, manipulation in product(
         probes, librispeech_splits, manipulations
     ):
-        subset_df = joined_df[
-            (joined_df["probename"] == probe)
-            & (joined_df["librispeech_split"] == librispeech_split)
-            & (joined_df["manipulation_mode"] == manipulation)
+        subset_df = all_results_df[
+            (all_results_df["probename"] == probe)
+            & (all_results_df["librispeech_split"] == librispeech_split)
+            & (all_results_df["manipulation_mode"] == manipulation)
         ].copy()
 
-        all_feature_baseline = joined_df[
-            (joined_df["probename"] == probe)
-            & (joined_df["librispeech_split"] == librispeech_split)
-            & (joined_df["manipulation_mode"] == "none")
+        all_feature_baseline = all_results_df[
+            (all_results_df["probename"] == probe)
+            & (all_results_df["librispeech_split"] == librispeech_split)
+            & (all_results_df["manipulation_mode"] == "none")
         ].copy()
-        random_baseline = joined_df[
-            (joined_df["probename"] == probe)
-            & (joined_df["librispeech_split"] == librispeech_split)
-            & (joined_df["manipulation_mode"] == "random_baseline")
+        random_baseline = all_results_df[
+            (all_results_df["probename"] == probe)
+            & (all_results_df["librispeech_split"] == librispeech_split)
+            & (all_results_df["manipulation_mode"] == "random_baseline")
         ].copy()
 
         random_baseline["manipulated_feature_group"] = "random_baseline"
@@ -173,5 +177,5 @@ def plot_results(joined_df: pd.DataFrame) -> None:
 
 
 if __name__ == "__main__":
-    results_df = load_result_files()
-    plot_results(results_df)
+    all_results_df = load_result_files(results_dir=RESULTS_DIR)
+    plot_results(all_results_df)

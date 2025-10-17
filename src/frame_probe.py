@@ -405,9 +405,14 @@ def parse_args():
         help="Whether to save the test set predictions.",
     )
     parser.add_argument(
-        "--normalize_features",
+        "--not_normalize_features",
         action="store_false",
         help="Whether to normalize the input features.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Whether to overwrite existing extracted features.",
     )
     args = parser.parse_args()
     return args
@@ -423,8 +428,8 @@ def main():
     ablation = args.ablation
     permutation = args.permutation
     save_predictions = args.save_predictions
-    normalize_features = args.normalize_features
-    normalize_string = "normalized" if normalize_features else "unnormalized"
+    not_normalize_features = args.not_normalize_features
+    normalize_string = "unnormalized" if not_normalize_features else "normalized"
 
     if any((zeroing, ablation, permutation)) is False:
         logger.warning(
@@ -436,7 +441,7 @@ def main():
     logger.info(f"Using LibriSpeech split: {librispeech_split}")
     logger.info(f"Using model: {modelname}")
     logger.info(f"Using probe: {probe_name}")
-    logger.info(f"Normalize features: {normalize_features}")
+    logger.info(f"Normalize features: {not_normalize_features}")
     logger.info(
         f"Using selected layers: {select_layers if select_layers is not None else 'all layers'}"
     )
@@ -464,7 +469,8 @@ def main():
         modelname=modelname,
         seq_sampling="random_frames",
         select_layers=select_layers,
-        normalize_features=normalize_features,
+        normalize_features=not_normalize_features,
+        overwrite=args.overwrite,
     )
 
     logger.info("Running probe...")

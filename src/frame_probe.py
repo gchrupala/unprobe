@@ -442,9 +442,9 @@ def main():
     logger.info("-" * 30)
 
     logger.info("Formatting data for probe...")
-    from load_probe_data import format_data
+    from load_probe_data import load_data
 
-    processed_X, processed_Y, filename_timestamp, data_shape = format_data(
+    processed_X, processed_Y, filename_timestamp, data_shape = load_data(
         librispeech_split=librispeech_split,
         modelname=modelname,
         seq_sampling="random_frames",

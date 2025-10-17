@@ -45,6 +45,7 @@ def format_data(
     modelname: str = "facebook/wav2vec2-base",
     seq_sampling: str = "random_frames",
     select_layers: list | None = None,
+    normalize_features: bool = True,
 ):
     """
     Format the data for probing tasks.
@@ -235,6 +236,22 @@ def format_data(
             }
 
     processed_X = np.array(processed_X)
+    if normalize_features:
+        from sklearn.preprocessing import StandardScaler
+
+        start_idx = 0
+        end_idx = 0
+        # Normalize the features within each group
+        for name, shape in data_shape.items():  # type: ignore
+            if name == "input_feature_all" or name == "dnn_hidden_state":
+                continue
+            start_idx = end_idx
+            end_idx += shape[0]
+            scaler = StandardScaler()
+            processed_X[:, start_idx:end_idx] = scaler.fit_transform(
+                processed_X[:, start_idx:end_idx]
+            )
+        logger.info("Normalized input features")
     processed_Y = np.array(processed_Y)
     if select_layers is not None:
         logger.info(f"Selecting layers: {select_layers}")
@@ -243,6 +260,57 @@ def format_data(
     logger.info(f"Processed X shape: {processed_X.shape}")
     logger.info(f"Processed Y shape: {processed_Y.shape}")
     return processed_X, processed_Y, filename_timestamp, data_shape  # type: ignore
+
+
+def load_data(
+    librispeech_split: str = "dev-clean",
+    modelname: str = "facebook/wav2vec2-base",
+    seq_sampling: str = "random_frames",
+    select_layers: list | None = None,
+    overwrite: bool = False,
+    normalize_features: bool = True,
+):
+    """
+    Load the formatted data for probing tasks.
+    Args:
+        librispeech_split: The LibriSpeech split to use. Options are "dev-clean", "train-clean-100"
+        modelname: The name of the transformer model used to extract hidden states.
+        seq_sampling: The sequence sampling method used. Options are "random_frames", "mean", "none"
+        select_layers: List of layer indices to select from the transformer model. If None, use all layers.
+    Returns:
+        processed_X: The processed input features.
+        processed_Y: The processed target hidden states.
+        data_shape: A dictionary containing the shape of each feature component.
+
+    """
+    # Check if the data has already been formatted and saved
+
+    formatted_data_path = f"{SAVEPATH}/processed_data/librispeech-{librispeech_split}_{modelname.split('/')[-1]}_representation_{seq_sampling}_formatted.pickle"
+    if normalize_features:
+        formatted_data_path = formatted_data_path.replace(
+            ".pickle", "_normalized.pickle"
+        )
+
+    # Make sure the directory exists
+    os.makedirs(os.path.dirname(formatted_data_path), exist_ok=True)
+    if os.path.exists(formatted_data_path) and not overwrite:
+        logger.info(f"Loading formatted data from {formatted_data_path}")
+        with open(formatted_data_path, "rb") as f:
+            return pickle.load(f)
+    # If not, format the data and save it
+    logger.info("Formatted data not found or overwrite flag is set, formatting data...")
+    processed_X, processed_Y, filename_timestamp, data_shape = format_data(
+        librispeech_split=librispeech_split,
+        modelname=modelname,
+        seq_sampling=seq_sampling,
+        select_layers=select_layers,
+        normalize_features=normalize_features,
+    )
+
+    with open(formatted_data_path, "wb") as f:
+        pickle.dump((processed_X, processed_Y, filename_timestamp, data_shape), f)
+    logger.info(f"Formatted data saved to {formatted_data_path}")
+    return processed_X, processed_Y, filename_timestamp, data_shape
 
 
 if __name__ == "__main__":

@@ -404,6 +404,11 @@ def parse_args():
         action="store_true",
         help="Whether to save the test set predictions.",
     )
+    parser.add_argument(
+        "--normalize_features",
+        action="store_false",
+        help="Whether to normalize the input features.",
+    )
     args = parser.parse_args()
     return args
 
@@ -418,10 +423,20 @@ def main():
     ablation = args.ablation
     permutation = args.permutation
     save_predictions = args.save_predictions
+    normalize_features = args.normalize_features
+    normalize_string = "normalized" if normalize_features else "unnormalized"
+
+    if any((zeroing, ablation, permutation)) is False:
+        logger.warning(
+            "At least one manipulation mode (zeroing, ablation, permutation) should be True."
+        )
+        logger.warning("Setting ablation to True by default.")
+        ablation = True
 
     logger.info(f"Using LibriSpeech split: {librispeech_split}")
     logger.info(f"Using model: {modelname}")
     logger.info(f"Using probe: {probe_name}")
+    logger.info(f"Normalize features: {normalize_features}")
     logger.info(
         f"Using selected layers: {select_layers if select_layers is not None else 'all layers'}"
     )
@@ -434,7 +449,7 @@ def main():
     # Create a subdirectory for the current experiment with separate librispeech split and modelname
     results_path = os.path.join(
         results_path,
-        f"librispeech-{librispeech_split}/{modelname.split('/')[-1]}/{probe_name}_frame_probe",
+        f"librispeech-{librispeech_split}/{modelname.split('/')[-1]}/{probe_name}_frame_probe_{normalize_string}",
     )
     os.makedirs(results_path, exist_ok=True)
 
@@ -449,6 +464,7 @@ def main():
         modelname=modelname,
         seq_sampling="random_frames",
         select_layers=select_layers,
+        normalize_features=normalize_features,
     )
 
     logger.info("Running probe...")
@@ -474,7 +490,7 @@ def main():
     df = pd.DataFrame(results)
     # df.drop(columns=["coefficients"], inplace=True)
     df.to_csv(
-        f"{results_path}/all_layers_results.csv",
+        f"{results_path}/all_layers_results_{normalize_string}.csv",
         index=False,
     )
 

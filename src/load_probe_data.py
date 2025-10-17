@@ -135,6 +135,7 @@ def format_data(
     logger.info(f"Number of valid fileIDs: {len(valid_fileIDs)}")
 
     processed_X, processed_Y = [], []
+    filename_timestamp = []
 
     for fileID in tqdm(valid_fileIDs):
         spk_embedding = np.array(special_features[fileID]["spk_emb"])
@@ -220,6 +221,7 @@ def format_data(
 
             processed_X.append(input_feature)
             processed_Y.append(utt_dnn_hidden_state)
+            filename_timestamp.append((fileID, frame_index))
 
             data_shape = {
                 "acoustic_features": utt_lld_frames.shape,
@@ -240,7 +242,7 @@ def format_data(
     # Processed_Y shape should be (num_frames, num_layers, hidden_size)
     logger.info(f"Processed X shape: {processed_X.shape}")
     logger.info(f"Processed Y shape: {processed_Y.shape}")
-    return processed_X, processed_Y, data_shape  # type: ignore
+    return processed_X, processed_Y, filename_timestamp, data_shape  # type: ignore
 
 
 if __name__ == "__main__":
@@ -248,7 +250,7 @@ if __name__ == "__main__":
     modelname = "facebook/hubert-base-ls960"
     seq_sampling = "random_frames"
     select_layers = [0, 6, 12]
-    _, _, data_shape = format_data(
+    _, _, _, data_shape = format_data(
         librispeech_split=librispeech_split,
         modelname=modelname,
         seq_sampling=seq_sampling,

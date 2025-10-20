@@ -487,11 +487,6 @@ def main():
         save_predictions=save_predictions,
     )
 
-    # Rename the layer number to reflect the actual layer number in the model using select_layers
-    for result in results:
-        if select_layers is not None:
-            result["layer"] = select_layers[result["layer"]]
-
     logger.info("Saving all results...")
     df = pd.DataFrame(results)
     # df.drop(columns=["coefficients"], inplace=True)

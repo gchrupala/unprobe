@@ -550,11 +550,13 @@ def extract_text_representation(
     """
     from transformers import AutoModel, AutoTokenizer
 
-    model = AutoModel.from_pretrained(modelname, reference_compile=False)
+    if "modernbert" in modelname.lower():
+        model = AutoModel.from_pretrained(modelname, reference_compile=False)
+    else:
+        model = AutoModel.from_pretrained(modelname)
     tokenizer = AutoTokenizer.from_pretrained(modelname)
 
-    n_frames = kwargs.get("n_frames", 5)
-    seq_sampling = kwargs.get("seq_sampling", "random_sampling").lower()
+    seq_sampling = kwargs.get("seq_sampling", "random_frames").lower()
 
     model.to(device)
     logger.info(f"Using device: {device}")
@@ -565,12 +567,17 @@ def extract_text_representation(
     for example in tqdm(
         dataset, desc=f"Extracting text representations with {modelname}"
     ):
+        n_frames = kwargs.get("n_frames", 5)
+
         inputs = tokenizer(
             example["sent"],  # type: ignore
             return_tensors="pt",
             padding=True,
             truncation=True,
+            return_offsets_mapping=True,
         )
+
+        offset_mapping = inputs.pop("offset_mapping").cpu().squeeze().numpy()
         fileID = example["fileID"]  # type: ignore
         inputs = {k: v.to(device) for k, v in inputs.items()}
         with torch.no_grad():
@@ -583,9 +590,10 @@ def extract_text_representation(
             # Take the mean over the seq_len dimension
             hidden_states = hidden_states.mean(dim=2)
             frame_indices = None
-        elif seq_sampling == "random_sampling":
+        elif seq_sampling == "random_frames":
             if n_frames > hidden_states.shape[2]:
-                n_frames = hidden_states.shape[2]
+                # Skip examples where there are too limited amount of tokens
+                continue
             frame_indices = np.random.choice(
                 hidden_states.shape[2], n_frames, replace=False
             )
@@ -604,7 +612,10 @@ def extract_text_representation(
         # Store the hidden states in a dictionary with the fileID as key
         text_representations[fileID] = {
             "hidden_states": selected_hidden_states.cpu().squeeze().numpy(),
-            "frame_token_indices": frame_indices,
+            "frame_token_indices": {
+                "frame_indices": frame_indices,
+                "offset_mapping": offset_mapping,
+            },
         }
     return text_representations
 
@@ -754,7 +765,11 @@ def extract_features(
 
     # Extract Transformer model based features
     # First determine if the modality is audio or text
-    if "BERT" in modelname:
+    if modelname in [
+        "answerdotai/ModernBERT-base",
+        "google-bert/bert-base-uncased",
+        "FacebookAI/roberta-base",
+    ]:
         extraction_function = extract_text_representation
     elif "wav" in modelname.lower() or "hubert" in modelname.lower():
         extraction_function = extract_audio_representation
@@ -768,6 +783,7 @@ def extract_features(
             modelname=modelname,
             device=device,  # type: ignore
             seq_aggregation="none",
+            seq_sampling=seq_sampling,
         )
         with open(transformer_feature_savepath, "wb") as f:
             pickle.dump(transformer_features, f)

@@ -113,15 +113,6 @@ def format_data(
     )
     logger.info("Loaded and sorted transcription data")
 
-    # Remove entries where the length of words and syntax_feats are not equal
-    transcription = [
-        x for x in transcription if len(x["words"]) == len(x["syntax_feats"])
-    ]
-    transcription = pd.DataFrame(transcription)
-    valid_fileIDs = transcription["fileID"].unique().tolist()
-    # Set the fileID column as the index for transcription
-    transcription = transcription.set_index("fileID")
-
     # Sort the lld by fileID
     lld = lld.sort_values(["file", "start"])
 
@@ -131,6 +122,18 @@ def format_data(
         "rb",
     ) as f:
         dnn_hidden_states = pickle.load(f)
+
+    # Remove entries where the length of words and syntax_feats are not equal
+    transcription = [
+        x for x in transcription if len(x["words"]) == len(x["syntax_feats"])
+    ]
+    transcription = [
+        x for x in transcription if x["fileID"] in dnn_hidden_states.keys()
+    ]
+    transcription = pd.DataFrame(transcription)
+    valid_fileIDs = transcription["fileID"].unique().tolist()
+    # Set the fileID column as the index for transcription
+    transcription = transcription.set_index("fileID")
 
     logger.info("Loaded all data files")
     logger.info(f"Number of valid fileIDs: {len(valid_fileIDs)}")
@@ -147,6 +150,7 @@ def format_data(
 
         metadata = transcription.loc[fileID]["non_acoustic"]
         syntax_feats = transcription.loc[fileID]["syntax_feats"]
+        # sent = transcription.loc[fileID]["words"]
 
         utt_lld = lld.loc[fileID].reset_index()
         # Convert opensmile frame to ms in integer
@@ -159,42 +163,126 @@ def format_data(
         )
         # phone_alignment = transcription.loc[fileID]["phone_alignment"]
 
+        # Add new columns char_idx_start and char_idx_end to ort_alignment
+        # by counting how many characters since the start of the sentence
+        cumulative_char_count = 0
+        char_idx_starts = []
+        char_idx_ends = []
+        for word in ort_alignment["text"]:
+            char_idx_starts.append(cumulative_char_count)
+            cumulative_char_count += len(word)
+            char_idx_ends.append(cumulative_char_count)
+            # Add 1 to cumulative_char_count to account for the space
+            cumulative_char_count += 1
+        ort_alignment["char_idx_start"] = char_idx_starts
+        ort_alignment["char_idx_end"] = char_idx_ends
+
         utt_dnn_hidden_states = dnn_hidden_states[fileID]
         # Move the time dimension to the first dimension
         utt_dnn_hidden_states["hidden_states"] = np.moveaxis(
             utt_dnn_hidden_states["hidden_states"], 1, 0
         )
 
-        utt_dnn_hidden_states = list(zip(*utt_dnn_hidden_states.values()))
+        if type(utt_dnn_hidden_states["frame_token_indices"]) is dict:
+            frame_indices = utt_dnn_hidden_states["frame_token_indices"][
+                "frame_indices"
+            ]
+            offset_mappings = utt_dnn_hidden_states["frame_token_indices"][
+                "offset_mapping"
+            ]
 
-        for utt_dnn_hidden_state, frame_index in utt_dnn_hidden_states:
-            # Get the corresponding lld rows for current frame index +- 2 frames
-            utt_lld_frames = (
-                utt_lld[
-                    (utt_lld["start_ms"] >= frame_index - 20)
-                    & (utt_lld["start_ms"] <= frame_index + 20)
-                ]
-                .drop(columns=["start", "end", "start_ms"])
-                .reset_index(drop=True)
-                .to_numpy()
-            )
+        else:
+            frame_indices = utt_dnn_hidden_states["frame_token_indices"]
+            # Make a list filled with None for offset_mapping
+            offset_mappings = None
+        hidden_states = utt_dnn_hidden_states["hidden_states"]
+        list_of_hidden_states_and_frame_indices = list(
+            zip(hidden_states, frame_indices)
+        )
+
+        for (
+            utt_dnn_hidden_state,
+            frame_index,
+        ) in list_of_hidden_states_and_frame_indices:
+            # Use if statement to separate text model from audio model
+            if offset_mappings is not None:
+                # For text models, the frame_index corresponds to the subword token index
+                # So we need to look up the actual word index from offset_mapping
+                if frame_index == 0:
+                    # If the frame_index is 0, it means it's the [CLS] token
+                    # We can skip this frame
+                    logger.info(
+                        f"Skipping [CLS] token for fileID {fileID} at frame_index {frame_index}"
+                    )
+                    continue
+                # Use offset_mappings to get the word index
+                start_char_idx = offset_mappings[frame_index][
+                    0
+                ]  # start char index of the token
+                # Find the word index in ort_alignment that contains this char index
+                word_idx = ort_alignment[
+                    (ort_alignment["char_idx_start"] <= start_char_idx)
+                    & (ort_alignment["char_idx_end"] > start_char_idx)
+                ].index
+
+                if word_idx.empty:
+                    logger.info(
+                        f"Empty word_idx for fileID {fileID} at frame_index {frame_index}"
+                    )
+                    continue
+
+                token_start_time = (
+                    ort_alignment.loc[word_idx, "start"] * 1000
+                )  # Convert to ms
+                token_end_time = (
+                    ort_alignment.loc[word_idx, "end"] * 1000
+                )  # Convert to ms
+                # Get the middle time of the token in ms as integer and round to the nearest 10 ms
+                token_time = (
+                    int((token_start_time.iloc[0] + token_end_time.iloc[0]) / 2 / 10)
+                    * 10
+                )
+
+                utt_lld_frames = (
+                    utt_lld[
+                        (utt_lld["start_ms"] >= token_time - 20)
+                        & (utt_lld["start_ms"] <= token_time + 20)
+                    ]
+                    .drop(columns=["start", "end", "start_ms"])
+                    .reset_index(drop=True)
+                    .to_numpy()
+                )
+
+            else:
+                token_time = frame_index
+                # Get the corresponding word and syntax features for current frame index
+                # To get the word embedding we need to find the index of the word in ort_alignment
+                word_idx = ort_alignment[
+                    (ort_alignment["start"] <= token_time / 1000)
+                    & (ort_alignment["end"] > token_time / 1000)
+                ].index
+                if word_idx.empty:
+                    continue
+
+                # Get the corresponding lld rows for current frame index +- 2 frames
+                utt_lld_frames = (
+                    utt_lld[
+                        (utt_lld["start_ms"] >= token_time - 20)
+                        & (utt_lld["start_ms"] <= token_time + 20)
+                    ]
+                    .drop(columns=["start", "end", "start_ms"])
+                    .reset_index(drop=True)
+                    .to_numpy()
+                )
             if utt_lld_frames.shape[0] != 5:
                 continue
             utt_lld_frames = utt_lld_frames.flatten()
-            # Get the corresponding word and syntax features for current frame index
-            # To get the word embedding we need to find the index of the word in ort_alignment
-            word_idx = ort_alignment[
-                (ort_alignment["start"] <= frame_index / 1000)
-                & (ort_alignment["end"] > frame_index / 1000)
-            ].index
-            if word_idx.empty:
-                continue
 
             word_embedding = fasttext_embedding[word_idx].flatten()
             syntax_feature = np.array(syntax_feats)[word_idx].flatten()
 
             # Get the corresponding PPG features for current frame index
-            ppg_feature = ppg_features[int(frame_index // 10)].flatten()
+            ppg_feature = ppg_features[int(token_time // 10)].flatten()
 
             # Make sure all the dimensions are correct
             assert all(

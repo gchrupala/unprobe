@@ -431,6 +431,38 @@ def main():
     not_normalize_features = args.not_normalize_features
     normalize_string = "unnormalized" if not_normalize_features else "normalized"
 
+    # Check select_layer against model size to make sure layers are valid
+    model_layer_dict = {
+        "facebook/wav2vec2-base": 12,
+        "facebook/wav2vec2-base-960h": 12,
+        "facebook/wav2vec2-large": 24,
+        "facebook/wav2vec2-large-960h": 24,
+        "facebook/wav2vec2-large-xlsr-53": 24,
+        "facebook/hubert-base-ls960": 12,
+        "facebook/hubert-large-ll60k": 24,
+        "facebook/hubert-large-ls960-ft": 24,
+        "microsoft/wavlm-base": 12,
+        "FacebookAI/roberta-base": 12,
+        "google-bert/bert-base-uncased": 12,
+        "answerdotai/ModernBERT-base": 22,
+    }
+    if select_layers is not None:
+        if modelname in model_layer_dict:
+            max_layers = (
+                model_layer_dict[modelname] + 1
+            )  # +1 because 0th layer is embedding layer
+            for layer in select_layers:
+                if layer < 0 or layer >= max_layers:
+                    logger.warning(
+                        f"Selected layer {layer} is out of bounds for model {modelname} with {max_layers} layers."
+                    )
+                    # Get rid of the invalid layer
+                    select_layers.remove(layer)
+        else:
+            logger.warning(
+                f"Model {modelname} not found in model_layer_dict. Skipping layer validation."
+            )
+
     if any((zeroing, ablation, permutation)) is False:
         logger.warning(
             "At least one manipulation mode (zeroing, ablation, permutation) should be True."

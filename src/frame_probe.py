@@ -451,13 +451,22 @@ def main():
             max_layers = (
                 model_layer_dict[modelname] + 1
             )  # +1 because 0th layer is embedding layer
-            for layer in select_layers:
-                if layer < 0 or layer >= max_layers:
-                    logger.warning(
-                        f"Selected layer {layer} is out of bounds for model {modelname} with {max_layers} layers."
-                    )
-                    # Get rid of the invalid layer
-                    select_layers.remove(layer)
+
+            select_layers = np.array(select_layers)
+            # Select only the layers that are valid
+            select_layers = select_layers[select_layers < max_layers]
+            if len(select_layers) == 0:
+                raise ValueError(
+                    f"All selected layers are invalid for model {modelname} with max layers {max_layers - 1}"
+                )
+            # Select only positive layers
+            select_layers = select_layers[select_layers >= 0]
+            # Convert back to list
+            select_layers = select_layers.tolist()
+
+            logger.info(
+                f"Validated selected layers for model {modelname}: {select_layers}"
+            )
         else:
             logger.warning(
                 f"Model {modelname} not found in model_layer_dict. Skipping layer validation."

@@ -262,6 +262,7 @@ def format_data(
                     & (ort_alignment["end"] > token_time / 1000)
                 ].index
                 if word_idx.empty:
+                    # skip if no word found
                     continue
 
                 # Get the corresponding lld rows for current frame index +- 2 frames

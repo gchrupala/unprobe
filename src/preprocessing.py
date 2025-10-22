@@ -67,12 +67,18 @@ def save_librispeech_tg_to_single_file(
     if not os.path.exists(alignment_single_file_savepath):
         os.makedirs(alignment_single_file_savepath, exist_ok=True)
 
-    # TODO unify the split names with the ones in the dataset
-    if librispeech_split == "dev-clean":
-        librispeech_split = "dev"
-    elif librispeech_split == "train-clean-100":
-        librispeech_split = "train"
-    dataset_path = os.path.join(ALIGNMENTPATH, librispeech_split)
+    librispeech_split_names = os.listdir(ALIGNMENTPATH)
+
+    for name in librispeech_split_names:
+        if name in librispeech_split:
+            librispeech_split_name = name
+        else:
+            librispeech_split_name = None
+
+    if librispeech_split_name is None:
+        raise ValueError(f"{librispeech_split} not found in {librispeech_split_names}")
+
+    dataset_path = os.path.join(ALIGNMENTPATH, librispeech_split_name)
     transcription_files = glob.glob(f"{dataset_path}/**/*.TextGrid", recursive=True)
     # Sort transcription_files
     transcription_files = sorted(
@@ -113,12 +119,6 @@ def save_librispeech_tg_to_single_file(
             ],
         )
         df["tier"] = tier
-
-        # TODO: change librispeech_split to the correct split name
-        if librispeech_split == "dev":
-            librispeech_split = "dev-clean"
-        elif librispeech_split == "train":
-            librispeech_split = "train-clean-100"
 
         df.to_csv(
             os.path.join(
@@ -389,7 +389,6 @@ def extract_special_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray
 
     logger.info("""Extracting ppgs features, speaker embedding from audio file""")
     special_features = {}
-    spk_embs_original = []
 
     def _map_example(example: dict) -> dict:
         audio_tensor = torch.from_numpy(example["audio"]["array"]).unsqueeze(0)
@@ -671,22 +670,11 @@ def transcription_to_string_embeddings(
     return utterance_embeddings
 
 
-def extract_features(
+def process_dataset(
     librispeech_split: str = "dev-clean",
-    modelname: str = "facebook/wav2vec2-base",
+    savepath: str = SAVEPATH,
     overwrite: bool = False,
-    seq_sampling: str = "random_frames",
 ):
-    """Extracting all features from the librispeech dataset and save them to disk.
-
-    Args:
-        librispeech_split (str, optional): _description_. Defaults to "dev-clean".
-        modelname (str, optional): The name of the model to use. Defaults to "facebook/wav2vec2-base".
-        overwrite (bool, optional): Whether to overwrite existing features. Defaults to False.
-    Raises:
-        ValueError: If the librispeech_split or modelname is invalid.
-    """
-
     savepath = SAVEPATH
     if not os.path.exists(savepath):
         os.makedirs(savepath)
@@ -721,34 +709,48 @@ def extract_features(
     # Add tokens for each utt to the dataset
     dataset = dataset.add_column("tokens", tokens_for_each_utt)  # type: ignore
 
-    # We then go on to extract the features
-    basic_probe_inputs = {
+    return dataset, transcriptions
+
+
+def extract_base_features(
+    dataset: Dataset,
+    librispeech_split: str = "dev-clean",
+    savepath: str = SAVEPATH,
+    overwrite: bool = False,
+):
+    """Extracting base features from the dataset and save them to disk.
+
+    Args:
+        dataset (datasets.Dataset): dataset containing audio and tokens
+        librispeech_split (str, optional): split of librispeech to use. Defaults to "dev-clean".
+        savepath (str, optional): path to save the features. Defaults to SAVEPATH.
+        overwrite (bool, optional): whether to overwrite existing features. Defaults to False.
+    """
+
+    base_probe_inputs = {
         "opensmile_features": {
             "function": extract_opensmile_features,
             "save_dir": f"{savepath}/librispeech-{librispeech_split}_opensmile_features.pickle",
-            "overwrite": overwrite,
             "feature_level": "functionals",
             "feature_set": "eGeMAPSv02",
         },
         "opensmile_features_lld": {
             "function": extract_opensmile_features,
             "save_dir": f"{savepath}/librispeech-{librispeech_split}_opensmile_features_lld.pickle",
-            "overwrite": overwrite,
             "feature_level": "lld",
             "feature_set": "eGeMAPSv02",
         },
         "special_features": {
             "function": extract_special_features,
             "save_dir": f"{savepath}/librispeech-{librispeech_split}_special_features.pickle",
-            "overwrite": overwrite,
         },
     }
 
     for probe_data_type in tqdm(
-        basic_probe_inputs, desc="Running BASIC feature extraction:"
+        base_probe_inputs, desc="Running BASIC feature extraction:"
     ):
-        feature = basic_probe_inputs[probe_data_type]
-        if not os.path.exists(feature["save_dir"]) or feature["overwrite"]:
+        feature = base_probe_inputs[probe_data_type]
+        if not os.path.exists(feature["save_dir"]) or overwrite:
             tqdm.write(f"Extracting {probe_data_type} features...")
             extracted_feature = feature["function"](dataset, **feature)
             if isinstance(extracted_feature, pd.DataFrame):
@@ -762,6 +764,25 @@ def extract_features(
             logger.info(f"{feature['save_dir']} already exists, skipping...")
 
     logger.info("Basic feature extraction completed!")
+
+
+def extract_transformer_features(
+    dataset: Dataset,
+    librispeech_split: str = "dev-clean",
+    modelname: str = "facebook/wav2vec2-base",
+    savepath: str = SAVEPATH,
+    overwrite: bool = False,
+    seq_sampling: str = "random_frames",
+):
+    """Extracting Transformer based features from the dataset and save them to disk.
+
+    Args:
+        dataset (datasets.Dataset): dataset containing audio and tokens
+        librispeech_split (str, optional): split of librispeech to use. Defaults to "dev-clean".
+        modelname (str, optional): The name of the model to use. Defaults to "facebook/wav2vec2-base".
+        savepath (str, optional): path to save the features. Defaults to SAVEPATH.
+        overwrite (bool, optional): Whether to overwrite existing features. Defaults to False.
+    """
 
     # Extract Transformer model based features
     # First determine if the modality is audio or text
@@ -790,7 +811,51 @@ def extract_features(
     else:
         logger.info(f"{transformer_feature_savepath} already exists, skipping...")
 
-    logger.info("All features extracted!")
+    logger.info("Transformer feature extraction completed!")
+
+
+def extract_features(
+    librispeech_split: str = "dev-clean",
+    modelname: str = "facebook/wav2vec2-base",
+    overwrite: bool = False,
+    seq_sampling: str = "random_frames",
+    do_base_only: bool = False,
+    overwrite_base: bool = False,
+):
+    """Extracting features from the dataset and save them to disk.
+
+    Args:
+        librispeech_split (str, optional): split of librispeech to use. Defaults to "dev-clean".
+        modelname (str, optional): The name of the model to use. Defaults to "facebook/wav2vec2-base".
+        overwrite (bool, optional): Whether to overwrite existing features. Defaults to False.
+        seq_sampling (str, optional): Sequence sampling method to use. Defaults to "random_frames".
+        do_base_only (bool, optional): Only do base feature extraction. Defaults to False.
+        overwrite_base (bool, optional): Overwrite base features even if they exist. Defaults to False.
+    """
+
+    if overwrite_base:
+        save_librispeech_tg_to_single_file(librispeech_split=librispeech_split)
+
+    dataset, transcriptions = process_dataset(
+        librispeech_split=librispeech_split,
+        overwrite=overwrite_base,
+    )
+
+    if do_base_only:
+        extract_base_features(
+            dataset,
+            librispeech_split=librispeech_split,
+            overwrite=overwrite_base,
+        )
+        return
+
+    extract_transformer_features(
+        dataset,
+        librispeech_split=librispeech_split,
+        modelname=modelname,
+        overwrite=overwrite,
+        seq_sampling=seq_sampling,
+    )
 
 
 if __name__ == "__main__":
@@ -818,10 +883,29 @@ if __name__ == "__main__":
         default="random_frames",
         help="Sequence sampling method to use. Choose from 'mean', 'random_frames', 'none'",
     )
+    parser.add_argument(
+        "--do_base_only",
+        action="store_true",
+        help="Only do base feature extraction",
+    )
+    parser.add_argument(
+        "--overwrite_base",
+        action="store_true",
+        help="Overwrite base features even if they exist",
+    )
     args = parser.parse_args()
     librispeech_split = args.librispeech_split
     modelname = args.modelname
     overwrite = args.overwrite
     seq_sampling = args.seq_sampling
+    do_base_only = args.do_base_only
+    overwrite_base = args.overwrite_base
 
-    extract_features(librispeech_split, modelname, overwrite, seq_sampling)
+    extract_features(
+        librispeech_split,
+        modelname,
+        overwrite,
+        seq_sampling,
+        do_base_only,
+        overwrite_base,
+    )

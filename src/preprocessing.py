@@ -72,6 +72,7 @@ def save_librispeech_tg_to_single_file(
     for name in librispeech_split_names:
         if name in librispeech_split:
             librispeech_split_name = name
+            break
         else:
             librispeech_split_name = None
 
@@ -821,6 +822,7 @@ def extract_features(
     seq_sampling: str = "random_frames",
     do_base_only: bool = False,
     overwrite_base: bool = False,
+    overwrite_textgrid: bool = False,
 ):
     """Extracting features from the dataset and save them to disk.
 
@@ -833,7 +835,9 @@ def extract_features(
         overwrite_base (bool, optional): Overwrite base features even if they exist. Defaults to False.
     """
 
-    if overwrite_base:
+    if overwrite_textgrid:
+        logger.info("Rewriting or saving textgrids into single file")
+        print('-' * 30)
         save_librispeech_tg_to_single_file(librispeech_split=librispeech_split)
 
     dataset, transcriptions = process_dataset(
@@ -893,6 +897,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Overwrite base features even if they exist",
     )
+    parser.add_argument(
+        "--overwrite_textgrid",
+        action="store_true",
+        help="Overwrite textgrid ensemble file if it exists",
+    )
     args = parser.parse_args()
     librispeech_split = args.librispeech_split
     modelname = args.modelname
@@ -900,6 +909,7 @@ if __name__ == "__main__":
     seq_sampling = args.seq_sampling
     do_base_only = args.do_base_only
     overwrite_base = args.overwrite_base
+    overwrite_textgrid = args.overwrite_textgrid
 
     extract_features(
         librispeech_split,
@@ -908,4 +918,5 @@ if __name__ == "__main__":
         seq_sampling,
         do_base_only,
         overwrite_base,
+        overwrite_textgrid
     )

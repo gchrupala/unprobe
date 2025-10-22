@@ -774,6 +774,7 @@ def extract_transformer_features(
     savepath: str = SAVEPATH,
     overwrite: bool = False,
     seq_sampling: str = "random_frames",
+    n_frames: int = 5,
 ):
     """Extracting Transformer based features from the dataset and save them to disk.
 
@@ -806,6 +807,7 @@ def extract_transformer_features(
             device=device,  # type: ignore
             seq_aggregation="none",
             seq_sampling=seq_sampling,
+            n_frames=n_frames,
         )
         with open(transformer_feature_savepath, "wb") as f:
             pickle.dump(transformer_features, f)
@@ -820,7 +822,9 @@ def extract_features(
     modelname: str = "facebook/wav2vec2-base",
     overwrite: bool = False,
     seq_sampling: str = "random_frames",
-    do_base_only: bool = False,
+    n_frames: int = 5,
+    do_base: bool = False,
+    do_transformer: bool = True,
     overwrite_base: bool = False,
     overwrite_textgrid: bool = False,
 ):
@@ -831,13 +835,13 @@ def extract_features(
         modelname (str, optional): The name of the model to use. Defaults to "facebook/wav2vec2-base".
         overwrite (bool, optional): Whether to overwrite existing features. Defaults to False.
         seq_sampling (str, optional): Sequence sampling method to use. Defaults to "random_frames".
-        do_base_only (bool, optional): Only do base feature extraction. Defaults to False.
+        do_base (bool, optional): Only do base feature extraction. Defaults to False.
         overwrite_base (bool, optional): Overwrite base features even if they exist. Defaults to False.
     """
 
     if overwrite_textgrid:
         logger.info("Rewriting or saving textgrids into single file")
-        print('-' * 30)
+        print("-" * 30)
         save_librispeech_tg_to_single_file(librispeech_split=librispeech_split)
 
     dataset, transcriptions = process_dataset(
@@ -845,21 +849,21 @@ def extract_features(
         overwrite=overwrite_base,
     )
 
-    if do_base_only:
+    if do_base:
         extract_base_features(
             dataset,
             librispeech_split=librispeech_split,
             overwrite=overwrite_base,
         )
-        return
 
-    extract_transformer_features(
-        dataset,
-        librispeech_split=librispeech_split,
-        modelname=modelname,
-        overwrite=overwrite,
-        seq_sampling=seq_sampling,
-    )
+    if do_transformer:
+        extract_transformer_features(
+            dataset,
+            librispeech_split=librispeech_split,
+            modelname=modelname,
+            overwrite=overwrite,
+            seq_sampling=seq_sampling,
+        )
 
 
 if __name__ == "__main__":
@@ -888,9 +892,20 @@ if __name__ == "__main__":
         help="Sequence sampling method to use. Choose from 'mean', 'random_frames', 'none'",
     )
     parser.add_argument(
-        "--do_base_only",
+        "--n_frames",
+        type=int,
+        default=5,
+        help="Number of frames to sample if seq_sampling is 'random_frames'",
+    )
+    parser.add_argument(
+        "--do_base",
         action="store_true",
-        help="Only do base feature extraction",
+        help="Do base feature extraction",
+    )
+    parser.add_argument(
+        "--do_transformer",
+        action="store_true",
+        help="Do transformer feature extraction",
     )
     parser.add_argument(
         "--overwrite_base",
@@ -907,16 +922,20 @@ if __name__ == "__main__":
     modelname = args.modelname
     overwrite = args.overwrite
     seq_sampling = args.seq_sampling
-    do_base_only = args.do_base_only
+    do_base = args.do_base
+    do_transformer = args.do_transformer
     overwrite_base = args.overwrite_base
     overwrite_textgrid = args.overwrite_textgrid
+    n_frames = args.n_frames
 
     extract_features(
         librispeech_split,
         modelname,
         overwrite,
         seq_sampling,
-        do_base_only,
+        n_frames,
+        do_base,
+        do_transformer,
         overwrite_base,
-        overwrite_textgrid
+        overwrite_textgrid,
     )

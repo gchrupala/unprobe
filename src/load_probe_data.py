@@ -183,16 +183,21 @@ def format_data(
             utt_dnn_hidden_states["hidden_states"], 1, 0
         )
 
-        if type(utt_dnn_hidden_states["frame_token_indices"]) is dict:
+        if "offset_mapping" in utt_dnn_hidden_states["frame_token_indices"].keys():
             frame_indices = utt_dnn_hidden_states["frame_token_indices"][
                 "frame_indices"
             ]
             offset_mappings = utt_dnn_hidden_states["frame_token_indices"][
                 "offset_mapping"
             ]
-
+            raw_frame_indices = None
         else:
-            frame_indices = utt_dnn_hidden_states["frame_token_indices"]
+            frame_indices = utt_dnn_hidden_states["frame_token_indices"][
+                "frame_indices_in_ms"
+            ]
+            raw_frame_indices = utt_dnn_hidden_states["frame_token_indices"][
+                "frame_indices"
+            ]
             # Make a list filled with None for offset_mapping
             offset_mappings = None
         hidden_states = utt_dnn_hidden_states["hidden_states"]
@@ -200,10 +205,10 @@ def format_data(
             zip(hidden_states, frame_indices)
         )
 
-        for (
+        for i, (
             utt_dnn_hidden_state,
             frame_index,
-        ) in list_of_hidden_states_and_frame_indices:
+        ) in enumerate(list_of_hidden_states_and_frame_indices):
             # Use if statement to separate text model from audio model
             if offset_mappings is not None:
                 # For text models, the frame_index corresponds to the subword token index
@@ -311,7 +316,11 @@ def format_data(
 
             processed_X.append(input_feature)
             processed_Y.append(utt_dnn_hidden_state)
-            filename_timestamp.append((fileID, frame_index))
+            filename_timestamp.append(
+                (fileID, frame_index)
+            ) if raw_frame_indices is None else filename_timestamp.append(
+                (fileID, frame_index, raw_frame_indices[i])
+            )
 
             data_shape = {
                 "acoustic_features": utt_lld_frames.shape,

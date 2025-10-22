@@ -527,7 +527,10 @@ def extract_audio_representation(
         # Store the hidden states in a dictionary with the fileID as key
         audio_representations[fileID] = {
             "hidden_states": selected_hidden_states.cpu().squeeze().numpy(),
-            "frame_token_indices": frame_indices_in_ms,
+            "frame_token_indices": {
+                "frame_indices": frame_indices,
+                "frame_indices_in_ms": frame_indices_in_ms,
+            },
         }
 
     return audio_representations
@@ -846,7 +849,7 @@ def extract_features(
 
     dataset, transcriptions = process_dataset(
         librispeech_split=librispeech_split,
-        overwrite=overwrite_base,
+        overwrite=overwrite_textgrid,
     )
 
     if do_base:

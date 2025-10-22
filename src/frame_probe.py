@@ -405,8 +405,8 @@ def parse_args():
         help="Whether to save the test set predictions.",
     )
     parser.add_argument(
-        "--not_normalize_features",
-        action="store_false",
+        "--normalize_features",
+        action="store_true",
         help="Whether to normalize the input features.",
     )
     parser.add_argument(
@@ -428,8 +428,8 @@ def main():
     ablation = args.ablation
     permutation = args.permutation
     save_predictions = args.save_predictions
-    not_normalize_features = args.not_normalize_features
-    normalize_string = "unnormalized" if not_normalize_features else "normalized"
+    normalize_features = args.normalize_features
+    normalize_string = "normalized" if normalize_features else "unnormalized"
 
     # Check select_layer against model size to make sure layers are valid
     model_layer_dict = {
@@ -473,7 +473,7 @@ def main():
     logger.info(f"Using LibriSpeech split: {librispeech_split}")
     logger.info(f"Using model: {modelname}")
     logger.info(f"Using probe: {probe_name}")
-    logger.info(f"Normalize features: {not_normalize_features}")
+    logger.info(f"Normalize features: {normalize_features}")
     logger.info(
         f"Using selected layers: {select_layers if select_layers is not None else 'all layers'}"
     )
@@ -501,7 +501,7 @@ def main():
         modelname=modelname,
         seq_sampling="random_frames",
         select_layers=select_layers,
-        normalize_features=not_normalize_features,
+        normalize_features=normalize_features,
         overwrite=args.overwrite,
     )
 

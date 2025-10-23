@@ -409,7 +409,11 @@ def extract_special_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray
 
         return example
 
-    dataset = dataset.map(_map_example, remove_columns=["tokens"])
+    dataset = dataset.map(
+        _map_example,
+        remove_columns=["tokens"],
+        desc="Extracting text embeddings, phonetic posteriorgram, speaker embedding",
+    )
 
     spk_emb_array = np.array(dataset["spk_emb"])
     # Use UMAP to reduce speaker embedding to 100 dimensions

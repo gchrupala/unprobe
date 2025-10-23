@@ -44,7 +44,6 @@ def format_data(
     librispeech_split: str = "dev-clean",
     modelname: str = "facebook/wav2vec2-base",
     seq_sampling: str = "random_frames",
-    select_layers: list | None = None,
     normalize_features: bool = True,
 ):
     """
@@ -53,7 +52,6 @@ def format_data(
         librispeech_split: The LibriSpeech split to use. Options are "dev-clean", "train-clean-100"
         modelname: The name of the transformer model used to extract hidden states.
         seq_sampling: The sequence sampling method used. Options are "random_frames", "mean", "none"
-        select_layers: List of layer indices to select from the transformer model. If None, use all layers.
     Returns:
         processed_X: The processed input features.
         processed_Y: The processed target hidden states.
@@ -351,9 +349,7 @@ def format_data(
             )
         logger.info("Normalized input features")
     processed_Y = np.array(processed_Y)
-    if select_layers is not None:
-        logger.info(f"Selecting layers: {select_layers}")
-        processed_Y = processed_Y[:, select_layers, :]
+
     # Processed_Y shape should be (num_frames, num_layers, hidden_size)
     logger.info(f"Processed X shape: {processed_X.shape}")
     logger.info(f"Processed Y shape: {processed_Y.shape}")
@@ -395,19 +391,29 @@ def load_data(
         logger.info(f"Loading formatted data from {formatted_data_path}")
         with open(formatted_data_path, "rb") as f:
             return pickle.load(f)
-    # If not, format the data and save it
-    logger.info("Formatted data not found or overwrite flag is set, formatting data...")
-    processed_X, processed_Y, filename_timestamp, data_shape = format_data(
-        librispeech_split=librispeech_split,
-        modelname=modelname,
-        seq_sampling=seq_sampling,
-        select_layers=select_layers,
-        normalize_features=normalize_features,
-    )
+    else:
+        # If not, format the data and save it
+        logger.info(
+            "Formatted data not found or overwrite flag is set, formatting data..."
+        )
+        processed_X, processed_Y, filename_timestamp, data_shape = format_data(
+            librispeech_split=librispeech_split,
+            modelname=modelname,
+            seq_sampling=seq_sampling,
+            normalize_features=normalize_features,
+        )
+        with open(formatted_data_path, "wb") as f:
+            pickle.dump((processed_X, processed_Y, filename_timestamp, data_shape), f)
+        logger.info(f"Saved formatted data to {formatted_data_path}")
 
-    with open(formatted_data_path, "wb") as f:
-        pickle.dump((processed_X, processed_Y, filename_timestamp, data_shape), f)
-    logger.info(f"Formatted data saved to {formatted_data_path}")
+    if select_layers is not None:
+        logger.info(f"Selecting layers: {select_layers}")
+        processed_Y = processed_Y[:, select_layers, :]
+
+        logger.info(
+            f"Selected processed_Y shape after layer selection: {processed_Y.shape}"
+        )
+
     return processed_X, processed_Y, filename_timestamp, data_shape
 
 
@@ -420,6 +426,5 @@ if __name__ == "__main__":
         librispeech_split=librispeech_split,
         modelname=modelname,
         seq_sampling=seq_sampling,
-        select_layers=select_layers,
     )  # For testing purposes
     print(data_shape)

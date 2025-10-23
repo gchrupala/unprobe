@@ -732,6 +732,10 @@ def extract_base_features(
     """
 
     base_probe_inputs = {
+        "special_features": {
+            "function": extract_special_features,
+            "save_dir": f"{savepath}/librispeech-{librispeech_split}_special_features.pickle",
+        },
         "opensmile_features": {
             "function": extract_opensmile_features,
             "save_dir": f"{savepath}/librispeech-{librispeech_split}_opensmile_features.pickle",
@@ -743,10 +747,6 @@ def extract_base_features(
             "save_dir": f"{savepath}/librispeech-{librispeech_split}_opensmile_features_lld.pickle",
             "feature_level": "lld",
             "feature_set": "eGeMAPSv02",
-        },
-        "special_features": {
-            "function": extract_special_features,
-            "save_dir": f"{savepath}/librispeech-{librispeech_split}_special_features.pickle",
         },
     }
 
@@ -930,6 +930,14 @@ if __name__ == "__main__":
     overwrite_base = args.overwrite_base
     overwrite_textgrid = args.overwrite_textgrid
     n_frames = args.n_frames
+
+    logger.info("Overwriting settings are as follows:")
+    logger.info(f"  Overwrite transformers: {overwrite}")
+    logger.info(f"  Sequence Sampling: {seq_sampling}")
+    logger.info(f"  Do Base: {do_base}")
+    logger.info(f"  Do Transformer: {do_transformer}")
+    logger.info(f"  Overwrite Base: {overwrite_base}")
+    logger.info(f"  Overwrite TextGrid: {overwrite_textgrid}")
 
     extract_features(
         librispeech_split,

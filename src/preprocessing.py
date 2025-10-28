@@ -191,13 +191,21 @@ def efficient_syntax_parsing(transcriptions: list[dict]) -> list[np.ndarray]:
             if word.text in ["'s", "'re", "'ve", "'ll", "'d", "'m", "n't"]:
                 continue
             # Use the text to get the constituency label from the nltk tree
-            tree_node = nltk_tree.leaf_treeposition(i)
+            node_location_in_tree = nltk_tree.leaf_treeposition(i)
 
-            constituent_label = nltk_tree[tree_node[:-1]]._label
+            constituent_label = nltk_tree[node_location_in_tree[:-1]]._label
             constituent_label = benepar_labels_dict.get(constituent_label, 67)
 
-            tree_depth = len(tree_node)
-            tree_depth_norm = tree_depth / (nltk_tree.height() - 1)
+            # Word location (depth) in tree
+            node_depth_in_tree = len(node_location_in_tree)
+            total_tree_depth = nltk_tree.height() - 1
+            node_depth_in_tree_norm = node_depth_in_tree / total_tree_depth
+
+            # Path from root to current token
+            # We need to pad the path to the maximum depth of the tree by making an empty array
+            path_from_root = [0] * total_tree_depth
+            for j, node in enumerate(node_location_in_tree):
+                path_from_root[j] = node
 
             word_length = len(word.text)
             word_location_in_sentence = i + 1
@@ -211,16 +219,24 @@ def efficient_syntax_parsing(transcriptions: list[dict]) -> list[np.ndarray]:
                     word.pos,
                     word.dep,
                     constituent_label,
-                    tree_depth,
-                    tree_depth_norm,
-                    word_length,
+                    node_depth_in_tree,
+                    node_depth_in_tree_norm,
+                    # word_length,
                     word_location_in_sentence,
                     word_location_in_sentence_norm,
                 ]
+                + path_from_root,
             )
             syntax_feats.append(word_features)
 
         all_syntax_feats.append(np.array(syntax_feats))
+
+        # Pad all_syntax_feats to the same dimension on the second axis
+        max_feat_len = max([x.shape[1] for x in all_syntax_feats])
+        for i, feats in enumerate(all_syntax_feats):
+            if feats.shape[1] < max_feat_len:
+                padding = np.zeros((feats.shape[0], max_feat_len - feats.shape[1]))
+                all_syntax_feats[i] = np.hstack([feats, padding])
     return all_syntax_feats
 
 
@@ -834,6 +850,7 @@ def extract_features(
     do_transformer: bool = True,
     overwrite_base: bool = False,
     overwrite_textgrid: bool = False,
+    overwrite_transcriptions: bool = False,
 ):
     """Extracting features from the dataset and save them to disk.
 
@@ -853,7 +870,7 @@ def extract_features(
 
     dataset, transcriptions = process_dataset(
         librispeech_split=librispeech_split,
-        overwrite=overwrite_textgrid,
+        overwrite=overwrite_transcriptions,
     )
 
     if do_base:
@@ -924,6 +941,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Overwrite textgrid ensemble file if it exists",
     )
+    parser.add_argument(
+        "--overwrite_transcriptions",
+        action="store_true",
+        help="Overwrite transcriptions file if it exists",
+    )
     args = parser.parse_args()
     librispeech_split = args.librispeech_split
     modelname = args.modelname
@@ -933,6 +955,7 @@ if __name__ == "__main__":
     do_transformer = args.do_transformer
     overwrite_base = args.overwrite_base
     overwrite_textgrid = args.overwrite_textgrid
+    overwrite_transcriptions = args.overwrite_transcriptions
     n_frames = args.n_frames
 
     logger.info("Overwriting settings are as follows:")
@@ -942,7 +965,7 @@ if __name__ == "__main__":
     logger.info(f"  Do Transformer: {do_transformer}")
     logger.info(f"  Overwrite Base: {overwrite_base}")
     logger.info(f"  Overwrite TextGrid: {overwrite_textgrid}")
-
+    logger.info(f"  Overwrite Transcriptions: {overwrite_transcriptions}")
     extract_features(
         librispeech_split,
         modelname,
@@ -953,4 +976,5 @@ if __name__ == "__main__":
         do_transformer,
         overwrite_base,
         overwrite_textgrid,
+        overwrite_transcriptions,
     )

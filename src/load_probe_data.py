@@ -281,6 +281,7 @@ def format_data(
             if utt_lld_frames.shape[0] != 5:
                 continue
             utt_lld_frames = utt_lld_frames.flatten()
+            utt_lld_names = utt_lld.columns.tolist()
 
             word_embedding = fasttext_embedding[word_idx].flatten()
             syntax_feature = np.array(syntax_feats)[word_idx].flatten()
@@ -292,7 +293,7 @@ def format_data(
             assert all(
                 (
                     word_embedding.shape[0] == 100,
-                    syntax_feature.shape[0] == 8,
+                    syntax_feature.shape[0] == 34,
                     ppg_feature.shape[0] == 40,
                     spk_embedding.shape[0] == 100,
                     metadata.shape[0] == 2,
@@ -335,18 +336,22 @@ def format_data(
     if normalize_features:
         from sklearn.preprocessing import StandardScaler
 
-        start_idx = 0
-        end_idx = 0
-        # Normalize the features within each group
-        for name, shape in data_shape.items():  # type: ignore
-            if name == "input_feature_all" or name == "dnn_hidden_state":
-                continue
-            start_idx = end_idx
-            end_idx += shape[0]
-            scaler = StandardScaler()
-            processed_X[:, start_idx:end_idx] = scaler.fit_transform(
-                processed_X[:, start_idx:end_idx]
-            )
+        # We normalize features in a column-wise manner so that each feature has zero mean and unit variance
+        scaler = StandardScaler()
+        processed_X = scaler.fit_transform(processed_X)
+
+        # start_idx = 0
+        # end_idx = 0
+        # # Normalize the features within each group
+        # for name, shape in data_shape.items():  # type: ignore
+        #     if name == "input_feature_all" or name == "dnn_hidden_state":
+        #         continue
+        #     start_idx = end_idx
+        #     end_idx += shape[0]
+        #     scaler = StandardScaler()
+        #     processed_X[:, start_idx:end_idx] = scaler.fit_transform(
+        #         processed_X[:, start_idx:end_idx]
+        #     )
         logger.info("Normalized input features")
     processed_Y = np.array(processed_Y)
 
@@ -417,14 +422,65 @@ def load_data(
     return processed_X, processed_Y, filename_timestamp, data_shape
 
 
+def load_sample_data():
+    bert_pickle = "../experimental_data/librispeech-dev-clean_bert-base-uncased_representation_random_frames.pickle"
+
+    with open(bert_pickle, "rb") as f:
+        transformer_representation = pickle.load(f)
+
+    hidden_states = [
+        transformer_representation[x]["hidden_states"]
+        for x in list(transformer_representation.keys())
+    ]
+
+
+def dimension_reduction(hidden_states: np.ndarray, n_components: int = 100):
+    """Reduce the dimension of the hidden_states
+
+    Args:
+        hidden_states (np.ndarray): _hidden_states is a list of numpy arrays with shape (nunm_frames, num_layers, hidden_size)
+        n_components (int, optional): _n_components is the number of components to keep. Defaults to 100.
+    """
+    # hidden_states is a list of numpy arrays with shape (num_frames, num_layers, hidden_size)
+
+    logger.info(f"Stacked hidden_states shape: {hidden_states.shape}")
+
+    # Use dimension reduction technique such as PCA or t-SNE to reduce the dimension of hidden states
+    from sklearn.decomposition import PCA
+
+    pca = PCA(n_components=n_components)
+    # Since the hidden_states is 3D array (num_samples, num_layers, hidden_size), we need to do PCA on the last dimension. We need to do the PCA on each layer separately and then stack them back together.
+    reduced_hidden_states = []
+    for layer in range(hidden_states.shape[1]):
+        layer_hidden_states = hidden_states[:, layer, :]
+        reduced_layer_hidden_states = pca.fit_transform(layer_hidden_states)
+        reduced_hidden_states.append(reduced_layer_hidden_states)
+
+    # Stack the reduced hidden states back to a 3D array with shape (num_samples, num_layers, n_components)
+    reduced_hidden_states = np.array(reduced_hidden_states)
+    reduced_hidden_states = np.moveaxis(reduced_hidden_states, 0, 1)
+    logger.info(f"Reduced hidden_states shape: {reduced_hidden_states.shape}")
+
+    # Make sure the first two dimensions are the same as the original hidden_states
+    assert reduced_hidden_states.shape[0] == hidden_states.shape[0]
+    assert reduced_hidden_states.shape[1] == hidden_states.shape[1]
+    return reduced_hidden_states
+
+
 if __name__ == "__main__":
     librispeech_split = "dev-clean"
     modelname = "facebook/hubert-base-ls960"
     seq_sampling = "random_frames"
     select_layers = [0, 6, 12]
-    _, _, _, data_shape = format_data(
+    processed_X, processed_Y, _, data_shape = format_data(
         librispeech_split=librispeech_split,
         modelname=modelname,
         seq_sampling=seq_sampling,
     )  # For testing purposes
+    reduced_Y = dimension_reduction(
+        processed_Y, n_components=100
+    )  # Reduce to 100 dimensions
     print(data_shape)
+    print(f"Processed X shape: {processed_X.shape}")
+    print(f"Processed Y shape: {processed_Y.shape}")
+    print(f"Reduced Y shape: {reduced_Y.shape}")

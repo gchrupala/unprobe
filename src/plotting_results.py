@@ -9,9 +9,25 @@ import numpy as np
 import pandas as pd
 import plotnine as p9
 
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+# Get the hostname of the machine running the code
+hostname = os.uname().nodename
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
-RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
+
+if "snellius" in hostname:
+    # If running on Snellius, use the Snellius dataset root
+    DATASET_ROOT = os.path.realpath("/projects/prjs1586/corpora/LibriSpeech")
+    ALIGNMENT_ROOT = DATASET_ROOT.replace("LibriSpeech", "librispeech_textgrids")
+    SAVEPATH = "/projects/prjs1586/experimental_data"
+    RESULTS_ROOT = "/projects/prjs1586/experimental_results"
+
+else:
+    # If running on local machine, use the local dataset root
+    DATASET_ROOT = os.path.realpath("/corpora/LibriSpeech/LibriSpeech")
+    # ALIGNMENT_ROOT = os.path.expanduser(f"~/corpora/librispeech_alignment/")
+    ALIGNMENT_ROOT = os.path.join(PROJECT_ROOT, "data")
+    SAVEPATH = os.path.join(PROJECT_ROOT, "experimental_data")
+    RESULTS_ROOT = os.path.join(PROJECT_ROOT, "results")
 
 model_layer_dict = {
     "wav2vec2-base": 12,
@@ -303,7 +319,7 @@ def plot_results(all_results_df: pd.DataFrame) -> None:
         )
         figure.show()
 
-        base_output_dir = os.path.join(RESULTS_DIR, "figures")
+        base_output_dir = os.path.join(RESULTS_ROOT, "figures")
         os.makedirs(base_output_dir, exist_ok=True)
         os.makedirs(os.path.join(base_output_dir, probe), exist_ok=True)
         os.makedirs(
@@ -321,6 +337,98 @@ def plot_results(all_results_df: pd.DataFrame) -> None:
     logger.info("Plotting complete.")
 
 
+def plot_coefficients(coefficients):
+    pass
+    # Regressor coefficients sanity check visualization
+    # First we aggregate the coefficients for each feature group
+
+    coefficient_dict = {}
+    sections_shapes = (
+        (0, 125, "acoustic"),
+        (
+            125,
+            100 + 125,
+            "word_embedding",
+        ),
+        (
+            100 + 125,
+            100 + 125 + 8,
+            "syntax_features",
+        ),
+        (
+            100 + 125 + 8,
+            100 + 125 + 8 + 40,
+            "ppgs_features",
+        ),
+        (
+            100 + 125 + 8 + 40,
+            100 + 125 + 8 + 40 + 100,
+            "spk_embedding",
+        ),
+        (
+            100 + 125 + 8 + 40 + 100,
+            100 + 125 + 8 + 40 + 100 + 2,
+            "metadata",
+        ),
+    )
+
+    for range_start, range_end, name in sections_shapes:
+        print(
+            f"Feature group: {name}, Coefficient mean: {np.mean(np.abs(coefficients[:, range_start:range_end]))}"
+        )
+        coefficient_dict[name] = np.mean(np.abs(coefficients[:, range_start:range_end]))
+
+    # Extract coefficients for each feature group using sections_shapes
+    acoustic_features = coefficients[:, sections_shapes[0][0] : sections_shapes[0][1]]
+    word_embedding_features = coefficients[
+        :, sections_shapes[1][0] : sections_shapes[1][1]
+    ]
+    syntax_features = coefficients[:, sections_shapes[2][0] : sections_shapes[2][1]]
+    ppgs_features = coefficients[:, sections_shapes[3][0] : sections_shapes[3][1]]
+    spk_embedding_features = coefficients[
+        :, sections_shapes[4][0] : sections_shapes[4][1]
+    ]
+    metadata_features = coefficients[:, sections_shapes[5][0] : sections_shapes[5][1]]
+    # Sum the coefficients for each feature group
+    acoustic_features = np.mean(acoustic_features, axis=1)
+    word_embedding_features = np.mean(word_embedding_features, axis=1)
+    # phone_embedding_features = np.mean(phone_embedding_features, axis=1)
+    metadata_features = np.mean(metadata_features, axis=1)
+    syntax_features = np.mean(syntax_features, axis=1)
+    ppgs_features = np.mean(ppgs_features, axis=1)
+    spk_embedding_features = np.mean(spk_embedding_features, axis=1)
+
+    stacked_aggrgegated = np.stack(
+        (
+            acoustic_features,
+            word_embedding_features,
+            # phone_embedding_features,
+            metadata_features,
+            syntax_features,
+            ppgs_features,
+            spk_embedding_features,
+        ),
+        axis=0,
+    )
+
+    columns = [
+        "Acoustic Features",
+        "Word Embedding",
+        "Metadata",
+        "Syntax Features",
+        "PPGs Features",
+        "Speaker Embedding",
+    ]
+    # plot the coefficients in heatmap
+    plt.figure(figsize=(20, 16))
+    sns.heatmap(
+        stacked_aggrgegated.mean(-1).T, cmap="coolwarm", annot=True, xticklabels=columns
+    )
+    plt.title("Feature Correlation Matrix")
+    plt.show()
+    return coefficient_dict
+
+
 if __name__ == "__main__":
-    all_results_df = load_result_files(results_dir=RESULTS_DIR)
+    all_results_df = load_result_files(results_dir=RESULTS_ROOT)
     plot_results(all_results_df)

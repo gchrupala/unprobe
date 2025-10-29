@@ -77,6 +77,115 @@ def load_result_files(results_dir: str) -> pd.DataFrame:
     return all_results_df
 
 
+def load_dimreduction_files(results_dir: str):
+    # logger.info(f"Loading result files from {results_dir}...")
+    if not os.path.exists(results_dir):
+        logger.error(f"Results directory {results_dir} does not exist.")
+        raise FileNotFoundError(f"Results directory {results_dir} does not exist.")
+
+    all_results_files = glob.glob(
+        os.path.join(results_dir, "librispeech-*-dimreduction/**/*.csv"), recursive=True
+    )
+    modelname = "wav2vec2-base"
+    modelname = "bert-base-uncased"
+    modelname = "ModernBERT-base"
+    all_results_files = [
+        x
+        for x in all_results_files
+        if "all_layers" not in x and "_normalized" in x and modelname in x
+    ]
+
+    all_results_df = pd.DataFrame()
+    for result_file in all_results_files:
+        # logger.info(f"Found results file: {result_file}")
+        librispeech_split = result_file.split("/")[-4].replace("-dimreduction", "")
+        modelname = result_file.split("/")[-3]
+        probename, _, _, normalization, dimension_reduction = result_file.split("/")[
+            -2
+        ].split("_")
+        if "random" in probename:
+            probename = "random_forest"
+
+        # logger.info(
+        #     f"Parsed - Librispeech Split: {librispeech_split}, Model Name: {modelname}, Probe Name: {probename}"
+        # )
+        df = pd.read_csv(result_file)
+        df["modelname"] = modelname
+        df["librispeech_split"] = librispeech_split
+        df["probename"] = probename
+        df["normalization"] = normalization
+        df["dimensions"] = int(dimension_reduction.split("-")[-1])
+        df["norm_layer"] = df["layer"] / model_layer_dict.get(modelname, 1)
+        all_results_df = pd.concat([all_results_df, df], ignore_index=True)
+
+    # Plot all of the results together with facet wrap on dimensions
+    subset_df = all_results_df.copy()
+    subset_df = subset_df[
+        (subset_df["manipulated_feature_group"] != "none")
+        & (subset_df["manipulation_mode"] == "ablation")
+    ]
+    all_feature_baseline = all_results_df[
+        (all_results_df["manipulated_feature_group"] == "none")
+        & (all_results_df["manipulation_mode"] == "none")
+    ].copy()
+    random_baseline = all_results_df[
+        (all_results_df["manipulated_feature_group"] == "none")
+        & (all_results_df["manipulation_mode"] == "random_baseline")
+    ].copy()
+
+    x_var, y_var = "layer", "train_score"
+
+    figure = (
+        p9.ggplot(subset_df)
+        + p9.facet_wrap("~ dimensions", ncol=3)
+        + p9.geom_line(
+            p9.aes(
+                x=x_var,
+                y=y_var,
+                color="manipulated_feature_group",
+                group="manipulated_feature_group",
+            ),
+            alpha=0.7,
+        )
+        + p9.geom_point(
+            p9.aes(x=x_var, y=y_var, color="manipulated_feature_group"),
+            data=subset_df,
+        )
+        # Add the baselines with distinct linetypes and colors for clarity
+        + p9.geom_line(
+            p9.aes(x=x_var, y=y_var),
+            alpha=0.7,
+            data=random_baseline,
+            color="black",
+            linetype="dashed",
+        )
+        + p9.geom_line(
+            p9.aes(
+                x=x_var,
+                y=y_var,
+            ),
+            alpha=0.7,
+            data=all_feature_baseline,
+            color="black",
+            linetype="dotted",
+        )
+        + p9.scale_color_discrete(name="Manip. Feat. Grp")
+        # Put the x-axis ticks from 0 to max layer for every 3rd layer
+        + p9.scale_x_continuous(breaks=range(0, subset_df["layer"].max() + 1, 3))
+        + p9.theme(
+            figure_size=(10, 10),
+            dpi=300,
+            plot_caption=p9.element_text(ha="left", margin={"t": 1, "units": "lines"}),
+        )
+        + p9.labs(
+            x="Layer (from shallow to deep)",
+            y="Test Score (R²)",
+            title=f"Encoding Probe Performance Across Model Layers with Dimensionality Reduction on {modelname}",
+        )
+    )
+    figure.show()
+
+
 caption = """\
 Baselines:
 - Black dashed line: Random Baseline (random_baseline)

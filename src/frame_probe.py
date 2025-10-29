@@ -54,6 +54,11 @@ sections_shapes = (
         100 + 125 + 34 + 40 + 100 + 2,
         "metadata",
     ),
+    (
+        100 + 125 + 34 + 40 + 100 + 2,
+        100 + 125 + 34 + 40 + 100 + 2 + 29,
+        "letter_unigram",
+    ),
 )
 
 # Setting up environmental variables depending on the cluster this code is running on
@@ -414,6 +419,12 @@ def parse_args():
         action="store_true",
         help="Whether to overwrite existing extracted features.",
     )
+    parser.add_argument(
+        "--dim_reduction",
+        type=int,
+        default=0,
+        help="The number of dimensions to reduce the target features to using PCA.",
+    )
     args = parser.parse_args()
     return args
 
@@ -430,6 +441,7 @@ def main():
     save_predictions = args.save_predictions
     normalize_features = args.normalize_features
     normalize_string = "normalized" if normalize_features else "unnormalized"
+    dim_reduction = args.dim_reduction if args.dim_reduction > 0 else None
 
     # Check select_layer against model size to make sure layers are valid
     model_layer_dict = {
@@ -483,6 +495,7 @@ def main():
     logger.info(f"Using model: {modelname}")
     logger.info(f"Using probe: {probe_name}")
     logger.info(f"Normalize features: {normalize_features}")
+    logger.info(f"Dimensionality reduction: {dim_reduction}")
     logger.info(
         f"Using selected layers: {select_layers if select_layers is not None else 'all layers'}"
     )
@@ -493,10 +506,17 @@ def main():
     if not os.path.exists(os.path.dirname(results_path)):
         raise ValueError(f"Results path {results_path} does not exist.")
     # Create a subdirectory for the current experiment with separate librispeech split and modelname
-    results_path = os.path.join(
-        results_path,
-        f"librispeech-{librispeech_split}/{modelname.split('/')[-1]}/{probe_name}_frame_probe_{normalize_string}",
-    )
+    if dim_reduction is None:
+        results_path = os.path.join(
+            results_path,
+            f"librispeech-{librispeech_split}/{modelname.split('/')[-1]}/{probe_name}_frame_probe_{normalize_string}",
+        )
+    else:
+        results_path = os.path.join(
+            results_path,
+            f"librispeech-{librispeech_split}-dimreduction/{modelname.split('/')[-1]}/{probe_name}_frame_probe_{normalize_string}_dimreduction-{dim_reduction}",
+        )
+
     os.makedirs(results_path, exist_ok=True)
 
     logger.info(f"Results will be saved to {results_path}")
@@ -512,6 +532,7 @@ def main():
         select_layers=select_layers,
         normalize_features=normalize_features,
         overwrite=args.overwrite,
+        dim_reduction=dim_reduction,
     )
 
     logger.info("Running probe...")

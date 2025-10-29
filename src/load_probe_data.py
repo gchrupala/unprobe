@@ -68,6 +68,9 @@ def format_data(
     transcription_path = (
         f"{SAVEPATH}/librispeech-{librispeech_split}_transcriptions.pickle"
     )
+    letter_unigram_path = (
+        f"{SAVEPATH}/librispeech-{librispeech_split}_letter_unigram_embeddings.pickle"
+    )
     dnn_hidden_states_path = f"{SAVEPATH}/librispeech-{librispeech_split}_{modelname.split('/')[-1]}_representation_{seq_sampling}.pickle"
 
     # Make sure all the required files exist
@@ -103,6 +106,10 @@ def format_data(
     # Load the transcriptions with syntax features
     with open(transcription_path, "rb") as f:
         transcription_raw = pickle.load(f)
+
+    # Load the letter unigram
+    with open(letter_unigram_path, "rb") as f:
+        all_letter_unigram_embeddings = pickle.load(f)
 
     # Sort the list of dictionary by the fileID key
     transcription = sorted(
@@ -145,6 +152,7 @@ def format_data(
         # Swap the dimensions in ppg_features to be (time, ppg_dim)
         ppg_features = ppg_features.transpose((1, 0))
         fasttext_embedding = np.array(special_features[fileID]["fasttext"])
+        letter_unigram_embeddings = all_letter_unigram_embeddings[fileID]
 
         metadata = transcription.loc[fileID]["non_acoustic"]
         syntax_feats = transcription.loc[fileID]["syntax_feats"]
@@ -158,6 +166,9 @@ def format_data(
 
         ort_alignment = (
             transcription.loc[fileID]["ort_alignment"].dropna().reset_index()
+        )
+        ort_alignment = ort_alignment[ort_alignment["text"] != "<pad>"].reset_index(
+            drop=True
         )
         # phone_alignment = transcription.loc[fileID]["phone_alignment"]
 
@@ -285,6 +296,7 @@ def format_data(
 
             word_embedding = fasttext_embedding[word_idx].flatten()
             syntax_feature = np.array(syntax_feats)[word_idx].flatten()
+            letter_unigram_feature = letter_unigram_embeddings[word_idx].flatten()
 
             # Get the corresponding PPG features for current frame index
             ppg_feature = ppg_features[int(token_time // 10)].flatten()
@@ -297,6 +309,7 @@ def format_data(
                     ppg_feature.shape[0] == 40,
                     spk_embedding.shape[0] == 100,
                     metadata.shape[0] == 2,
+                    letter_unigram_feature.shape[0] == 29,
                 )
             )
 
@@ -309,6 +322,7 @@ def format_data(
                     ppg_feature,
                     spk_embedding,
                     metadata,
+                    letter_unigram_feature,
                 ],
                 axis=0,
             )
@@ -328,6 +342,7 @@ def format_data(
                 "ppg_feature": ppg_feature.shape,
                 "spk_embedding": spk_embedding.shape,
                 "metadata": metadata.shape,
+                "letter_unigram_feature": letter_unigram_feature.shape,
                 "input_feature_all": input_feature.shape,
                 "dnn_hidden_state": utt_dnn_hidden_state.shape,
             }
@@ -368,6 +383,7 @@ def load_data(
     select_layers: list | None = None,
     overwrite: bool = False,
     normalize_features: bool = True,
+    dim_reduction: int | None = 100,
 ):
     """
     Load the formatted data for probing tasks.
@@ -395,7 +411,7 @@ def load_data(
     if os.path.exists(formatted_data_path) and not overwrite:
         logger.info(f"Loading formatted data from {formatted_data_path}")
         with open(formatted_data_path, "rb") as f:
-            return pickle.load(f)
+            processed_X, processed_Y, filename_timestamp, data_shape = pickle.load(f)
     else:
         # If not, format the data and save it
         logger.info(
@@ -418,6 +434,10 @@ def load_data(
         logger.info(
             f"Selected processed_Y shape after layer selection: {processed_Y.shape}"
         )
+
+    if dim_reduction is not None:
+        logger.info(f"Reducing dimension of target features to {dim_reduction}")
+        processed_Y = dimension_reduction(processed_Y, n_components=dim_reduction)
 
     return processed_X, processed_Y, filename_timestamp, data_shape
 
@@ -444,6 +464,11 @@ def dimension_reduction(hidden_states: np.ndarray, n_components: int = 100):
     # hidden_states is a list of numpy arrays with shape (num_frames, num_layers, hidden_size)
 
     logger.info(f"Stacked hidden_states shape: {hidden_states.shape}")
+    if n_components >= hidden_states.shape[2]:
+        logger.warning(
+            f"n_components {n_components} is greater than or equal to hidden size {hidden_states.shape[2]}. Skipping dimension reduction."
+        )
+        return hidden_states
 
     # Use dimension reduction technique such as PCA or t-SNE to reduce the dimension of hidden states
     from sklearn.decomposition import PCA

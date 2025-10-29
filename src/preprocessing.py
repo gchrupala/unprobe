@@ -184,12 +184,6 @@ def efficient_syntax_parsing(transcriptions: list[dict]) -> list[np.ndarray]:
         # for every word in the sentence, print the word, dependency label, constituent label, depth in constituency tree, word_character_length, location in sentence,
         syntax_feats = []
         for i, word in enumerate(sent):
-            # Skip contractions like 's, 're, 've, 'll, 'd, 'm
-            # Hard coding for now, may need to change
-            # #TODO try to map to phone alignments, that might be more accurate
-            # OR re-force align with these subword tokens
-            if word.text in ["'s", "'re", "'ve", "'ll", "'d", "'m", "n't"]:
-                continue
             # Use the text to get the constituency label from the nltk tree
             node_location_in_tree = nltk_tree.leaf_treeposition(i)
 
@@ -414,7 +408,8 @@ def extract_special_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray
         )
         example["ppgs"] = ppgs_features.cpu().squeeze().numpy()
 
-        fasttext_embeddings = [ft.get_word_vector(token) for token in example["tokens"]]
+        tokens = [x for x in example["tokens"] if x != "<pad>"]
+        fasttext_embeddings = [ft.get_word_vector(word) for word in tokens]
         example["fasttext"] = fasttext_embeddings
 
         with torch.no_grad():
@@ -427,7 +422,7 @@ def extract_special_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray
 
     dataset = dataset.map(
         _map_example,
-        remove_columns=["tokens"],
+        remove_columns=["sent", "audio", "speakerid", "chapter", "utterance", "tokens"],
         desc="Extracting text embeddings, phonetic posteriorgram, speaker embedding",
     )
 
@@ -694,6 +689,44 @@ def transcription_to_string_embeddings(
     return utterance_embeddings
 
 
+def get_letter_unigram_embeddings(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]:
+    """Extracting letter unigram embeddings from the dataset
+
+    Args:
+        dataset (datasets.Dataset): dataset containing text
+    Returns:
+        dict[str, np.ndarray]: Dictionary containing letter unigram embeddings
+    """
+    all_letters = set()
+    for example in dataset:
+        sent = example["sent"]  # type: ignore
+        for letter in sent:
+            all_letters.add(letter.lower())
+    all_letters = sorted(list(all_letters))
+    all_letters = ["<pad>"] + all_letters
+    logger.info(f"Total unique letters: {len(all_letters)}")
+
+    # For each word in each utterance in the dataset, we create a letter unigram embedding
+    letter_unigram_embeddings = {}
+    for example in tqdm(dataset, desc="Extracting letter unigram embeddings"):
+        fileID = example["fileID"]  # type: ignore
+        tokens = [x for x in example["tokens"] if x != "<pad>"]  # type: ignore
+        utt_letter_unigram_embeddings = []
+        for token in tokens:
+            # Make an empty zero array so that we can count the frequency of the letter at respective indices
+            token_letter_unigram = np.zeros((len(all_letters),), dtype=np.int32)
+            if token == "<pad>":
+                token_letter_unigram[0] = 1
+            else:
+                for letter in token:
+                    letter_index = all_letters.index(letter.lower())
+                    token_letter_unigram[letter_index] += 1
+            utt_letter_unigram_embeddings.append(token_letter_unigram)
+        letter_unigram_embeddings[fileID] = np.array(utt_letter_unigram_embeddings)
+
+    return letter_unigram_embeddings
+
+
 def process_dataset(
     librispeech_split: str = "dev-clean",
     savepath: str = SAVEPATH,
@@ -768,6 +801,10 @@ def extract_base_features(
             "feature_level": "lld",
             "feature_set": "eGeMAPSv02",
         },
+        "letter_unigram_embeddings": {
+            "function": get_letter_unigram_embeddings,
+            "save_dir": f"{savepath}/librispeech-{librispeech_split}_letter_unigram_embeddings.pickle",
+        },
     }
 
     for probe_data_type in tqdm(
@@ -775,7 +812,7 @@ def extract_base_features(
     ):
         feature = base_probe_inputs[probe_data_type]
         if not os.path.exists(feature["save_dir"]) or overwrite:
-            tqdm.write(f"Extracting {probe_data_type} features...")
+            logger.info(f"Extracting {probe_data_type} features...")
             extracted_feature = feature["function"](dataset, **feature)
             if isinstance(extracted_feature, pd.DataFrame):
                 # extracted_feature.to_csv(feature["save_dir"], index=False)

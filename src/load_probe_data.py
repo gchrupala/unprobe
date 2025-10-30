@@ -492,6 +492,36 @@ def dimension_reduction(hidden_states: np.ndarray, n_components: int = 100):
     return reduced_hidden_states
 
 
+def get_section_shapes(data_shape: dict) -> np.ndarray:
+    """
+    Get the shape of a specific section from the data_shape dictionary.
+    Args:
+        data_shape: A dictionary containing the shape of each feature component.
+    Returns:
+        section_shapes: A numpy array containing the start and end indices as well as the name of each section.
+    """
+    section_names = list(data_shape.keys())
+    # We don't need the input_feature_all and dnn_hidden_state keys to create the section shape
+
+    section_names = [
+        name
+        for name in section_names
+        if name not in ["input_feature_all", "dnn_hidden_state"]
+    ]
+
+    start_idx = 0
+    end_idx = 0
+
+    section_shapes = []
+
+    for section_name in section_names:
+        start_idx = end_idx
+        end_idx += data_shape[section_name][0]
+        section_shape = np.array([start_idx, end_idx, section_name])
+        section_shapes.append(section_shape)
+    return np.array(section_shapes)
+
+
 if __name__ == "__main__":
     librispeech_split = "dev-clean"
     modelname = "facebook/hubert-base-ls960"

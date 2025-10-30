@@ -66,7 +66,9 @@ def load_result_files(results_dir: str) -> pd.DataFrame:
         os.path.join(results_dir, "librispeech-*/**/*.csv"), recursive=True
     )
     all_results_files = [
-        x for x in all_results_files if "all_layers" not in x and "_normalized" in x
+        x
+        for x in all_results_files
+        if "all_layers" not in x and "_normalized" in x and "dimreduction" not in x
     ]
 
     all_results_df = pd.DataFrame()
@@ -103,8 +105,9 @@ def load_dimreduction_files(results_dir: str):
         os.path.join(results_dir, "librispeech-*-dimreduction/**/*.csv"), recursive=True
     )
     modelname = "wav2vec2-base"
-    modelname = "bert-base-uncased"
-    modelname = "ModernBERT-base"
+    # modelname = "bert-base-uncased"
+    # modelname = "ModernBERT-base"
+
     all_results_files = [
         x
         for x in all_results_files

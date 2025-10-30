@@ -10,6 +10,8 @@ from sklearn.linear_model import Ridge
 from sklearn.model_selection import GridSearchCV, train_test_split
 from tqdm.auto import tqdm, trange
 
+from load_probe_data import get_section_shapes
+
 # Set up logger with time, name, level, and message
 logging.basicConfig(
     level=logging.INFO,
@@ -26,40 +28,6 @@ logger = logging.getLogger(__name__)
 hostname = os.uname().nodename
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
-
-sections_shapes = (
-    (0, 125, "acoustic"),
-    (
-        125,
-        100 + 125,
-        "word_embedding",
-    ),
-    (
-        100 + 125,
-        100 + 125 + 34,
-        "syntax_features",
-    ),
-    (
-        100 + 125 + 34,
-        100 + 125 + 34 + 40,
-        "ppgs_features",
-    ),
-    (
-        100 + 125 + 34 + 40,
-        100 + 125 + 34 + 40 + 100,
-        "spk_embedding",
-    ),
-    (
-        100 + 125 + 34 + 40 + 100,
-        100 + 125 + 34 + 40 + 100 + 2,
-        "metadata",
-    ),
-    (
-        100 + 125 + 34 + 40 + 100 + 2,
-        100 + 125 + 34 + 40 + 100 + 2 + 29,
-        "letter_unigram",
-    ),
-)
 
 # Setting up environmental variables depending on the cluster this code is running on
 
@@ -110,6 +78,7 @@ def pick_probe(probe_name: str = "ridge"):
 def run_probe(
     processed_X: np.ndarray,
     processed_y: np.ndarray,
+    data_shape: dict,
     filename_timestamp: list[tuple],
     probe_name: str = "ridge",
     select_layers: list[int] | None = None,
@@ -219,8 +188,10 @@ def run_probe(
         }
         layer_results.append(result)
 
+        section_shapes = get_section_shapes(data_shape=data_shape)
+
         for range_start, range_end, name in tqdm(
-            sections_shapes, desc="Feature Groups", leave=False
+            section_shapes, desc="Feature Groups", leave=False
         ):
             assert any((zeroing, ablation, permutation)), (
                 "At least one manipulation mode must be True"
@@ -539,6 +510,7 @@ def main():
     results = run_probe(
         processed_X=processed_X,
         processed_y=processed_Y,
+        data_shape=data_shape,
         filename_timestamp=filename_timestamp,
         probe_name=probe_name,
         select_layers=select_layers,

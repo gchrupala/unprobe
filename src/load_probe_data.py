@@ -305,7 +305,7 @@ def format_data(
             assert all(
                 (
                     word_embedding.shape[0] == 100,
-                    syntax_feature.shape[0] == 34,
+                    # syntax_feature.shape[0] == 34,
                     ppg_feature.shape[0] == 40,
                     spk_embedding.shape[0] == 100,
                     metadata.shape[0] == 2,

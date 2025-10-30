@@ -400,13 +400,20 @@ def extract_special_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray
 
     logger.info("""Extracting ppgs features, speaker embedding from audio file""")
     special_features = {}
+    
 
     def _map_example(example: dict) -> dict:
         audio_tensor = torch.from_numpy(example["audio"]["array"]).unsqueeze(0)
-        ppgs_features = ppgs.from_audio(
+        if device == torch.device('cpu'):
+            ppgs_features = ppgs.from_audio(
+                audio_tensor, sample_rate=ppgs.SAMPLE_RATE
+            )
+            example['ppgs'] = ppgs_features.double().squeeze().numpy()
+        else:
+            ppgs_features = ppgs.from_audio(
             audio_tensor, sample_rate=ppgs.SAMPLE_RATE, gpu=0
         )
-        example["ppgs"] = ppgs_features.cpu().squeeze().numpy()
+            example["ppgs"] = ppgs_features.cpu().squeeze().numpy()
 
         tokens = [x for x in example["tokens"] if x != "<pad>"]
         fasttext_embeddings = [ft.get_word_vector(word) for word in tokens]

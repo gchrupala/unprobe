@@ -492,7 +492,7 @@ def dimension_reduction(hidden_states: np.ndarray, n_components: int = 100):
     return reduced_hidden_states
 
 
-def get_section_shapes(data_shape: dict) -> np.ndarray:
+def get_section_shapes(data_shape: dict) -> list:
     """
     Get the shape of a specific section from the data_shape dictionary.
     Args:
@@ -517,9 +517,9 @@ def get_section_shapes(data_shape: dict) -> np.ndarray:
     for section_name in section_names:
         start_idx = end_idx
         end_idx += data_shape[section_name][0]
-        section_shape = np.array([start_idx, end_idx, section_name])
-        section_shapes.append(section_shape)
-    return np.array(section_shapes)
+        section_shapes.append([start_idx, end_idx, section_name])
+
+    return section_shapes
 
 
 if __name__ == "__main__":

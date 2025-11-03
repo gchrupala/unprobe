@@ -400,19 +400,16 @@ def extract_special_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray
 
     logger.info("""Extracting ppgs features, speaker embedding from audio file""")
     special_features = {}
-    
 
     def _map_example(example: dict) -> dict:
         audio_tensor = torch.from_numpy(example["audio"]["array"]).unsqueeze(0)
-        if device == torch.device('cpu'):
-            ppgs_features = ppgs.from_audio(
-                audio_tensor, sample_rate=ppgs.SAMPLE_RATE
-            )
-            example['ppgs'] = ppgs_features.double().squeeze().numpy()
+        if device == torch.device("cpu"):
+            ppgs_features = ppgs.from_audio(audio_tensor, sample_rate=ppgs.SAMPLE_RATE)
+            example["ppgs"] = ppgs_features.double().squeeze().numpy()
         else:
             ppgs_features = ppgs.from_audio(
-            audio_tensor, sample_rate=ppgs.SAMPLE_RATE, gpu=0
-        )
+                audio_tensor, sample_rate=ppgs.SAMPLE_RATE, gpu=0
+            )
             example["ppgs"] = ppgs_features.cpu().squeeze().numpy()
 
         tokens = [x for x in example["tokens"] if x != "<pad>"]
@@ -556,6 +553,93 @@ def extract_audio_representation(
         }
 
     return audio_representations
+
+
+def extract_dnn_word_embedding(
+    dataset: Dataset,
+    modelname: str = "bert-base-uncased",
+    device: torch.device = torch.device("cuda"),
+    **kwargs,
+) -> dict[str, np.ndarray]:
+    """Extract word embedding using DNN models such as BERT
+
+    Args:
+        dataset (Dataset): The dataset to extract embeddings from.
+        modelname (str, optional): The name of the model to use. Defaults to "bert-base-uncased".
+        device (torch.device, optional): The device to run the model on. Defaults to torch.device("cuda").
+
+    Returns:
+        dict[str, np.ndarray]: A dictionary mapping file IDs to their corresponding word embeddings.
+    """
+    from transformers import AutoModel, AutoTokenizer
+
+    model = AutoModel.from_pretrained(modelname)
+    tokenizer = AutoTokenizer.from_pretrained(modelname)
+
+    model.to(device)
+    logger.info(f"Using device: {device}")
+    model.eval()
+
+    word_embeddings = {}
+    for example in tqdm(
+        dataset, desc=f"Extracting DNN word embedding with {modelname}"
+    ):
+        text = example["sent"]  # type: ignore
+
+        encoded_input = tokenizer(
+            text,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            return_offsets_mapping=True,
+        )
+        word_ids = encoded_input.word_ids()
+        offset_mapping = encoded_input.pop("offset_mapping").cpu().squeeze().numpy()
+
+        inputs = {k: v.to(device) for k, v in encoded_input.items()}
+        with torch.no_grad():
+            outputs = model(**inputs, output_hidden_states=False)
+
+        # Average the token embeddings for each word
+        hidden_states = outputs.last_hidden_state  # (batch_size, seq_len, hidden_size)
+
+        word_embeddings_list = []
+        current_word_id = None
+        current_word_tokens = []
+        for token_idx, word_id in enumerate(word_ids):
+            if word_id is None:
+                continue
+            if word_id != current_word_id:
+                if current_word_tokens:
+                    # Average the embeddings of the tokens for the previous word
+                    word_embedding = torch.mean(torch.stack(current_word_tokens), dim=0)
+                    word_embeddings_list.append(word_embedding.cpu().numpy())
+                current_word_id = word_id
+                current_word_tokens = [hidden_states[0, token_idx]]
+            else:
+                current_word_tokens.append(hidden_states[0, token_idx])
+
+        # Handle the last word
+        if current_word_tokens:
+            word_embedding = torch.mean(torch.stack(current_word_tokens), dim=0)
+            word_embeddings_list.append(word_embedding.cpu().numpy())
+
+        fileID = example["fileID"]  # type: ignore
+        words = tokenizer.convert_ids_to_tokens(encoded_input["input_ids"][0])
+        # Remove [CLS] and [SEP] tokens
+        words = [w for w in words if w not in tokenizer.all_special_tokens]
+        # Join subword tokens back together to form words
+        words = tokenizer.convert_ids_to_tokens(encoded_input["input_ids"][0])
+        words = [w for w in words if w not in tokenizer.all_special_tokens]
+        words = tokenizer.convert_tokens_to_string(words).split()
+
+        word_embeddings[fileID] = {
+            "word_embeddings": np.array(word_embeddings_list),
+            "words": words,
+            "offset_mapping": offset_mapping,
+        }
+
+    return word_embeddings
 
 
 def extract_text_representation(
@@ -811,6 +895,11 @@ def extract_base_features(
         "letter_unigram_embeddings": {
             "function": get_letter_unigram_embeddings,
             "save_dir": f"{savepath}/librispeech-{librispeech_split}_letter_unigram_embeddings.pickle",
+        },
+        "dnn_word_embeddings": {
+            "function": extract_dnn_word_embedding,
+            "save_dir": f"{savepath}/librispeech-{librispeech_split}_dnn_word_embeddings.pickle",
+            "modelname": "bert-base-uncased",
         },
     }
 

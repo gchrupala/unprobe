@@ -47,7 +47,7 @@ else:
     RESULTS_ROOT = os.path.join(PROJECT_ROOT, "results")
 
 
-def pick_probe(probe_name: str = "ridge"):
+def pick_probe(probe_name: str = "ridge", n_components: None | int = None):
     if probe_name == "ridge":
         model = Ridge()
         param_grid = {
@@ -55,7 +55,7 @@ def pick_probe(probe_name: str = "ridge"):
             # "solver": ["auto", "sag", "saga", "lsqr", "cholesky"],
             # "max_iter": [1000, 2000,  3000],
         }
-    elif probe_name == "random_forest":
+    elif probe_name == "random-forest":
         from sklearn.ensemble import RandomForestRegressor
 
         model = RandomForestRegressor(n_jobs=-1, verbose=5)
@@ -69,6 +69,31 @@ def pick_probe(probe_name: str = "ridge"):
             ],
             # "ccp_alpha": [0.0, 0.0001, 0.001, 0.005, 0.01, 0.05, 0.1],
         }
+    elif probe_name == "ridge-transformed-target":
+        from sklearn.compose import TransformedTargetRegressor
+
+        # We scale the Y values using standardscaler and apply PCA as the y_transformer
+        from sklearn.decomposition import PCA
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+
+        logger.info(
+            f"Using Ridge regression with TransformedTargetRegressor with PCA n_components={n_components}"
+        )
+
+        pca = PCA(n_components=n_components, svd_solver="full")
+        scaler = StandardScaler()
+        y_transformer = Pipeline([("scaler", scaler), ("pca", pca)])
+        base_model = Ridge()
+        model = TransformedTargetRegressor(
+            regressor=base_model, transformer=y_transformer
+        )
+        param_grid = {
+            "regressor__alpha": [10**x for x in range(-3, 5)],
+            # "regressor__solver": ["auto", "sag", "saga", "lsqr", "cholesky"],
+            # "regressor__max_iter": [1000, 2000,  3000],
+        }
+
     else:
         raise ValueError(f"Probe {probe_name} not supported")
 
@@ -87,7 +112,7 @@ def run_probe(
     permutation: bool = True,
     results_path: str = RESULTS_ROOT,
     save_predictions: bool = False,
-    dim_reduction: int | bool | None | str = False,
+    dim_reduction: int | bool | None = False,
 ) -> list[dict]:
     """Runs the probing task on the given data.
 
@@ -111,7 +136,10 @@ def run_probe(
         logger.info(
             f"Probing with {probe_name} on selected DNN model layer {current_layer}..."
         )
-        regressor, param_grid = pick_probe(probe_name)
+        if dim_reduction is not False:
+            regressor, param_grid = pick_probe(probe_name, n_components=dim_reduction)
+        else:
+            regressor, param_grid = pick_probe(probe_name)
         GS = GridSearchCV(
             estimator=regressor,
             param_grid=param_grid,
@@ -152,31 +180,31 @@ def run_probe(
             f"Saved target feature scaler for layer {current_layer} to {os.path.join(results_path, f'layer_{current_layer}_target_scaler.pkl')}"
         )
 
-        if isinstance(dim_reduction, int) and dim_reduction >= y_train.shape[1]:
-            logger.warning(
-                f"dim_reduction {dim_reduction} is greater than or equal to output feature dimension {y_train.shape[1]}. Skipping dimensionality reduction."
-            )
+        # if isinstance(dim_reduction, int) and dim_reduction >= y_train.shape[1]:
+        #     logger.warning(
+        #         f"dim_reduction {dim_reduction} is greater than or equal to output feature dimension {y_train.shape[1]}. Skipping dimensionality reduction."
+        #     )
 
-            dim_reduction = False
-        if dim_reduction is not False:
-            # Use PCA to reduce the dimension of hidden states
-            from sklearn.decomposition import PCA
+        #     dim_reduction = False
+        # if dim_reduction is not False:
+        #     # Use PCA to reduce the dimension of hidden states
+        #     from sklearn.decomposition import PCA
 
-            pca = PCA(n_components=dim_reduction, svd_solver="full")
-            y_train = pca.fit_transform(y_train)
-            y_test = pca.transform(y_test)
-            logger.info(
-                f"Applied PCA with n_components={dim_reduction} for layer {current_layer}"
-            )
-            # Save PCA for future use
-            with open(
-                os.path.join(results_path, f"layer_{current_layer}_target_pca.pkl"),
-                "wb",
-            ) as f:
-                pickle.dump(pca, f)
-            logger.info(
-                f"Saved target feature PCA for layer {current_layer} to {os.path.join(results_path, f'layer_{current_layer}_target_pca.pkl')}"
-            )
+        #     pca = PCA(n_components=dim_reduction, svd_solver="full")
+        #     y_train = pca.fit_transform(y_train)
+        #     y_test = pca.transform(y_test)
+        #     logger.info(
+        #         f"Applied PCA with n_components={dim_reduction} for layer {current_layer}"
+        #     )
+        #     # Save PCA for future use
+        #     with open(
+        #         os.path.join(results_path, f"layer_{current_layer}_target_pca.pkl"),
+        #         "wb",
+        #     ) as f:
+        #         pickle.dump(pca, f)
+        #     logger.info(
+        #         f"Saved target feature PCA for layer {current_layer} to {os.path.join(results_path, f'layer_{current_layer}_target_pca.pkl')}"
+        #     )
 
         GS.fit(X_train, y_train)
         train_score = GS.score(X_train, y_train)
@@ -464,8 +492,8 @@ def main():
             dim_reduction = None
         elif "false" in args.dim_reduction.lower():
             dim_reduction = False
-        elif "normalize" in args.dim_reduction.lower():
-            dim_reduction = "normalize"
+        # elif "normalize" in args.dim_reduction.lower():
+        #     dim_reduction = "normalize"
         else:
             raise ValueError(
                 f"dim_reduction argument {args.dim_reduction} not understood. Please provide an integer, 'None', or 'False'."

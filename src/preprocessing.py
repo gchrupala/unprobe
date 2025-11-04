@@ -403,10 +403,16 @@ def extract_speaker_embedding(dataset: Dataset, **kwargs) -> dict[str, np.ndarra
 
     if kwargs.get("reduce_dim", False):
         from sklearn.decomposition import PCA
+        from sklearn.preprocessing import StandardScaler
 
-        logger.info("Reducing speaker embedding to 100 dimensions using PCA")
-        pca = PCA(n_components=100)
+        scaler = StandardScaler()
         all_embeddings = np.array(list(speaker_embedding_features.values()))  # type: ignore
+        all_embeddings = scaler.fit_transform(all_embeddings)
+
+        logger.info(
+            "Reducing speaker embedding to 100 dimensions using PCA and standardscaler"
+        )
+        pca = PCA(n_components=100)
         reduced_embeddings = pca.fit_transform(all_embeddings)
         for i, fileID in enumerate(speaker_embedding_features.keys()):
             speaker_embedding_features[fileID] = reduced_embeddings[i]

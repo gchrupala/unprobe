@@ -44,7 +44,6 @@ def format_data(
     librispeech_split: str = "dev-clean",
     modelname: str = "facebook/wav2vec2-base",
     seq_sampling: str = "random_frames",
-    normalize_features: bool = True,
 ):
     """
     Format the data for probing tasks.
@@ -62,23 +61,37 @@ def format_data(
     acoustic_feature_path = (
         f"{SAVEPATH}/librispeech-{librispeech_split}_opensmile_features_lld.pickle"
     )
-    special_features_path = (
-        f"{SAVEPATH}/librispeech-{librispeech_split}_special_features.pickle"
+    fasttext_word_embedding_path = (
+        f"{SAVEPATH}/librispeech-{librispeech_split}_fasttext_word_embeddings.pickle"
+    )
+    ppg_feature_path = (
+        f"{SAVEPATH}/librispeech-{librispeech_split}_phonetic_posteriorgram.pickle"
+    )
+    speaker_embedding_path = (
+        f"{SAVEPATH}/librispeech-{librispeech_split}_speaker_embedding.pickle"
     )
     transcription_path = (
         f"{SAVEPATH}/librispeech-{librispeech_split}_transcriptions.pickle"
     )
-    letter_unigram_path = (
+    word_form_path = (
         f"{SAVEPATH}/librispeech-{librispeech_split}_letter_unigram_embeddings.pickle"
     )
+    dnn_word_embeddings_path = (
+        f"{SAVEPATH}/librispeech-{librispeech_split}_dnn_word_embeddings.pickle"
+    )
+
     dnn_hidden_states_path = f"{SAVEPATH}/librispeech-{librispeech_split}_{modelname.split('/')[-1]}_representation_{seq_sampling}.pickle"
 
     # Make sure all the required files exist
     for path in [
         acoustic_feature_path,
-        special_features_path,
+        fasttext_word_embedding_path,
+        ppg_feature_path,
+        speaker_embedding_path,
         transcription_path,
         dnn_hidden_states_path,
+        word_form_path,
+        dnn_word_embeddings_path,
     ]:
         if not os.path.exists(path):
             raise FileNotFoundError(f"Required file not found: {path}")
@@ -96,20 +109,27 @@ def format_data(
         level=0,
     )
 
-    # Load the special features including word embedding, phonetic posterior grams (PPG), and speaker embeddings
-    with open(
-        special_features_path,
-        "rb",
-    ) as f:
-        special_features = pickle.load(f)
+    # Load the speaker embeddings
+    with open(speaker_embedding_path, "rb") as f:
+        all_speaker_embeddings = pickle.load(f)
+    # Load the PPG features
+    with open(ppg_feature_path, "rb") as f:
+        all_ppg_features = pickle.load(f)
+    # Load the fasttext word embeddings
+    with open(fasttext_word_embedding_path, "rb") as f:
+        all_fasttext_word_embeddings = pickle.load(f)
 
     # Load the transcriptions with syntax features
     with open(transcription_path, "rb") as f:
         transcription_raw = pickle.load(f)
 
-    # Load the letter unigram
-    with open(letter_unigram_path, "rb") as f:
-        all_letter_unigram_embeddings = pickle.load(f)
+    # Load the word form
+    with open(word_form_path, "rb") as f:
+        all_word_form_embeddings = pickle.load(f)
+
+    # Load DNN word embeddings
+    with open(dnn_word_embeddings_path, "rb") as f:
+        all_dnn_word_embeddings = pickle.load(f)
 
     # Sort the list of dictionary by the fileID key
     transcription = sorted(
@@ -145,14 +165,16 @@ def format_data(
 
     processed_X, processed_Y = [], []
     filename_timestamp = []
+    processed_dnn_word_embeddings = []
 
     for fileID in tqdm(valid_fileIDs):
-        spk_embedding = np.array(special_features[fileID]["spk_emb"])
-        ppg_features = np.array(special_features[fileID]["ppgs"])
+        spk_embedding = np.array(all_speaker_embeddings[fileID])
+        ppg_features = np.array(all_ppg_features[fileID])
         # Swap the dimensions in ppg_features to be (time, ppg_dim)
         ppg_features = ppg_features.transpose((1, 0))
-        fasttext_embedding = np.array(special_features[fileID]["fasttext"])
-        letter_unigram_embeddings = all_letter_unigram_embeddings[fileID]
+        fasttext_embedding = np.array(all_fasttext_word_embeddings[fileID])
+        word_form_embeddings = all_word_form_embeddings[fileID]
+        dnn_word_embeddings = all_dnn_word_embeddings[fileID]
 
         metadata = transcription.loc[fileID]["non_acoustic"]
         syntax_feats = transcription.loc[fileID]["syntax_feats"]
@@ -289,14 +311,35 @@ def format_data(
                     .reset_index(drop=True)
                     .to_numpy()
                 )
+            word_idx = word_idx.values[0]
             if utt_lld_frames.shape[0] != 5:
                 continue
             utt_lld_frames = utt_lld_frames.flatten()
             utt_lld_names = utt_lld.columns.tolist()
 
-            word_embedding = fasttext_embedding[word_idx].flatten()
+            # word_embedding = fasttext_embedding[word_idx].flatten()
             syntax_feature = np.array(syntax_feats)[word_idx].flatten()
-            letter_unigram_feature = letter_unigram_embeddings[word_idx].flatten()
+            word_form_feature = word_form_embeddings[word_idx].flatten()
+
+            # Find the corresponding DNN word embedding
+            char_start_idx = ort_alignment.loc[word_idx, "char_idx_start"]
+            # Find at which interval in the numpy array dnn_word_embeddings['offset_mapping'] the char_start_idx falls into
+            dnn_offset_mappings = dnn_word_embeddings["offset_mapping"]
+            dnn_word_idx = np.where(
+                (dnn_offset_mappings[:, 0] <= char_start_idx)
+                & (dnn_offset_mappings[:, 1] > char_start_idx)
+            )[0]
+            if dnn_word_idx.size == 0:
+                logger.info(
+                    "Char start index not found in DNN embeddings: Skipped",
+                )
+                continue
+            dnn_word_idx = dnn_word_idx[0]
+            dnn_word_embedding = dnn_word_embeddings["word_embeddings"][
+                dnn_word_idx
+            ].flatten()
+
+            processed_dnn_word_embeddings.append(dnn_word_embedding)
 
             # Get the corresponding PPG features for current frame index
             ppg_feature = ppg_features[int(token_time // 10)].flatten()
@@ -304,12 +347,12 @@ def format_data(
             # Make sure all the dimensions are correct
             assert all(
                 (
-                    word_embedding.shape[0] == 100,
+                    # word_embedding.shape[0] == 100,
                     # syntax_feature.shape[0] == 34,
                     ppg_feature.shape[0] == 40,
                     spk_embedding.shape[0] == 100,
                     metadata.shape[0] == 2,
-                    letter_unigram_feature.shape[0] == 29,
+                    # word_form_feature.shape[0] == 29,
                 )
             )
 
@@ -317,12 +360,12 @@ def format_data(
             input_feature = np.concatenate(
                 [
                     utt_lld_frames,
-                    word_embedding,
+                    # word_embedding,
                     syntax_feature,
                     ppg_feature,
                     spk_embedding,
                     metadata,
-                    letter_unigram_feature,
+                    # word_form_feature,
                 ],
                 axis=0,
             )
@@ -337,38 +380,39 @@ def format_data(
 
             data_shape = {
                 "acoustic_features": utt_lld_frames.shape,
-                "word_embedding": word_embedding.shape,
+                # "word_embedding": word_embedding.shape,
                 "syntax_feature": syntax_feature.shape,
                 "ppg_feature": ppg_feature.shape,
                 "spk_embedding": spk_embedding.shape,
                 "metadata": metadata.shape,
-                "letter_unigram_feature": letter_unigram_feature.shape,
+                # "word_form_feature": word_form_feature.shape,
                 "input_feature_all": input_feature.shape,
                 "dnn_hidden_state": utt_dnn_hidden_state.shape,
             }
 
     processed_X = np.array(processed_X)
-    if normalize_features:
-        from sklearn.preprocessing import StandardScaler
-
-        # We normalize features in a column-wise manner so that each feature has zero mean and unit variance
-        scaler = StandardScaler()
-        processed_X = scaler.fit_transform(processed_X)
-
-        # start_idx = 0
-        # end_idx = 0
-        # # Normalize the features within each group
-        # for name, shape in data_shape.items():  # type: ignore
-        #     if name == "input_feature_all" or name == "dnn_hidden_state":
-        #         continue
-        #     start_idx = end_idx
-        #     end_idx += shape[0]
-        #     scaler = StandardScaler()
-        #     processed_X[:, start_idx:end_idx] = scaler.fit_transform(
-        #         processed_X[:, start_idx:end_idx]
-        #     )
-        logger.info("Normalized input features")
     processed_Y = np.array(processed_Y)
+
+    # Apply dimension reduction to processed_dnn_word_embeddings using PCA to 100 dimensions
+    processed_dnn_word_embeddings = np.array(processed_dnn_word_embeddings)
+    logger.info(
+        f"Processed DNN word embeddings shape before PCA: {processed_dnn_word_embeddings.shape}"
+    )
+    from sklearn.decomposition import PCA
+    from sklearn.preprocessing import StandardScaler
+
+    scaler = StandardScaler()
+    processed_dnn_word_embeddings = scaler.fit_transform(processed_dnn_word_embeddings)
+
+    pca = PCA(n_components=100)
+    processed_dnn_word_embeddings = pca.fit_transform(processed_dnn_word_embeddings)
+
+    logger.info(
+        f"Processed DNN word embeddings shape after PCA: {processed_dnn_word_embeddings.shape}"
+    )
+    data_shape["dnn_word_embedding"] = processed_dnn_word_embeddings.shape[1:]  # type: ignore
+    # Then concatenate the processed_dnn_word_embeddings to processed_X along the last dimension
+    processed_X = np.concatenate([processed_X, processed_dnn_word_embeddings], axis=1)
 
     # Processed_Y shape should be (num_frames, num_layers, hidden_size)
     logger.info(f"Processed X shape: {processed_X.shape}")
@@ -383,7 +427,6 @@ def load_data(
     select_layers: list | None = None,
     overwrite: bool = False,
     normalize_features: bool = True,
-    dim_reduction: int | None = 100,
 ):
     """
     Load the formatted data for probing tasks.
@@ -401,10 +444,6 @@ def load_data(
     # Check if the data has already been formatted and saved
 
     formatted_data_path = f"{SAVEPATH}/processed_data/librispeech-{librispeech_split}_{modelname.split('/')[-1]}_representation_{seq_sampling}_formatted.pickle"
-    if normalize_features:
-        formatted_data_path = formatted_data_path.replace(
-            ".pickle", "_normalized.pickle"
-        )
 
     # Make sure the directory exists
     os.makedirs(os.path.dirname(formatted_data_path), exist_ok=True)
@@ -421,7 +460,6 @@ def load_data(
             librispeech_split=librispeech_split,
             modelname=modelname,
             seq_sampling=seq_sampling,
-            normalize_features=normalize_features,
         )
         with open(formatted_data_path, "wb") as f:
             pickle.dump((processed_X, processed_Y, filename_timestamp, data_shape), f)
@@ -435,11 +473,92 @@ def load_data(
             f"Selected processed_Y shape after layer selection: {processed_Y.shape}"
         )
 
-    if dim_reduction is not None:
-        logger.info(f"Reducing dimension of target features to {dim_reduction}")
-        processed_Y = dimension_reduction(processed_Y, n_components=dim_reduction)
+    if normalize_features:
+        from sklearn.preprocessing import StandardScaler
+
+        # We normalize features in a column-wise manner so that each feature has zero mean and unit variance
+        logger.info("Normalizing input features")
+        scaler = StandardScaler()
+        processed_X = scaler.fit_transform(processed_X)
+        logger.info("Normalized input features")
 
     return processed_X, processed_Y, filename_timestamp, data_shape
+
+
+def sanity_check_pca():
+    from scipy.stats import loguniform
+    from sklearn.compose import TransformedTargetRegressor
+    from sklearn.decomposition import PCA
+    from sklearn.linear_model import Ridge
+    from sklearn.metrics import r2_score
+    from sklearn.model_selection import (
+        GridSearchCV,
+        RandomizedSearchCV,
+        train_test_split,
+    )
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    X, Y, _, _ = load_data(
+        librispeech_split="dev-clean",
+        modelname="facebook/wav2vec2-base",
+        seq_sampling="random_frames",
+        # select_layers=[12],
+        overwrite=False,
+        normalize_features=True,
+    )
+
+    results = {}
+
+    for layer in range(Y.shape[1]):
+        logger.info(f"Layer {layer} hidden state shape: {Y[:, layer, :].shape}")
+        y_layer = Y[:, layer, :]
+        # This pipeline will scale the Y data, then apply PCA
+        y_transformer = Pipeline(steps=[("scaler", StandardScaler()), ("pca", PCA())])
+        # The regressor will be a simple Ridge model
+        ridge = Ridge()
+
+        # The full model applies the transformer to Y before fitting Ridge
+        # and inverse_transforms the predictions.
+        model = TransformedTargetRegressor(regressor=ridge, transformer=y_transformer)
+        param_grid = {
+            "regressor__alpha": np.logspace(-2, 2, 5),  # e.g., [0.01, 0.1, 1, 10, 100]
+            "transformer__pca__n_components": [0.90, 0.95, 0.99, None],
+            # + list(range(50, 301, 50)),
+            # A good search space:
+            # - Floats: Capture a certain % of variance. 'None' is the original (problematic) case.
+            # - Integers: Test specific numbers of components.
+        }
+
+        X_train, X_test, Y_train, Y_test = train_test_split(
+            X, y_layer, test_size=0.2, random_state=42
+        )
+
+        grid_search = GridSearchCV(
+            model,
+            param_grid=param_grid,
+            cv=3,
+            n_jobs=-1,
+            verbose=1,
+            return_train_score=True,
+        )
+
+        grid_search.fit(X_train, Y_train)
+
+        print("\nBest parameters found from grid search:")
+        print(grid_search.best_params_)
+
+        best_model = grid_search.best_estimator_
+        y_pred = best_model.predict(X_test)
+        test_r2 = r2_score(Y_test, y_pred)
+        print(f"\nR-squared score on the test set: {test_r2:.4f}")
+
+        results[layer] = {
+            "test_r2": test_r2,
+            "best_train_score": grid_search.best_score_,
+        } | grid_search.best_params_
+
+    print(results)
 
 
 def load_sample_data():
@@ -454,7 +573,7 @@ def load_sample_data():
     ]
 
 
-def dimension_reduction(hidden_states: np.ndarray, n_components: int = 100):
+def dimension_reduction(hidden_states: np.ndarray, n_components: int | None = None):
     """Reduce the dimension of the hidden_states
 
     Args:
@@ -464,16 +583,21 @@ def dimension_reduction(hidden_states: np.ndarray, n_components: int = 100):
     # hidden_states is a list of numpy arrays with shape (num_frames, num_layers, hidden_size)
 
     logger.info(f"Stacked hidden_states shape: {hidden_states.shape}")
-    if n_components >= hidden_states.shape[2]:
-        logger.warning(
-            f"n_components {n_components} is greater than or equal to hidden size {hidden_states.shape[2]}. Skipping dimension reduction."
-        )
-        return hidden_states
+    if n_components is None:
+        logger.info("n_components is None, PCA is untruncated")
 
-    # Use dimension reduction technique such as PCA or t-SNE to reduce the dimension of hidden states
+    else:
+        if n_components >= hidden_states.shape[2]:
+            logger.warning(
+                f"n_components {n_components} is greater than or equal to hidden size {hidden_states.shape[2]}. Skipping dimension reduction."
+            )
+            return hidden_states
+        logger.info(f"Reducing hidden states to {n_components} dimensions")
+
+    # Use PCA to reduce the dimension of hidden states
     from sklearn.decomposition import PCA
 
-    pca = PCA(n_components=n_components)
+    pca = PCA(n_components=n_components, svd_solver="full")
     # Since the hidden_states is 3D array (num_samples, num_layers, hidden_size), we need to do PCA on the last dimension. We need to do the PCA on each layer separately and then stack them back together.
     reduced_hidden_states = []
     for layer in range(hidden_states.shape[1]):
@@ -525,7 +649,9 @@ def get_section_shapes(data_shape: dict) -> list:
 if __name__ == "__main__":
     librispeech_split = "dev-clean"
     modelname = "facebook/hubert-base-ls960"
+    modelname = "facebook/wav2vec2-base"
     seq_sampling = "random_frames"
+    overwrite = False
     select_layers = [0, 6, 12]
     processed_X, processed_Y, _, data_shape = format_data(
         librispeech_split=librispeech_split,

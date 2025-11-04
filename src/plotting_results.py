@@ -84,7 +84,11 @@ def load_result_files(results_dir: str) -> pd.DataFrame:
         #     f"Parsed - Librispeech Split: {librispeech_split}, Model Name: {modelname}, Probe Name: {probename}"
         # )
         df = pd.read_csv(result_file)
-        df["modelname"] = modelname
+        df["modelname"] = (
+            "Text: " + modelname
+            if ("wav" not in modelname) and ("hubert" not in modelname)
+            else "Audio:" + modelname
+        )
         df["librispeech_split"] = librispeech_split
         df["probename"] = probename
         df["normalization"] = normalization
@@ -96,6 +100,7 @@ def load_result_files(results_dir: str) -> pd.DataFrame:
 
 
 def load_dimreduction_files(results_dir: str):
+    results_dir = RESULTS_ROOT
     # logger.info(f"Loading result files from {results_dir}...")
     if not os.path.exists(results_dir):
         logger.error(f"Results directory {results_dir} does not exist.")
@@ -133,9 +138,30 @@ def load_dimreduction_files(results_dir: str):
         df["librispeech_split"] = librispeech_split
         df["probename"] = probename
         df["normalization"] = normalization
-        df["dimensions"] = int(dimension_reduction.split("-")[-1])
+        df["dimensions"] = dimension_reduction.split("-")[-1]
         df["norm_layer"] = df["layer"] / model_layer_dict.get(modelname, 1)
         all_results_df = pd.concat([all_results_df, df], ignore_index=True)
+
+    # Rename None to Untruncated PCA
+    all_results_df["dimensions"] = all_results_df["dimensions"].replace(
+        "None", "Untruncated PCA"
+    )
+    # Replace 768 with "original dimension"
+    all_results_df["dimensions"] = all_results_df["dimensions"].replace(
+        "768", "Original Dimension"
+    )
+    all_results_df["dimensions"] = all_results_df["dimensions"].replace(
+        "normalize", "Original Dimension (StandardScaled)"
+    )
+
+    # Set manual order of dimensions so that numeric dimensions are in ascending order followed by Untruncated PCA and Original Dimension
+    dimension_order = sorted(
+        [int(dim) for dim in all_results_df["dimensions"].unique() if dim.isdigit()]
+    ) + ["Untruncated PCA", "Original Dimension", "Original Dimension (StandardScaled)"]
+    dimension_order = [str(dim) for dim in dimension_order]
+    all_results_df["dimensions"] = pd.Categorical(
+        all_results_df["dimensions"], categories=dimension_order, ordered=True
+    )
 
     # Plot all of the results together with facet wrap on dimensions
     subset_df = all_results_df.copy()
@@ -152,7 +178,7 @@ def load_dimreduction_files(results_dir: str):
         & (all_results_df["manipulation_mode"] == "random_baseline")
     ].copy()
 
-    x_var, y_var = "layer", "train_score"
+    x_var, y_var = "layer", "test_score"
 
     figure = (
         p9.ggplot(subset_df)
@@ -269,7 +295,7 @@ def plot_results(all_results_df: pd.DataFrame) -> None:
 
         figure = (
             p9.ggplot()
-            + p9.facet_wrap("~ modelname", ncol=2)
+            + p9.facet_wrap("~ modelname", ncol=3)
             + p9.geom_line(
                 p9.aes(
                     x="norm_layer",
@@ -305,7 +331,7 @@ def plot_results(all_results_df: pd.DataFrame) -> None:
                 linetype="dotted",
             )
             + p9.theme(
-                figure_size=(10, 6),
+                figure_size=(10, 10),
                 dpi=300,
                 plot_caption=p9.element_text(
                     ha="left", margin={"t": 1, "units": "lines"}

@@ -51,7 +51,7 @@ def pick_probe(probe_name: str = "ridge"):
     if probe_name == "ridge":
         model = Ridge()
         param_grid = {
-            "alpha": [10**x for x in range(-5, 3)],
+            "alpha": [10**x for x in range(-3, 5)],
             # "solver": ["auto", "sag", "saga", "lsqr", "cholesky"],
             # "max_iter": [1000, 2000,  3000],
         }
@@ -87,6 +87,7 @@ def run_probe(
     permutation: bool = True,
     results_path: str = RESULTS_ROOT,
     save_predictions: bool = False,
+    dim_reduction: int | bool | None | str = False,
 ) -> list[dict]:
     """Runs the probing task on the given data.
 
@@ -132,6 +133,50 @@ def run_probe(
             test_size=0.2,
             random_state=42,
         )
+
+        from sklearn.preprocessing import StandardScaler
+
+        scaler = StandardScaler()
+        y_train = scaler.fit_transform(y_train)
+        y_test = scaler.transform(y_test)
+        logger.info(
+            f"Normalized target features using StandardScaler for layer {current_layer}"
+        )
+        # Save scaler for future use
+        with open(
+            os.path.join(results_path, f"layer_{current_layer}_target_scaler.pkl"),
+            "wb",
+        ) as f:
+            pickle.dump(scaler, f)
+        logger.info(
+            f"Saved target feature scaler for layer {current_layer} to {os.path.join(results_path, f'layer_{current_layer}_target_scaler.pkl')}"
+        )
+
+        if isinstance(dim_reduction, int) and dim_reduction >= y_train.shape[1]:
+            logger.warning(
+                f"dim_reduction {dim_reduction} is greater than or equal to output feature dimension {y_train.shape[1]}. Skipping dimensionality reduction."
+            )
+
+            dim_reduction = False
+        if dim_reduction is not False:
+            # Use PCA to reduce the dimension of hidden states
+            from sklearn.decomposition import PCA
+
+            pca = PCA(n_components=dim_reduction, svd_solver="full")
+            y_train = pca.fit_transform(y_train)
+            y_test = pca.transform(y_test)
+            logger.info(
+                f"Applied PCA with n_components={dim_reduction} for layer {current_layer}"
+            )
+            # Save PCA for future use
+            with open(
+                os.path.join(results_path, f"layer_{current_layer}_target_pca.pkl"),
+                "wb",
+            ) as f:
+                pickle.dump(pca, f)
+            logger.info(
+                f"Saved target feature PCA for layer {current_layer} to {os.path.join(results_path, f'layer_{current_layer}_target_pca.pkl')}"
+            )
 
         GS.fit(X_train, y_train)
         train_score = GS.score(X_train, y_train)
@@ -392,8 +437,8 @@ def parse_args():
     )
     parser.add_argument(
         "--dim_reduction",
-        type=int,
-        default=0,
+        type=str,
+        default="False",
         help="The number of dimensions to reduce the target features to using PCA.",
     )
     args = parser.parse_args()
@@ -412,7 +457,19 @@ def main():
     save_predictions = args.save_predictions
     normalize_features = args.normalize_features
     normalize_string = "normalized" if normalize_features else "unnormalized"
-    dim_reduction = args.dim_reduction if args.dim_reduction > 0 else None
+    try:
+        dim_reduction = int(args.dim_reduction)
+    except ValueError:
+        if "none" in args.dim_reduction.lower():
+            dim_reduction = None
+        elif "false" in args.dim_reduction.lower():
+            dim_reduction = False
+        elif "normalize" in args.dim_reduction.lower():
+            dim_reduction = "normalize"
+        else:
+            raise ValueError(
+                f"dim_reduction argument {args.dim_reduction} not understood. Please provide an integer, 'None', or 'False'."
+            )
 
     # Check select_layer against model size to make sure layers are valid
     model_layer_dict = {
@@ -477,7 +534,7 @@ def main():
     if not os.path.exists(os.path.dirname(results_path)):
         raise ValueError(f"Results path {results_path} does not exist.")
     # Create a subdirectory for the current experiment with separate librispeech split and modelname
-    if dim_reduction is None:
+    if dim_reduction is False:
         results_path = os.path.join(
             results_path,
             f"librispeech-{librispeech_split}/{modelname.split('/')[-1]}/{probe_name}_frame_probe_{normalize_string}",
@@ -503,9 +560,14 @@ def main():
         select_layers=select_layers,
         normalize_features=normalize_features,
         overwrite=args.overwrite,
-        dim_reduction=dim_reduction,
     )
 
+    # Save data_shape to results_path as json file for future reference
+    import json
+
+    with open(os.path.join(results_path, "data_shape.json"), "w") as f:
+        json.dump(data_shape, f)
+    logger.info("Data formatted.")
     logger.info("Running probe...")
     results = run_probe(
         processed_X=processed_X,
@@ -519,6 +581,7 @@ def main():
         permutation=permutation,
         results_path=results_path,
         save_predictions=save_predictions,
+        dim_reduction=dim_reduction,
     )
 
     logger.info("Saving all results...")

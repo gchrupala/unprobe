@@ -380,6 +380,84 @@ def extract_opensmile_features(
         return opensmile_features.reset_index()
 
 
+def extract_speaker_embedding(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]:
+    from datasets import Audio
+    from pyannote.audio import Model
+
+    spk_embd_model = Model.from_pretrained("pyannote/embedding")
+    spk_embd_model.to(device)
+    logger.info("Extracting speaker embedding from audio file")
+    dataset = dataset.cast_column("audio", Audio(sampling_rate=16000))
+
+    speaker_embedding_features = {}
+
+    for example in tqdm(dataset, desc="Speaker Embedding Extraction"):
+        fileID = example["fileID"]  # type: ignore
+        audio_array = example["audio"]["array"]  # type: ignore
+        audio_tensor = torch.from_numpy(audio_array).unsqueeze(0)
+        with torch.no_grad():
+            spk_embs = spk_embd_model(
+                audio_tensor.to(device=device, dtype=torch.float32)
+            )
+        speaker_embedding_features[fileID] = spk_embs.cpu().squeeze().numpy()
+
+    if kwargs.get("reduce_dim", False):
+        from sklearn.decomposition import PCA
+
+        logger.info("Reducing speaker embedding to 100 dimensions using PCA")
+        pca = PCA(n_components=100)
+        all_embeddings = np.array(list(speaker_embedding_features.values()))  # type: ignore
+        reduced_embeddings = pca.fit_transform(all_embeddings)
+        for i, fileID in enumerate(speaker_embedding_features.keys()):
+            speaker_embedding_features[fileID] = reduced_embeddings[i]
+
+    return speaker_embedding_features
+
+
+def extract_phonetic_posteriorgram(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]:
+    import ppgs
+    from datasets import Audio
+
+    logger.info("Extracting ppgs features from audio file")
+    dataset = dataset.cast_column("audio", Audio(sampling_rate=ppgs.SAMPLE_RATE))
+    logger.info("Audio column recasted to correct sampling rate.")
+
+    ppgs_features = {}
+    for example in tqdm(dataset, desc="PPG Extraction"):
+        fileID = example["fileID"]  # type: ignore
+        audio_tensor = torch.from_numpy(example["audio"]["array"]).unsqueeze(0)
+        if device == torch.device("cpu"):
+            ppgs_feat = ppgs.from_audio(audio_tensor, sample_rate=ppgs.SAMPLE_RATE)
+            ppgs_features[fileID] = ppgs_feat.double().squeeze().numpy()
+        else:
+            ppgs_feat = ppgs.from_audio(
+                audio_tensor, sample_rate=ppgs.SAMPLE_RATE, gpu=0
+            )
+            ppgs_features[fileID] = ppgs_feat.cpu().squeeze().numpy()
+    return ppgs_features
+
+
+def extract_fasttext_embeddings(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]:
+    import fasttext
+    import fasttext.util
+
+    # Load fasttext model for word embeddings
+    fasttext.util.download_model("en", if_exists="ignore")  # English
+    ft = fasttext.load_model("cc.en.300.bin")
+    fasttext.util.reduce_model(ft, 100)  # Reduce to 100 dimensions
+
+    logger.info("Extracting fasttext word embeddings from text")
+    fasttext_embeddings = {}
+
+    for example in tqdm(dataset, desc="FastText Embedding Extraction"):
+        fileID = example["fileID"]  # type: ignore
+        tokens = [x for x in example["tokens"] if x != "<pad>"]  # type: ignore
+        embeddings = [ft.get_word_vector(word) for word in tokens]
+        fasttext_embeddings[fileID] = np.array(embeddings)
+
+    return fasttext_embeddings
+
+
 def extract_special_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]:
     import ppgs
     import umap.umap_ as umap
@@ -600,41 +678,42 @@ def extract_dnn_word_embedding(
         with torch.no_grad():
             outputs = model(**inputs, output_hidden_states=False)
 
-        # Average the token embeddings for each word
-        hidden_states = outputs.last_hidden_state  # (batch_size, seq_len, hidden_size)
+        hidden_states = (
+            outputs.last_hidden_state.cpu().numpy().squeeze(0)
+        )  # (seq_len, hidden_size)
 
-        word_embeddings_list = []
-        current_word_id = None
-        current_word_tokens = []
-        for token_idx, word_id in enumerate(word_ids):
-            if word_id is None:
-                continue
-            if word_id != current_word_id:
-                if current_word_tokens:
-                    # Average the embeddings of the tokens for the previous word
-                    word_embedding = torch.mean(torch.stack(current_word_tokens), dim=0)
-                    word_embeddings_list.append(word_embedding.cpu().numpy())
-                current_word_id = word_id
-                current_word_tokens = [hidden_states[0, token_idx]]
-            else:
-                current_word_tokens.append(hidden_states[0, token_idx])
+        # word_embeddings_list = []
+        # current_word_id = None
+        # current_word_tokens = []
+        # for token_idx, word_id in enumerate(word_ids):
+        #     if word_id is None:
+        #         continue
+        #     if word_id != current_word_id:
+        #         if current_word_tokens:
+        #             # Average the embeddings of the tokens for the previous word
+        #             word_embedding = torch.mean(torch.stack(current_word_tokens), dim=0)
+        #             word_embeddings_list.append(word_embedding.cpu().numpy())
+        #         current_word_id = word_id
+        #         current_word_tokens = [hidden_states[0, token_idx]]
+        #     else:
+        #         current_word_tokens.append(hidden_states[0, token_idx])
 
-        # Handle the last word
-        if current_word_tokens:
-            word_embedding = torch.mean(torch.stack(current_word_tokens), dim=0)
-            word_embeddings_list.append(word_embedding.cpu().numpy())
+        # # Handle the last word
+        # if current_word_tokens:
+        #     word_embedding = torch.mean(torch.stack(current_word_tokens), dim=0)
+        #     word_embeddings_list.append(word_embedding.cpu().numpy())
 
         fileID = example["fileID"]  # type: ignore
         words = tokenizer.convert_ids_to_tokens(encoded_input["input_ids"][0])
         # Remove [CLS] and [SEP] tokens
-        words = [w for w in words if w not in tokenizer.all_special_tokens]
+        # words = [w for w in words if w not in tokenizer.all_special_tokens]
         # Join subword tokens back together to form words
-        words = tokenizer.convert_ids_to_tokens(encoded_input["input_ids"][0])
-        words = [w for w in words if w not in tokenizer.all_special_tokens]
-        words = tokenizer.convert_tokens_to_string(words).split()
+        # words = tokenizer.convert_ids_to_tokens(encoded_input["input_ids"][0])
+        # words = [w for w in words if w not in tokenizer.all_special_tokens]
+        # words = tokenizer.convert_tokens_to_string(words).split()
 
         word_embeddings[fileID] = {
-            "word_embeddings": np.array(word_embeddings_list),
+            "word_embeddings": hidden_states,
             "words": words,
             "offset_mapping": offset_mapping,
         }
@@ -876,9 +955,22 @@ def extract_base_features(
     """
 
     base_probe_inputs = {
-        "special_features": {
-            "function": extract_special_features,
-            "save_dir": f"{savepath}/librispeech-{librispeech_split}_special_features.pickle",
+        # "special_features": {
+        #     "function": extract_special_features,
+        #     "save_dir": f"{savepath}/librispeech-{librispeech_split}_special_features.pickle",
+        # },
+        "speaker_embedding": {
+            "function": extract_speaker_embedding,
+            "save_dir": f"{savepath}/librispeech-{librispeech_split}_speaker_embedding.pickle",
+            "reduce_dim": True,
+        },
+        "phonetic_posteriorgram": {
+            "function": extract_phonetic_posteriorgram,
+            "save_dir": f"{savepath}/librispeech-{librispeech_split}_phonetic_posteriorgram.pickle",
+        },
+        "fasttext_word_embeddings": {
+            "function": extract_fasttext_embeddings,
+            "save_dir": f"{savepath}/librispeech-{librispeech_split}_fasttext_word_embeddings.pickle",
         },
         "opensmile_features": {
             "function": extract_opensmile_features,

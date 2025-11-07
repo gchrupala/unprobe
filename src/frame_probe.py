@@ -525,7 +525,7 @@ def main():
             select_layers = select_layers[select_layers < max_layers]
             if len(select_layers) == 0:
                 raise ValueError(
-                    f"All selected layers are invalid for model {modelname} with max layers {max_layers - 1}"
+                    f"All selected layers [{select_layers}] are invalid for model {modelname} with max layers {max_layers - 1}"
                 )
             # Select only positive layers
             select_layers = select_layers[select_layers >= 0]
@@ -612,13 +612,13 @@ def main():
         dim_reduction=dim_reduction,
     )
 
-    logger.info("Saving all results...")
-    df = pd.DataFrame(results)
-    # df.drop(columns=["coefficients"], inplace=True)
-    df.to_csv(
-        f"{results_path}/all_layers_results_{normalize_string}.csv",
-        index=False,
-    )
+    # logger.info("Saving all results...")
+    # df = pd.DataFrame(results)
+    # # df.drop(columns=["coefficients"], inplace=True)
+    # df.to_csv(
+    #     f"{results_path}/all_layers_results_{normalize_string}.csv",
+    #     index=False,
+    # )
 
 
 if __name__ == "__main__":

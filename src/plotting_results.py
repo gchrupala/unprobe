@@ -128,7 +128,7 @@ def load_dimreduction_files(results_dir: str):
             -2
         ].split("_")
         if "random" in probename:
-            probename = "random_forest"
+            probename = "random-forest"
 
         # logger.info(
         #     f"Parsed - Librispeech Split: {librispeech_split}, Model Name: {modelname}, Probe Name: {probename}"
@@ -239,7 +239,7 @@ All feature baseline is the best case results with all features intact. The feat
 """
 
 
-def plot_results(all_results_df: pd.DataFrame) -> None:
+def plot_results(all_results_df: pd.DataFrame, save=False) -> None:
     """Plot the results from the joined DataFrame.
 
     Args:
@@ -348,21 +348,22 @@ def plot_results(all_results_df: pd.DataFrame) -> None:
         )
         figure.show()
 
-        base_output_dir = os.path.join(RESULTS_ROOT, "figures")
-        os.makedirs(base_output_dir, exist_ok=True)
-        os.makedirs(os.path.join(base_output_dir, probe), exist_ok=True)
-        os.makedirs(
-            os.path.join(base_output_dir, probe, librispeech_split), exist_ok=True
-        )
+        if save:
+            base_output_dir = os.path.join(RESULTS_ROOT, "figures")
+            os.makedirs(base_output_dir, exist_ok=True)
+            os.makedirs(os.path.join(base_output_dir, probe), exist_ok=True)
+            os.makedirs(
+                os.path.join(base_output_dir, probe, librispeech_split), exist_ok=True
+            )
 
-        output_filepath = os.path.join(
-            base_output_dir,
-            probe,
-            librispeech_split,
-            f"{probe}_{librispeech_split}_{manipulation}_results.png",
-        )
-        figure.save(output_filepath)
-        logger.info(f"Saved figure to {output_filepath}")
+            output_filepath = os.path.join(
+                base_output_dir,
+                probe,
+                librispeech_split,
+                f"{probe}_{librispeech_split}_{manipulation}_results.png",
+            )
+            figure.save(output_filepath)
+            logger.info(f"Saved figure to {output_filepath}")
     logger.info("Plotting complete.")
 
 
@@ -460,4 +461,5 @@ def plot_coefficients(coefficients):
 
 if __name__ == "__main__":
     all_results_df = load_result_files(results_dir=RESULTS_ROOT)
-    plot_results(all_results_df)
+    plot_results(all_results_df, save = True)
+

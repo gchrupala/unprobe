@@ -87,7 +87,7 @@ def load_result_files(results_dir: str) -> pd.DataFrame:
         df["modelname"] = (
             "Text: " + modelname
             if ("wav" not in modelname) and ("hubert" not in modelname)
-            else "Audio:" + modelname
+            else "Audio: " + modelname
         )
         df["librispeech_split"] = librispeech_split
         df["probename"] = probename
@@ -150,14 +150,26 @@ def load_dimreduction_files(results_dir: str):
     all_results_df["dimensions"] = all_results_df["dimensions"].replace(
         "768", "Original Dimension"
     )
-    all_results_df["dimensions"] = all_results_df["dimensions"].replace(
-        "normalize", "Original Dimension (StandardScaled)"
-    )
+
+    # Select only with probename == "ridge-transformed-target"
+    all_results_df = all_results_df[
+        all_results_df["probename"] == "ridge"  # -transformed-target"
+    ].copy()
+
+    # # change dimensions if probename == "ridge-transformed-target"
+    # all_results_df.loc[
+    #     all_results_df["probename"] == "ridge-transformed-target", "dimensions"
+    # ] = "Original Dimension (Pipeline)"
 
     # Set manual order of dimensions so that numeric dimensions are in ascending order followed by Untruncated PCA and Original Dimension
     dimension_order = sorted(
         [int(dim) for dim in all_results_df["dimensions"].unique() if dim.isdigit()]
-    ) + ["Untruncated PCA", "Original Dimension", "Original Dimension (StandardScaled)"]
+    ) + [
+        "Untruncated PCA",
+        "Original Dimension",
+        "Original Dimension (StandardScaled)",
+        "Original Dimension (Pipeline)",
+    ]
     dimension_order = [str(dim) for dim in dimension_order]
     all_results_df["dimensions"] = pd.Categorical(
         all_results_df["dimensions"], categories=dimension_order, ordered=True
@@ -461,5 +473,8 @@ def plot_coefficients(coefficients):
 
 if __name__ == "__main__":
     all_results_df = load_result_files(results_dir=RESULTS_ROOT)
-    plot_results(all_results_df, save = True)
-
+    # Remove bert-base-uncased from the results
+    all_results_df = all_results_df[
+        all_results_df["modelname"] != "Text: bert-base-uncased"
+    ]
+    plot_results(all_results_df, save=False)

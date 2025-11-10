@@ -343,6 +343,71 @@ def load_librispeech(split: str = "dev-clean") -> Dataset:
     return dataset
 
 
+def extract_syntax_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]:
+    """Extract syntax features using spacy
+
+    Args:
+        dataset (Dataset): dataset loaded with load_librispeech()
+
+    Returns:
+        dict[str, np.ndarray]: syntax features extracted from the dataset with fileIDs as keys
+    """
+
+    import spacy
+
+    logger.info("Extracting syntax features from text")
+    nlp = spacy.load("en_core_web_sm")
+    nlp.add_pipe("benepar", config={"model": "benepar_en3"})
+
+    syntax_features = {}
+
+    for example in tqdm(dataset, desc="Syntax Feature Extraction"):
+        fileID = example["fileID"]  # type: ignore
+        doc = nlp(example["sent"])  # type: ignore
+        sent = list(doc.sents)[0]
+        nltk_tree = nltk.Tree.fromstring(sent._.parse_string)
+
+        syntax_feats = []
+        # for every word in the sentence, print the word, dependency label, constituent label, depth in constituency tree, word_character_length, location in sentence, and the character number within the sentence akin to offset_mapping in transformers
+        offset_mapping = []
+        for i, word in enumerate(sent):
+            node_location_in_tree = nltk_tree.leaf_treeposition(i)
+            constituent_label = nltk_tree[node_location_in_tree[:-1]]._label
+
+            # Word location (depth) in tree
+            node_depth_in_tree = len(node_location_in_tree)
+            total_tree_depth = nltk_tree.height() - 1
+            node_depth_in_tree_norm = node_depth_in_tree / total_tree_depth
+
+            word_location_in_sentence = i + 1
+            word_location_in_sentence_norm = word_location_in_sentence / len(sent)
+
+            word_features = np.array(
+                [
+                    word.pos,
+                    word.dep,
+                    constituent_label,
+                    node_depth_in_tree,
+                    node_depth_in_tree_norm,
+                    word_location_in_sentence,
+                    word_location_in_sentence_norm,
+                ]
+            )
+            syntax_feats.append(word_features)
+
+            # Create offset mapping
+            word_start = word.idx
+            word_end = word.idx + len(word.text)
+            offset_mapping.append((word_start, word_end))
+
+        syntax_features[fileID] = {
+            "features": np.array(syntax_feats),
+            "offset_mapping": offset_mapping,
+        }
+
+    return syntax_features
+
+
 def extract_opensmile_features(
     dataset: Dataset, feature_set: str = "eGeMAPSv02", **kwargs
 ) -> pd.DataFrame:
@@ -386,7 +451,7 @@ def extract_speaker_embedding(dataset: Dataset, **kwargs) -> dict[str, np.ndarra
 
     spk_embd_model = Model.from_pretrained("pyannote/embedding")
     spk_embd_model.to(device)
-    logger.info("Extracting speaker embedding from audio file")
+    logger.info(f"Extracting speaker embedding from audio file. Device:{device}")
     dataset = dataset.cast_column("audio", Audio(sampling_rate=16000))
 
     speaker_embedding_features = {}
@@ -965,6 +1030,10 @@ def extract_base_features(
         #     "function": extract_special_features,
         #     "save_dir": f"{savepath}/librispeech-{librispeech_split}_special_features.pickle",
         # },
+        "syntax_features": {
+            "function": extract_syntax_features,
+            "save_dir": f"{savepath}/librispeech-{librispeech_split}_syntax_features.pickle",
+        },
         "speaker_embedding": {
             "function": extract_speaker_embedding,
             "save_dir": f"{savepath}/librispeech-{librispeech_split}_speaker_embedding.pickle",

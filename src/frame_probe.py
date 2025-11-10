@@ -7,6 +7,9 @@ import sys
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import Ridge
+
+# Import r2 score for regression evaluation
+from sklearn.metrics import r2_score
 from sklearn.model_selection import GridSearchCV, train_test_split
 from tqdm.auto import tqdm, trange
 
@@ -162,53 +165,58 @@ def run_probe(
             random_state=42,
         )
 
-        from sklearn.preprocessing import StandardScaler
+        if isinstance(dim_reduction, int) and dim_reduction >= y_train.shape[1]:
+            logger.warning(
+                f"dim_reduction {dim_reduction} is greater than or equal to output feature dimension {y_train.shape[1]}. Skipping dimensionality reduction."
+            )
 
-        scaler = StandardScaler()
-        y_train = scaler.fit_transform(y_train)
-        y_test = scaler.transform(y_test)
-        logger.info(
-            f"Normalized target features using StandardScaler for layer {current_layer}"
-        )
-        # Save scaler for future use
-        with open(
-            os.path.join(results_path, f"layer_{current_layer}_target_scaler.pkl"),
-            "wb",
-        ) as f:
-            pickle.dump(scaler, f)
-        logger.info(
-            f"Saved target feature scaler for layer {current_layer} to {os.path.join(results_path, f'layer_{current_layer}_target_scaler.pkl')}"
-        )
+            dim_reduction = False
+        if dim_reduction is not False and probe_name == "ridge":
+            # from sklearn.preprocessing import StandardScaler
 
-        # if isinstance(dim_reduction, int) and dim_reduction >= y_train.shape[1]:
-        #     logger.warning(
-        #         f"dim_reduction {dim_reduction} is greater than or equal to output feature dimension {y_train.shape[1]}. Skipping dimensionality reduction."
-        #     )
+            # scaler = StandardScaler()
+            # y_train = scaler.fit_transform(y_train)
+            # y_test = scaler.transform(y_test)
+            # logger.info(
+            #     f"Normalized target features using StandardScaler for layer {current_layer}"
+            # )
+            # # Save scaler for future use
+            # with open(
+            #     os.path.join(results_path, f"layer_{current_layer}_target_scaler.pkl"),
+            #     "wb",
+            # ) as f:
+            #     pickle.dump(scaler, f)
+            # logger.info(
+            #     f"Saved target feature scaler for layer {current_layer} to {os.path.join(results_path, f'layer_{current_layer}_target_scaler.pkl')}"
+            # )
+            # Use PCA to reduce the dimension of hidden states
+            from sklearn.decomposition import PCA
 
-        #     dim_reduction = False
-        # if dim_reduction is not False:
-        #     # Use PCA to reduce the dimension of hidden states
-        #     from sklearn.decomposition import PCA
-
-        #     pca = PCA(n_components=dim_reduction, svd_solver="full")
-        #     y_train = pca.fit_transform(y_train)
-        #     y_test = pca.transform(y_test)
-        #     logger.info(
-        #         f"Applied PCA with n_components={dim_reduction} for layer {current_layer}"
-        #     )
-        #     # Save PCA for future use
-        #     with open(
-        #         os.path.join(results_path, f"layer_{current_layer}_target_pca.pkl"),
-        #         "wb",
-        #     ) as f:
-        #         pickle.dump(pca, f)
-        #     logger.info(
-        #         f"Saved target feature PCA for layer {current_layer} to {os.path.join(results_path, f'layer_{current_layer}_target_pca.pkl')}"
-        #     )
+            pca = PCA(n_components=dim_reduction, svd_solver="full")
+            y_train = pca.fit_transform(y_train)
+            y_test = pca.transform(y_test)
+            logger.info(
+                f"Applied PCA with n_components={dim_reduction} for layer {current_layer}"
+            )
+            # Save PCA for future use
+            with open(
+                os.path.join(results_path, f"layer_{current_layer}_target_pca.pkl"),
+                "wb",
+            ) as f:
+                pickle.dump(pca, f)
+            logger.info(
+                f"Saved target feature PCA for layer {current_layer} to {os.path.join(results_path, f'layer_{current_layer}_target_pca.pkl')}"
+            )
 
         GS.fit(X_train, y_train)
-        train_score = GS.score(X_train, y_train)
-        test_score = GS.score(X_test, y_test)
+        # train_score = GS.score(X_train, y_train)
+        # test_score = GS.score(X_test, y_test)
+        train_score = r2_score(
+            y_train, GS.predict(X_train), multioutput="variance_weighted"
+        )
+        test_score = r2_score(
+            y_test, GS.predict(X_test), multioutput="variance_weighted"
+        )
         # print(f"Train score: {train_score}")
         # print(f"Test score: {test_score}")
         # print(f"Best parameters: {GS.best_params_}")
@@ -246,8 +254,18 @@ def run_probe(
             shuffled_X, processed_y[:, layer, :], test_size=0.2, random_state=42
         )
         regressor.fit(X_train_rand, y_train_rand)
-        random_train_score = regressor.score(X_train_rand, y_train_rand)
-        random_test_score = regressor.score(X_test_rand, y_test_rand)
+        # random_train_score = regressor.score(X_train_rand, y_train_rand)
+        # random_test_score = regressor.score(X_test_rand, y_test_rand)
+        random_train_score = r2_score(
+            y_train_rand,
+            regressor.predict(X_train_rand),
+            multioutput="variance_weighted",
+        )
+        random_test_score = r2_score(
+            y_test_rand,
+            regressor.predict(X_test_rand),
+            multioutput="variance_weighted",
+        )
         result = {
             "layer": current_layer,
             "train_score": random_train_score,
@@ -289,8 +307,19 @@ def run_probe(
                     verbose=1,
                 )
                 GS_permute.fit(permuted_x_train, y_train)
-                train_score_permuted = GS_permute.score(permuted_x_train, y_train)
-                test_score_permuted = GS_permute.score(permuted_x_test, y_test)
+
+                # train_score_permuted = GS_permute.score(permuted_x_train, y_train)
+                # test_score_permuted = GS_permute.score(permuted_x_test, y_test)
+                train_score_permuted = r2_score(
+                    y_train,
+                    GS_permute.predict(permuted_x_train),
+                    multioutput="variance_weighted",
+                )
+                test_score_permuted = r2_score(
+                    y_test,
+                    GS_permute.predict(permuted_x_test),
+                    multioutput="variance_weighted",
+                )
                 result = {
                     "layer": current_layer,
                     "train_score": train_score_permuted,
@@ -327,8 +356,19 @@ def run_probe(
                 )
 
                 GS_zero.fit(zeroed_x_train, y_train)
-                zeroed_train_score = GS_zero.score(zeroed_x_train, y_train)
-                zeroed_test_score = GS_zero.score(zeroed_x_test, y_test)
+
+                # zeroed_train_score = GS_zero.score(zeroed_x_train, y_train)
+                # zeroed_test_score = GS_zero.score(zeroed_x_test, y_test)
+                zeroed_train_score = r2_score(
+                    y_train,
+                    GS_zero.predict(zeroed_x_train),
+                    multioutput="variance_weighted",
+                )
+                zeroed_test_score = r2_score(
+                    y_test,
+                    GS_zero.predict(zeroed_x_test),
+                    multioutput="variance_weighted",
+                )
                 result = {
                     "layer": current_layer,
                     "train_score": zeroed_train_score,
@@ -364,8 +404,18 @@ def run_probe(
                     verbose=1,
                 )
                 GS_ablate.fit(ablated_x_train, y_train)
-                ablated_train_score = GS_ablate.score(ablated_x_train, y_train)
-                ablated_test_score = GS_ablate.score(ablated_x_test, y_test)
+                # ablated_train_score = GS_ablate.score(ablated_x_train, y_train)
+                # ablated_test_score = GS_ablate.score(ablated_x_test, y_test)
+                ablated_train_score = r2_score(
+                    y_train,
+                    GS_ablate.predict(ablated_x_train),
+                    multioutput="variance_weighted",
+                )
+                ablated_test_score = r2_score(
+                    y_test,
+                    GS_ablate.predict(ablated_x_test),
+                    multioutput="variance_weighted",
+                )
                 result = {
                     "layer": current_layer,
                     "train_score": ablated_train_score,

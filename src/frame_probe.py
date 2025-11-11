@@ -61,7 +61,7 @@ def pick_probe(probe_name: str = "ridge", n_components: None | int = None):
     elif probe_name == "random-forest":
         from sklearn.ensemble import RandomForestRegressor
 
-        model = RandomForestRegressor(n_jobs=-1, verbose=5)
+        model = RandomForestRegressor()  # n_jobs=-1, verbose=1)
         param_grid = {
             "max_depth": [10, 15, 20],  # 5, 7,
             # "min_samples_split": [10, 20, 40, 80],
@@ -146,7 +146,7 @@ def run_probe(
         GS = GridSearchCV(
             estimator=regressor,
             param_grid=param_grid,
-            # n_jobs=-1,
+            n_jobs=-1,
             cv=5,
             verbose=1,
         )
@@ -171,7 +171,7 @@ def run_probe(
             )
 
             dim_reduction = False
-        if dim_reduction is not False and probe_name == "ridge":
+        if dim_reduction is not False:
             # from sklearn.preprocessing import StandardScaler
 
             # scaler = StandardScaler()
@@ -207,6 +207,7 @@ def run_probe(
             logger.info(
                 f"Saved target feature PCA for layer {current_layer} to {os.path.join(results_path, f'layer_{current_layer}_target_pca.pkl')}"
             )
+            logger.info(f"New y_train shape: {y_train.shape}")
 
         GS.fit(X_train, y_train)
         # train_score = GS.score(X_train, y_train)
@@ -302,7 +303,7 @@ def run_probe(
                 GS_permute = GridSearchCV(
                     estimator=regressor,
                     param_grid=param_grid,
-                    # n_jobs=-1,
+                    n_jobs=-1,
                     cv=5,
                     verbose=1,
                 )
@@ -350,7 +351,7 @@ def run_probe(
                 GS_zero = GridSearchCV(
                     estimator=regressor,
                     param_grid=param_grid,
-                    # n_jobs=-1,
+                    n_jobs=-1,
                     cv=5,
                     verbose=1,
                 )
@@ -399,7 +400,7 @@ def run_probe(
                 GS_ablate = GridSearchCV(
                     estimator=regressor,
                     param_grid=param_grid,
-                    # n_jobs=-1,
+                    n_jobs=-1,
                     cv=5,
                     verbose=1,
                 )

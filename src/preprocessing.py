@@ -274,9 +274,6 @@ def load_librispeech_MAUS_alignment(
         for fileID, df in phone_alignment.groupby("fileID")
     }
 
-    all_syntax_feats = efficient_syntax_parsing(transcriptions)
-    logger.info("Syntax features extracted.")
-
     for example in tqdm(transcriptions, desc="Adding non-acoustic features:"):
         speakerid, chapter, utt = example["fileID"].split("-")
         example["non_acoustic"] = np.array([int(speakerid), int(chapter)])
@@ -285,11 +282,13 @@ def load_librispeech_MAUS_alignment(
 
     logger.info("Non-acoustic features added to transcriptions.")
 
+    all_syntax_feats = efficient_syntax_parsing(transcriptions)
     # Merge all_syntax_feats into transcriptions
     for i, example in enumerate(transcriptions):
         example["syntax_feats"] = all_syntax_feats[i]
-
+    logger.info("Syntax features extracted.")
     logger.info("Syntax features added to transcriptions.")
+
     logger.info("Saving transcriptions...")
 
     if transcription_savefile is None:
@@ -358,8 +357,15 @@ def extract_syntax_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]
     logger.info("Extracting syntax features from text")
     nlp = spacy.load("en_core_web_sm")
     nlp.add_pipe("benepar", config={"model": "benepar_en3"})
+    with open(f"{PROJECT_ROOT}/src/penn_treebank_labels.yml", "r") as f:
+        benepar_labels = yaml.safe_load(f)
+        benepar_labels["<unk>"] = "UNK"  # Add an unknown label
+        benepar_labels["<pad>"] = "PAD"  # Add a padding label
+        benepar_labels_dict = {
+            label: i for i, label in enumerate(benepar_labels.keys())
+        }
 
-    syntax_features = {}
+    all_syntax_feats = {}
 
     for example in tqdm(dataset, desc="Syntax Feature Extraction"):
         fileID = example["fileID"]  # type: ignore
@@ -371,16 +377,25 @@ def extract_syntax_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]
         # for every word in the sentence, print the word, dependency label, constituent label, depth in constituency tree, word_character_length, location in sentence, and the character number within the sentence akin to offset_mapping in transformers
         offset_mapping = []
         for i, word in enumerate(sent):
+            # Use the text to get the constituency label from the nltk tree
             node_location_in_tree = nltk_tree.leaf_treeposition(i)
             constituent_label = nltk_tree[node_location_in_tree[:-1]]._label
+            constituent_label = benepar_labels_dict.get(constituent_label, 67)
 
             # Word location (depth) in tree
             node_depth_in_tree = len(node_location_in_tree)
             total_tree_depth = nltk_tree.height() - 1
             node_depth_in_tree_norm = node_depth_in_tree / total_tree_depth
 
+            word_length = len(word.text)
             word_location_in_sentence = i + 1
             word_location_in_sentence_norm = word_location_in_sentence / len(sent)
+
+            # Path from root to current token
+            # We need to pad the path to the maximum depth of the tree by making an empty array
+            path_from_root = [0] * total_tree_depth
+            for j, node in enumerate(node_location_in_tree):
+                path_from_root[j] = node
 
             word_features = np.array(
                 [
@@ -392,6 +407,7 @@ def extract_syntax_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]
                     word_location_in_sentence,
                     word_location_in_sentence_norm,
                 ]
+                + path_from_root,
             )
             syntax_feats.append(word_features)
 
@@ -400,12 +416,12 @@ def extract_syntax_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]
             word_end = word.idx + len(word.text)
             offset_mapping.append((word_start, word_end))
 
-        syntax_features[fileID] = {
+        all_syntax_feats[fileID] = {
             "features": np.array(syntax_feats),
             "offset_mapping": offset_mapping,
         }
 
-    return syntax_features
+    return all_syntax_feats
 
 
 def extract_opensmile_features(

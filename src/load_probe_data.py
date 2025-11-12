@@ -248,12 +248,12 @@ def format_data(
     ) as f:
         dnn_hidden_states = pickle.load(f)
 
-    # Remove entries where the length of words and syntax_feats are not equal
-    transcription = [
-        x
-        for i, x in enumerate(transcription)
-        if len(x["words"]) == len(all_syntax_features[transcription[i]["fileID"]])
-    ]
+    # # Remove entries where the length of words and syntax_feats are not equal
+    # transcription = [
+    #     x
+    #     for i, x in enumerate(transcription)
+    #     if len(x["words"]) == len(all_syntax_features[transcription[i]["fileID"]]['features'])
+    # ]
     transcription = [
         x for x in transcription if x["fileID"] in dnn_hidden_states.keys()
     ]
@@ -280,7 +280,8 @@ def format_data(
 
         metadata = transcription.loc[fileID]["non_acoustic"]
         # syntax_feats = transcription.loc[fileID]["syntax_feats"]
-        syntax_feats = all_syntax_features[fileID]
+        syntax_feats = all_syntax_features[fileID]["features"]
+        syntax_feats_offset_mapping = all_syntax_features[fileID]["offset_mapping"]
         # sent = transcription.loc[fileID]["words"]
 
         utt_lld = lld.loc[fileID].reset_index()
@@ -417,11 +418,10 @@ def format_data(
             word_idx = word_idx.values[0]
             if utt_lld_frames.shape[0] != 5:
                 continue
-            utt_lld_frames = utt_lld_frames.flatten()
             # utt_lld_names = utt_lld.columns.tolist()
 
             word_embedding = fasttext_embedding[word_idx].flatten()
-            syntax_feature = np.array(syntax_feats)[word_idx].flatten()
+
             word_form_feature = word_form_embeddings[word_idx].flatten()
 
             # Find the corresponding DNN word embedding
@@ -442,36 +442,21 @@ def format_data(
                 dnn_word_idx
             ].flatten()
 
+            # Use offset mapping to look up syntax features as well
+            syntax_word_idx = np.where(
+                np.array(syntax_feats_offset_mapping)[:, 0]
+                <= char_start_idx
+                & (np.array(syntax_feats_offset_mapping)[:, 1] > char_start_idx)
+            )
+            if syntax_word_idx[0].size == 0:
+                logger.info(
+                    "Char start index not found in syntax features: Skipped",
+                )
+                continue
+            syntax_feature = np.array(syntax_feats)[syntax_word_idx].flatten()
+
             # Get the corresponding PPG features for current frame index
             ppg_feature = ppg_features[int(token_time // 10)].flatten()
-
-            # Make sure all the dimensions are correct
-            assert all(
-                (
-                    # word_embedding.shape[0] == 100,
-                    # syntax_feature.shape[0] == 34,
-                    ppg_feature.shape[0] == 40,
-                    spk_embedding.shape[0] == 100,
-                    metadata.shape[0] == 2,
-                    # word_form_feature.shape[0] == 29,
-                )
-            )
-
-            # # Concatenate all the features to form the input feature vector
-            # input_feature = np.concatenate(
-            #     [
-            #         utt_lld_frames,
-            #         # word_embedding,
-            #         syntax_feature,
-            #         ppg_feature,
-            #         spk_embedding,
-            #         metadata,
-            #         # word_form_feature,
-            #     ],
-            #     axis=0,
-            # )
-
-            # Use ACOUSTIC_FEATURE_NAMES to select specific acoustic features
 
             acoustic_features = {}
             for acoustic_group in list(ACOUSTIC_FEATURE_NAMES.keys()):
@@ -480,8 +465,8 @@ def format_data(
                         "indices"
                     ]
                     acoustic_features[acoustic_group] = utt_lld_frames[
-                        acoustic_feature_indices
-                    ]
+                        :, acoustic_feature_indices
+                    ].flatten()
 
             # Store input feature components in a dictionary
             input_feature_components = acoustic_features | {
@@ -502,32 +487,49 @@ def format_data(
                 (fileID, frame_index, raw_frame_indices[i])
             )
 
+    # We restructure all_input_features to be a dictionary of numpy arrays for each feature component
+    logger.info("Processing input features...")
+    all_input_features_dict = {}
+    for feature_name in INPUT_FEATURE_SELECT_COMPONENTS:
+        all_input_features_dict[feature_name] = [
+            input_feature_components[feature_name]
+            for input_feature_components in all_input_features
+        ]
+
     # Apply dimension reduction to processed_dnn_word_embeddings using PCA to 100 dimensions
-    processed_dnn_word_embeddings = np.array(
-        input_feature_components["dnn_word_embedding"]
-        for input_feature_components in all_input_features
+    all_input_features_dict["dnn_word_embedding"] = np.array(
+        all_input_features_dict["dnn_word_embedding"]
     )
     logger.info(
-        f"Processed DNN word embeddings shape before PCA: {processed_dnn_word_embeddings.shape}"
+        f"Processed DNN word embeddings shape before PCA: {all_input_features_dict['dnn_word_embedding'].shape}"
     )
     from sklearn.decomposition import PCA
     from sklearn.preprocessing import StandardScaler
 
     scaler = StandardScaler()
-    processed_dnn_word_embeddings = scaler.fit_transform(processed_dnn_word_embeddings)
+    all_input_features_dict["dnn_word_embedding"] = scaler.fit_transform(
+        all_input_features_dict["dnn_word_embedding"]
+    )
 
     pca = PCA(n_components=100)
-    processed_dnn_word_embeddings = pca.fit_transform(processed_dnn_word_embeddings)
+    all_input_features_dict["dnn_word_embedding"] = pca.fit_transform(
+        all_input_features_dict["dnn_word_embedding"]
+    )
 
     logger.info(
-        f"Processed DNN word embeddings shape after PCA: {processed_dnn_word_embeddings.shape}"
+        f"Processed DNN word embeddings shape after PCA: {all_input_features_dict['dnn_word_embedding'].shape}"
     )
-    data_shape["dnn_word_embedding"] = processed_dnn_word_embeddings.shape[1:]  # type: ignore
-    # Then replace the dnn_word_embedding in all_input_features with the reduced one
-    for i, input_feature_components in enumerate(all_input_features):
-        input_feature_components["dnn_word_embedding"] = processed_dnn_word_embeddings[
-            i
-        ]
+
+    # Pad syntax_features to have the same length with zeros
+    syntax_feats_max_length = max(
+        [x.shape[0] for x in all_input_features_dict["syntax_feature"]]
+    )
+    syntax_feats_array = np.zeros(
+        (len(all_input_features_dict["syntax_feature"]), syntax_feats_max_length)
+    )
+    for i, syntax_feature in enumerate(all_input_features_dict["syntax_feature"]):
+        syntax_feats_array[i, : syntax_feature.shape[0]] = syntax_feature
+    all_input_features_dict["syntax_feature"] = syntax_feats_array
 
     logger.info("Concatenating input features...")
     logger.info(f"Input features include: {INPUT_FEATURE_SELECT_COMPONENTS}")
@@ -535,16 +537,15 @@ def format_data(
     processed_X = np.array(
         np.concatenate(
             [
-                input_feature_components[feature_name]
+                all_input_features_dict[feature_name]
                 for feature_name in INPUT_FEATURE_SELECT_COMPONENTS
             ],
-            axis=0,
+            axis=1,
         )
-        for input_feature_components in all_input_features
     )
 
     data_shape = {
-        feature_name: all_input_features[0][feature_name].shape
+        feature_name: all_input_features_dict[feature_name][0].shape
         for feature_name in INPUT_FEATURE_SELECT_COMPONENTS
     }
 

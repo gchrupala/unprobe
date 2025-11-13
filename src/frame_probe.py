@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import os
 import pickle
@@ -13,7 +14,7 @@ from sklearn.metrics import r2_score
 from sklearn.model_selection import GridSearchCV, train_test_split
 from tqdm.auto import tqdm, trange
 
-from load_probe_data import get_section_shapes
+from load_probe_data import get_section_shapes, load_data
 
 # Set up logger with time, name, level, and message
 logging.basicConfig(
@@ -108,6 +109,7 @@ def run_probe(
     processed_y: np.ndarray,
     data_shape: dict,
     filename_timestamp: list[tuple],
+    feature_groups: list[tuple],
     probe_name: str = "ridge",
     select_layers: list[int] | None = None,
     zeroing: bool = True,
@@ -122,7 +124,10 @@ def run_probe(
     Args:
         processed_X: The input data.
         processed_y: The target data.
+        data_shape: The shape of the data.
+        filename_timestamp: The list of filename and timestamp tuples.
         probe_name: The name of the probe to use. Options are 'ridge' and 'random_forest'.
+        feature_groups: The feature groups to use for probing.
         select_layers: The layers to use for probing. If None, all layers are used.
         zeroing: Whether to perform zeroing manipulation.
         ablation: Whether to perform ablation manipulation.
@@ -132,7 +137,16 @@ def run_probe(
         A list of dictionaries containing the results.
     """
 
+    section_shapes = np.array(get_section_shapes(data_shape=data_shape))
+
+    if not any((zeroing, ablation, permutation)):
+        logger.warning(
+            "At least one manipulation mode must be True, setting ablation to True"
+        )
+        ablation = True
+
     results = []
+
     for layer in trange(processed_y.shape[1], desc="Layers in selected layers"):
         layer_results = []
         current_layer = select_layers[layer] if select_layers is not None else layer
@@ -172,24 +186,6 @@ def run_probe(
 
             dim_reduction = False
         if dim_reduction is not False:
-            # from sklearn.preprocessing import StandardScaler
-
-            # scaler = StandardScaler()
-            # y_train = scaler.fit_transform(y_train)
-            # y_test = scaler.transform(y_test)
-            # logger.info(
-            #     f"Normalized target features using StandardScaler for layer {current_layer}"
-            # )
-            # # Save scaler for future use
-            # with open(
-            #     os.path.join(results_path, f"layer_{current_layer}_target_scaler.pkl"),
-            #     "wb",
-            # ) as f:
-            #     pickle.dump(scaler, f)
-            # logger.info(
-            #     f"Saved target feature scaler for layer {current_layer} to {os.path.join(results_path, f'layer_{current_layer}_target_scaler.pkl')}"
-            # )
-            # Use PCA to reduce the dimension of hidden states
             from sklearn.decomposition import PCA
 
             pca = PCA(n_components=dim_reduction, svd_solver="full")
@@ -218,10 +214,6 @@ def run_probe(
         test_score = r2_score(
             y_test, GS.predict(X_test), multioutput="variance_weighted"
         )
-        # print(f"Train score: {train_score}")
-        # print(f"Test score: {test_score}")
-        # print(f"Best parameters: {GS.best_params_}")
-        # print(f"Best score: {GS.best_score_}")
 
         result = {
             "layer": current_layer,
@@ -280,23 +272,31 @@ def run_probe(
         }
         layer_results.append(result)
 
-        section_shapes = get_section_shapes(data_shape=data_shape)
-
-        for range_start, range_end, name in tqdm(
-            section_shapes, desc="Feature Groups", leave=False
-        ):
-            assert any((zeroing, ablation, permutation)), (
-                "At least one manipulation mode must be True"
+        for group in feature_groups:
+            # Create a mask and use the section shapes to mask the areas of input feature that we want to manipulate
+            mask_array = np.ones(X_train.shape[1], dtype=bool)
+            feature_names = []
+            for name in group:
+                range_start, range_end, feature_name = section_shapes[
+                    section_shapes[:, 2] == name
+                ][0]
+                mask_array[int(range_start) : int(range_end)] = (
+                    False  # Mask out the group features
+                )
+                feature_names.append(feature_name)
+            group_name = (
+                "+".join(feature_names) if len(feature_names) > 1 else feature_names[0]
             )
+
             if permutation:
                 # Permutation of features
                 permuted_x_train = X_train.copy()
-                permuted_x_train[:, range_start:range_end] = np.random.permutation(
-                    permuted_x_train[:, range_start:range_end]
+                permuted_x_train[:, mask_array] = np.random.permutation(
+                    permuted_x_train[:, mask_array]
                 )
                 permuted_x_test = X_test.copy()
-                permuted_x_test[:, range_start:range_end] = np.random.permutation(
-                    permuted_x_test[:, range_start:range_end]
+                permuted_x_test[:, mask_array] = np.random.permutation(
+                    permuted_x_test[:, mask_array]
                 )
                 # Reinitialize the regressor here
                 regressor, param_grid = pick_probe(probe_name)
@@ -331,20 +331,20 @@ def run_probe(
                     # "intercept": GS.best_estimator_.intercept_,
                     # "permutation": f"{range_start}-{range_end}"
                     "manipulation_mode": "permutation",
-                    "manipulated_feature_group": name,
+                    "manipulated_feature_group": group_name,
                 }
                 layer_results.append(result)
 
-                feature_pred_dict["permutation_" + name] = GS_permute.predict(
+                feature_pred_dict["permutation_" + group_name] = GS_permute.predict(
                     permuted_x_test
                 )
 
             if zeroing:
                 # Zeroing out features
                 zeroed_x_train = X_train.copy()
-                zeroed_x_train[:, range_start:range_end] = 0
+                zeroed_x_train[:, mask_array] = 0
                 zeroed_x_test = X_test.copy()
-                zeroed_x_test[:, range_start:range_end] = 0
+                zeroed_x_test[:, mask_array] = 0
 
                 # Reinitialize the regressor again
                 regressor, param_grid = pick_probe(probe_name)
@@ -379,22 +379,18 @@ def run_probe(
                     # "coefficients": GS_zero.best_estimator_.coef_,
                     # "intercept": GS_zero.best_estimator_.intercept_,
                     "manipulation_mode": "zeroing",
-                    "manipulated_feature_group": name,
+                    "manipulated_feature_group": group_name,
                 }
                 layer_results.append(result)
 
-                feature_pred_dict["zeroing_" + name] = GS_zero.predict(zeroed_x_test)
+                feature_pred_dict["zeroing_" + group_name] = GS_zero.predict(
+                    zeroed_x_test
+                )
 
             if ablation:
                 # Ablation of features
-                ablated_x_train = X_train.copy()
-                ablated_x_train = np.delete(
-                    ablated_x_train, np.s_[range_start:range_end], axis=1
-                )
-                ablated_x_test = X_test.copy()
-                ablated_x_test = np.delete(
-                    ablated_x_test, np.s_[range_start:range_end], axis=1
-                )
+                ablated_x_train = X_train.copy()[:, mask_array]
+                ablated_x_test = X_test.copy()[:, mask_array]
                 # Reinitialize the regressor again
                 regressor, param_grid = pick_probe(probe_name)
                 GS_ablate = GridSearchCV(
@@ -425,11 +421,11 @@ def run_probe(
                     "best_score": GS.best_score_,
                     # "coefficients": GS_ablate.best_estimator_.coef_,
                     "manipulation_mode": "ablation",
-                    "manipulated_feature_group": name,
+                    "manipulated_feature_group": group_name,
                 }
                 layer_results.append(result)
 
-                feature_pred_dict["ablation_" + name] = GS_ablate.predict(
+                feature_pred_dict["ablation_" + group_name] = GS_ablate.predict(
                     ablated_x_test
                 )
 
@@ -520,8 +516,22 @@ def parse_args():
         default="False",
         help="The number of dimensions to reduce the target features to using PCA.",
     )
+    parser.add_argument(
+        "--feature_groups_config",
+        type=str,
+        default=f"{SAVEPATH}/default_feature_groups.json",
+        help="The feature groups to use for probing.",
+    )
     args = parser.parse_args()
     return args
+
+
+feature_groups = [
+    ("dnn_word_embedding", "syntax_feature"),
+    ("Prosodic & Voice Quality", "spk_embedding"),
+    ("Formant Characteristics", "ppg_feature"),
+    ("Spectral Envelope", "ppg_feature"),
+]
 
 
 def main():
@@ -536,6 +546,7 @@ def main():
     save_predictions = args.save_predictions
     normalize_features = args.normalize_features
     normalize_string = "normalized" if normalize_features else "unnormalized"
+
     try:
         dim_reduction = int(args.dim_reduction)
     except ValueError:
@@ -624,13 +635,21 @@ def main():
             f"librispeech-{librispeech_split}-dimreduction/{modelname.split('/')[-1]}/{probe_name}_frame_probe_{normalize_string}_dimreduction-{dim_reduction}",
         )
 
+    if "default" not in args.feature_groups_config:
+        feature_groups_config_name = os.path.basename(
+            args.feature_groups_config
+        ).replace(".json", "")
+        feature_groups_config_name = feature_groups_config_name.replace("_", "-")
+        results_path = results_path.replace(
+            "frame_probe", f"frame_probe-custom-group-{feature_groups_config_name}"
+        )
+
     os.makedirs(results_path, exist_ok=True)
 
     logger.info(f"Results will be saved to {results_path}")
     logger.info("-" * 30)
 
     logger.info("Formatting data for probe...")
-    from load_probe_data import load_data
 
     processed_X, processed_Y, filename_timestamp, data_shape = load_data(
         librispeech_split=librispeech_split,
@@ -641,8 +660,21 @@ def main():
         overwrite=args.overwrite,
     )
 
+    feature_groups_config = os.path.join(SAVEPATH, args.feature_groups_config)
+    if not os.path.exists(feature_groups_config):
+        logger.warning(
+            f"Feature groups config {feature_groups_config} not found. Generating and using default groups."
+        )
+        feature_groups = [(x,) for x in list(data_shape.keys())]
+        with open(os.path.join(SAVEPATH, "default_feature_groups.json"), "w") as f:
+            json.dump(feature_groups, f)
+    else:
+        with open(feature_groups_config, "r") as f:
+            feature_groups = json.load(f)
+        logger.info(
+            f"Using feature groups from {feature_groups_config}: {feature_groups}"
+        )
     # Save data_shape to results_path as json file for future reference
-    import json
 
     with open(os.path.join(results_path, "data_shape.json"), "w") as f:
         json.dump(data_shape, f)
@@ -652,6 +684,7 @@ def main():
         processed_X=processed_X,
         processed_y=processed_Y,
         data_shape=data_shape,
+        feature_groups=feature_groups,
         filename_timestamp=filename_timestamp,
         probe_name=probe_name,
         select_layers=select_layers,

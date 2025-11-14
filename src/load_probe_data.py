@@ -73,7 +73,7 @@ def get_opensmile_feature_names():
     feature_names = smile.feature_names
 
     feature_groups = {
-        "Prosodic & Voice Quality": [
+        "OtherAcoustic": [
             "Loudness_sma3",
             "F0semitoneFrom27.5Hz_sma3nz",
             "jitterLocal_sma3nz",
@@ -82,7 +82,7 @@ def get_opensmile_feature_names():
             "logRelF0-H1-H2_sma3nz",
             "logRelF0-H1-A3_sma3nz",
         ],
-        "Spectral Envelope": [
+        "SpectralInfo": [
             "alphaRatio_sma3",
             "hammarbergIndex_sma3",
             "slope0-500_sma3",
@@ -93,7 +93,7 @@ def get_opensmile_feature_names():
             "mfcc3_sma3",
             "mfcc4_sma3",
         ],
-        "Formant Characteristics": [
+        "Formants": [
             "F1frequency_sma3nz",
             "F1bandwidth_sma3nz",
             "F1amplitudeLogRelF0_sma3nz",

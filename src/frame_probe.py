@@ -8,9 +8,6 @@ import sys
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import Ridge
-
-# Import r2 score for regression evaluation
-from sklearn.metrics import r2_score
 from sklearn.model_selection import GridSearchCV, train_test_split
 from tqdm.auto import tqdm, trange
 
@@ -49,6 +46,35 @@ else:
     ALIGNMENT_ROOT = os.path.join(PROJECT_ROOT, "data")
     SAVEPATH = os.path.join(PROJECT_ROOT, "experimental_data")
     RESULTS_ROOT = os.path.join(PROJECT_ROOT, "results")
+
+
+def r2_score(
+    y_true, y_pred, multioutput="variance_weighted", sklearn_=False, train_data=None
+):
+    if sklearn_:
+        from sklearn.metrics import r2_score as r2_score_
+
+        logger.warning(
+            "Using sklearn's r2_score. Note that this uses test data mean for r2 calculation."
+        )
+        return r2_score_(y_true, y_pred, multioutput=multioutput)
+    else:
+        # Use custom implementation due to sklearn using test data mean in r2 calculation
+        # We want to use train data mean for both train and test r2 calculation
+        assert train_data is not None, (
+            "train_data must be provided for custom r2_score calculation"
+        )
+        ss_res = np.sum((y_true - y_pred) ** 2, axis=0)
+        y_train_mean = np.mean(train_data, axis=0)
+        ss_tot = np.sum((y_true - y_train_mean) ** 2, axis=0)
+        r2 = 1 - ss_res / ss_tot
+        if multioutput == "variance_weighted":
+            var = np.var(y_true, axis=0)
+            weights = var / np.sum(var)
+            r2 = np.sum(r2 * weights)
+        elif multioutput == "uniform_average":
+            r2 = np.mean(r2)
+        return r2
 
 
 def pick_probe(probe_name: str = "ridge", n_components: None | int = None):
@@ -209,10 +235,16 @@ def run_probe(
         # train_score = GS.score(X_train, y_train)
         # test_score = GS.score(X_test, y_test)
         train_score = r2_score(
-            y_train, GS.predict(X_train), multioutput="variance_weighted"
+            y_train,
+            GS.predict(X_train),
+            multioutput="variance_weighted",
+            train_data=y_train,
         )
         test_score = r2_score(
-            y_test, GS.predict(X_test), multioutput="variance_weighted"
+            y_test,
+            GS.predict(X_test),
+            multioutput="variance_weighted",
+            train_data=y_train,
         )
 
         result = {
@@ -253,11 +285,13 @@ def run_probe(
             y_train_rand,
             regressor.predict(X_train_rand),
             multioutput="variance_weighted",
+            train_data=y_train_rand,
         )
         random_test_score = r2_score(
             y_test_rand,
             regressor.predict(X_test_rand),
             multioutput="variance_weighted",
+            train_data=y_train_rand,
         )
         result = {
             "layer": current_layer,
@@ -289,15 +323,24 @@ def run_probe(
             )
 
             if permutation:
-                # Permutation of features
+                # Permutation of features based on mask_array
                 permuted_x_train = X_train.copy()
-                permuted_x_train[:, mask_array] = np.random.permutation(
-                    permuted_x_train[:, mask_array]
-                )
                 permuted_x_test = X_test.copy()
-                permuted_x_test[:, mask_array] = np.random.permutation(
-                    permuted_x_test[:, mask_array]
+                # Permute only the features in the mask_array
+                features_to_permute_train = permuted_x_train[:, ~mask_array]
+                features_to_permute_test = permuted_x_test[:, ~mask_array]
+                # Create random generator with fixed seed = 42
+                rng = np.random.default_rng(seed=42)
+                # Use permuted to shuffle along the 1st axis (features)
+                features_to_permute_train = rng.permuted(
+                    features_to_permute_train, axis=1
                 )
+                features_to_permute_test = rng.permuted(
+                    features_to_permute_test, axis=1
+                )
+                permuted_x_train[:, ~mask_array] = features_to_permute_train
+                permuted_x_test[:, ~mask_array] = features_to_permute_test
+
                 # Reinitialize the regressor here
                 regressor, param_grid = pick_probe(probe_name)
                 GS_permute = GridSearchCV(
@@ -315,11 +358,13 @@ def run_probe(
                     y_train,
                     GS_permute.predict(permuted_x_train),
                     multioutput="variance_weighted",
+                    train_data=y_train,
                 )
                 test_score_permuted = r2_score(
                     y_test,
                     GS_permute.predict(permuted_x_test),
                     multioutput="variance_weighted",
+                    train_data=y_train,
                 )
                 result = {
                     "layer": current_layer,
@@ -364,11 +409,13 @@ def run_probe(
                     y_train,
                     GS_zero.predict(zeroed_x_train),
                     multioutput="variance_weighted",
+                    train_data=y_train,
                 )
                 zeroed_test_score = r2_score(
                     y_test,
                     GS_zero.predict(zeroed_x_test),
                     multioutput="variance_weighted",
+                    train_data=y_train,
                 )
                 result = {
                     "layer": current_layer,
@@ -407,11 +454,13 @@ def run_probe(
                     y_train,
                     GS_ablate.predict(ablated_x_train),
                     multioutput="variance_weighted",
+                    train_data=y_train,
                 )
                 ablated_test_score = r2_score(
                     y_test,
                     GS_ablate.predict(ablated_x_test),
                     multioutput="variance_weighted",
+                    train_data=y_train,
                 )
                 result = {
                     "layer": current_layer,
@@ -625,25 +674,23 @@ def main():
         raise ValueError(f"Results path {results_path} does not exist.")
     # Create a subdirectory for the current experiment with separate librispeech split and modelname
     if dim_reduction is False:
-        results_path = os.path.join(
-            results_path,
-            f"librispeech-{librispeech_split}/{modelname.split('/')[-1]}/{probe_name}_frame_probe_{normalize_string}",
-        )
+        results_dir = f"librispeech-{librispeech_split}/{modelname.split('/')[-1]}/{probe_name}_frame_probe_{normalize_string}"
     else:
-        results_path = os.path.join(
-            results_path,
-            f"librispeech-{librispeech_split}-dimreduction/{modelname.split('/')[-1]}/{probe_name}_frame_probe_{normalize_string}_dimreduction-{dim_reduction}",
-        )
+        results_dir = f"librispeech-{librispeech_split}-dimreduction/{modelname.split('/')[-1]}/{probe_name}_frame_probe_{normalize_string}_dimreduction-{dim_reduction}"
 
     if "default" not in args.feature_groups_config:
         feature_groups_config_name = os.path.basename(
             args.feature_groups_config
         ).replace(".json", "")
         feature_groups_config_name = feature_groups_config_name.replace("_", "-")
-        results_path = results_path.replace(
-            "frame_probe", f"frame_probe-custom-group-{feature_groups_config_name}"
+        # Replace the first directory with feature_groups_config_name
+        first_dir = results_dir.split("/")[0]
+        results_dir = results_dir.replace(
+            first_dir, f"{first_dir}-{feature_groups_config_name}"
         )
 
+    results_path = os.path.join(results_path, results_dir)
+    # Create the results directory if it doesn't exist
     os.makedirs(results_path, exist_ok=True)
 
     logger.info(f"Results will be saved to {results_path}")

@@ -8,6 +8,7 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import plotnine as p9
 import seaborn as sns
 from sklearn.linear_model import Ridge
 
@@ -285,23 +286,32 @@ def main():
         index=False,
     )
 
-    plt.figure(figsize=(10, 6))
-    sns.lineplot(
-        data=results_df, x="layer", y="r2_score", hue="feature_group", marker="o"
+    all_results_plot = (
+        p9.ggplot(
+            results_df,
+            p9.aes(
+                x="layer", y="r2_score", color="feature_group", shape="feature_group"
+            ),
+        )
+        + p9.geom_line()
+        + p9.geom_point()
+        + p9.ggtitle(
+            f"Decoding Frame Probe Results for {modelname} on {librispeech_split}"
+        )
+        + p9.xlab("Layer")
+        + p9.ylab("R2 Score")
+        + p9.theme(legend_position="right")
+        + p9.scale_color_discrete(name="Feature Group")
+        + p9.scale_shape_discrete(name="Feature Group")
+        + p9.theme(figure_size=(10, 6), dpi=300)
     )
-    plt.title(f"Decoding Frame Probe Results for {modelname} on {librispeech_split}")
-    plt.xlabel("Layer")
-    plt.ylabel("R2 Score")
-    plt.legend(title="Feature Group", bbox_to_anchor=(1.05, 1), loc="upper left")
-
-    plt.grid()
-    plt.tight_layout()
     # Save the plot
-    plt.savefig(
-        f"{RESULTS_ROOT}/figures/decoding_frame_probe_results_{modelname}_{librispeech_split}.png",
+    all_results_plot.save(
+        filename=f"{RESULTS_ROOT}/figures/decoding_frame_probe_results_{modelname}_{librispeech_split}.png",
         bbox_inches="tight",
     )
-    plt.show()
+
+    print(all_results_plot)
 
     syntax_results = syntax_deep_dive(
         model_hidden_states=model_hidden_states,
@@ -317,28 +327,33 @@ def main():
         f"{RESULTS_ROOT}/decoding_frame_probe_syntax_deep_dive_{modelname}_{librispeech_split}.csv",
         index=False,
     )
-    plt.figure(figsize=(10, 6))
-    sns.lineplot(
-        data=syntax_results_df,
-        x="layer",
-        y="r2_score",
-        hue="feature_group",
-        marker="o",
+
+    syntax_results_plot = (
+        p9.ggplot(
+            syntax_results_df,
+            p9.aes(
+                x="layer", y="r2_score", color="feature_group", shape="feature_group"
+            ),
+        )
+        + p9.geom_line()
+        + p9.geom_point()
+        + p9.ggtitle(
+            f"Decoding Frame Probe Syntax Deep Dive Results for {modelname} on {librispeech_split}"
+        )
+        + p9.xlab("Layer")
+        + p9.ylab("R2 Score")
+        + p9.theme(legend_position="right")
+        + p9.scale_color_discrete(name="Syntax Feature")
+        + p9.scale_shape_discrete(name="Syntax Feature")
+        + p9.theme(figure_size=(10, 6), dpi=300)
     )
-    plt.title(
-        f"Decoding Frame Probe Syntax Deep Dive Results for {modelname} on {librispeech_split}"
-    )
-    plt.xlabel("Layer")
-    plt.ylabel("R2 Score")
-    plt.legend(title="Syntax Feature", bbox_to_anchor=(1.05, 1), loc="upper left")
-    plt.grid()
-    plt.tight_layout()
     # Save the plot
-    plt.savefig(
-        f"{RESULTS_ROOT}/figures/decoding_frame_probe_syntax_deep_dive_{modelname}_{librispeech_split}.png",
+    syntax_results_plot.save(
+        filename=f"{RESULTS_ROOT}/figures/decoding_frame_probe_syntax_deep_dive_{modelname}_{librispeech_split}.png",
         bbox_inches="tight",
     )
-    plt.show()
+    print(all_results_plot)
+    print(syntax_results_plot)
 
 
 if __name__ == "__main__":

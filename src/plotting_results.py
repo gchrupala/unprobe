@@ -386,7 +386,7 @@ def plot_all_results(all_results_df: pd.DataFrame, save=False) -> None:
 
         if save:
             figure_filename = f"probe_{probename}_librispeech-{librispeech_split}_manipulation-{manipulation}_results.png"
-            figure_path = os.path.join(SAVEPATH, "plots", figure_filename)
+            figure_path = os.path.join(RESULTS_ROOT, "figures", figure_filename)
             os.makedirs(os.path.dirname(figure_path), exist_ok=True)
             figure.save(figure_path)
             logger.info(f"Saved figure to {figure_path}")
@@ -421,6 +421,13 @@ def plot_all_results(all_results_df: pd.DataFrame, save=False) -> None:
     )
     figure + p9.theme(figure_size=(6, 6))
     figure.show()
+    figure.save(
+        os.path.join(
+            RESULTS_ROOT,
+            "figures",
+            "probe_ridge_librispeech-train-clean-100_manipulation-ablation_wav2vec2-base_results.png",
+        )
+    )
 
     # Also plot subset of wav2vec2-base results for quick inspection
     subset_df = all_results_df[

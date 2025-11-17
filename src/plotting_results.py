@@ -259,16 +259,81 @@ All feature baseline is the best case results with all features intact. The feat
 """
 
 
-def plot_results(all_results_df: pd.DataFrame, save=False) -> None:
-    """Plot the results from the joined DataFrame.
+def plot_results(
+    subset_df,
+    random_baseline,
+    all_feature_baseline,
+    probename,
+    librispeech_split,
+    manipulation,
+) -> p9.ggplot:
+    figure = (
+        p9.ggplot()
+        + p9.facet_wrap("~ modelname", ncol=3)
+        + p9.geom_line(
+            p9.aes(
+                x="norm_layer",
+                y="test_score",
+                color="manipulated_feature_group",
+                shape="manipulated_feature_group",
+                group="manipulated_feature_group",
+            ),
+            alpha=0.7,
+            data=subset_df,
+        )
+        + p9.geom_point(
+            p9.aes(
+                x="norm_layer",
+                y="test_score",
+                color="manipulated_feature_group",
+                shape="manipulated_feature_group",
+            ),
+            data=subset_df,
+        )
+        # Add the baselines with distinct linetypes and colors for clarity
+        + p9.geom_line(
+            p9.aes(x="norm_layer", y="test_score"),
+            alpha=0.7,
+            data=random_baseline,
+            color="black",
+            linetype="dashed",
+        )
+        + p9.geom_line(
+            p9.aes(
+                x="norm_layer",
+                y="test_score",
+            ),
+            alpha=0.7,
+            data=all_feature_baseline,
+            color="black",
+            linetype="dotted",
+        )
+        + p9.theme(
+            figure_size=(10, 10),
+            dpi=300,
+            plot_caption=p9.element_text(ha="left", margin={"t": 1, "units": "lines"}),
+        )
+        + p9.scale_color_discrete(name="Manipulated Feature Group")
+        + p9.scale_shape_discrete(name="Manipulated Feature Group")
+        + p9.labs(
+            x="Layer (from shallow to deep, normalized)",
+            y="Test Score (R²)",
+            title="Encoding Probe Performance Across Model Layers",
+            subtitle=f"Probe: {probename}, Librispeech Split: {librispeech_split} Manipulation: {manipulation}",
+            caption=caption,
+        )
+    )
 
-    Args:
-        all_results_df (pd.DataFrame): The DataFrame containing the results to plot.
-    """
+    return figure
+
+
+def plot_all_results(all_results_df: pd.DataFrame, save=False) -> None:
+    """Plot the results from the joined DataFrame."""
+
     logger.info("Plotting results...")
 
     # Split into subsets based on probe name
-    probes = all_results_df["probename"].unique()
+    probenames = all_results_df["probename"].unique()
     librispeech_splits = all_results_df["librispeech_split"].unique()
     manipulations = ["zeroing", "permutation", "ablation"]
 
@@ -277,22 +342,22 @@ def plot_results(all_results_df: pd.DataFrame, save=False) -> None:
     #     "layer"
     # ].transform(lambda x: (x - x.min()) / (x.max() - x.min()))
 
-    for probe, librispeech_split, manipulation in product(
-        probes, librispeech_splits, manipulations
+    for probename, librispeech_split, manipulation in product(
+        probenames, librispeech_splits, manipulations
     ):
         subset_df = all_results_df[
-            (all_results_df["probename"] == probe)
+            (all_results_df["probename"] == probename)
             & (all_results_df["librispeech_split"] == librispeech_split)
             & (all_results_df["manipulation_mode"] == manipulation)
         ].copy()
 
         all_feature_baseline = all_results_df[
-            (all_results_df["probename"] == probe)
+            (all_results_df["probename"] == probename)
             & (all_results_df["librispeech_split"] == librispeech_split)
             & (all_results_df["manipulation_mode"] == "none")
         ].copy()
         random_baseline = all_results_df[
-            (all_results_df["probename"] == probe)
+            (all_results_df["probename"] == probename)
             & (all_results_df["librispeech_split"] == librispeech_split)
             & (all_results_df["manipulation_mode"] == "random_baseline")
         ].copy()
@@ -303,93 +368,90 @@ def plot_results(all_results_df: pd.DataFrame, save=False) -> None:
         all_feature_baseline["baseline"] = True
         subset_df["baseline"] = False
 
-        # subset_df = pd.concat(
-        #     [subset_df, all_feature_baseline, random_baseline], ignore_index=True
-        # ).reset_index()
-
         if subset_df.empty:
             logger.warning(
-                f"No data for probe {probe} and split {librispeech_split} and manipulation {manipulation}. Skipping."
+                f"No data for probe {probename} and split {librispeech_split} and manipulation {manipulation}. Skipping."
             )
             continue
-
-        figure = (
-            p9.ggplot()
-            + p9.facet_wrap("~ modelname", ncol=3)
-            + p9.geom_line(
-                p9.aes(
-                    x="norm_layer",
-                    y="test_score",
-                    color="manipulated_feature_group",
-                    shape="manipulated_feature_group",
-                    group="manipulated_feature_group",
-                ),
-                alpha=0.7,
-                data=subset_df,
-            )
-            + p9.geom_point(
-                p9.aes(
-                    x="norm_layer",
-                    y="test_score",
-                    color="manipulated_feature_group",
-                    shape="manipulated_feature_group",
-                ),
-                data=subset_df,
-            )
-            # Add the baselines with distinct linetypes and colors for clarity
-            + p9.geom_line(
-                p9.aes(x="norm_layer", y="test_score"),
-                alpha=0.7,
-                data=random_baseline,
-                color="black",
-                linetype="dashed",
-            )
-            + p9.geom_line(
-                p9.aes(
-                    x="norm_layer",
-                    y="test_score",
-                ),
-                alpha=0.7,
-                data=all_feature_baseline,
-                color="black",
-                linetype="dotted",
-            )
-            + p9.theme(
-                figure_size=(10, 10),
-                dpi=300,
-                plot_caption=p9.element_text(
-                    ha="left", margin={"t": 1, "units": "lines"}
-                ),
-            )
-            + p9.scale_color_discrete(name="Manipulated Feature Group")
-            + p9.scale_shape_discrete(name="Manipulated Feature Group")
-            + p9.labs(
-                x="Layer (from shallow to deep, normalized)",
-                y="Test Score (R²)",
-                title="Encoding Probe Performance Across Model Layers",
-                subtitle=f"Probe: {probe}, Librispeech Split: {librispeech_split} Manipulation: {manipulation}",
-                caption=caption,
-            )
+        figure = plot_results(
+            subset_df,
+            random_baseline,
+            all_feature_baseline,
+            probename,
+            librispeech_split,
+            manipulation,
         )
+
         figure.show()
 
         if save:
-            base_output_dir = os.path.join(RESULTS_ROOT, "figures")
-            os.makedirs(base_output_dir, exist_ok=True)
-            os.makedirs(os.path.join(base_output_dir, probe), exist_ok=True)
-            os.makedirs(
-                os.path.join(base_output_dir, probe, librispeech_split), exist_ok=True
-            )
+            figure_filename = f"probe_{probename}_librispeech-{librispeech_split}_manipulation-{manipulation}_results.png"
+            figure_path = os.path.join(SAVEPATH, "plots", figure_filename)
+            os.makedirs(os.path.dirname(figure_path), exist_ok=True)
+            figure.save(figure_path)
+            logger.info(f"Saved figure to {figure_path}")
+        logger.info("Finished plotting results.")
 
-            output_filepath = os.path.join(
-                base_output_dir,
-                probe,
-                librispeech_split,
-                f"{probe}_{librispeech_split}_{manipulation}_results.png",
-            )
-            figure.save(output_filepath)
-            logger.info(f"Saved figure to {output_filepath}")
-    logger.info("Plotting complete.")
+    # Also plot subset of wav2vec2-base results for quick inspection
+    subset_df = all_results_df[
+        (all_results_df["modelname"] == "Audio: wav2vec2-base")
+        & (all_results_df["librispeech_split"] == "librispeech-train-clean-100")
+        & (all_results_df["probename"] == "ridge")
+        & (all_results_df["manipulation_mode"] == "ablation")
+    ].copy()
+    all_feature_baseline = all_results_df[
+        (all_results_df["modelname"] == "Audio: wav2vec2-base")
+        & (all_results_df["probename"] == "ridge")
+        & (all_results_df["librispeech_split"] == "librispeech-train-clean-100")
+        & (all_results_df["manipulation_mode"] == "none")
+    ].copy()
+    random_baseline = all_results_df[
+        (all_results_df["modelname"] == "Audio: wav2vec2-base")
+        & (all_results_df["probename"] == "ridge")
+        & (all_results_df["librispeech_split"] == "librispeech-train-clean-100")
+        & (all_results_df["manipulation_mode"] == "random_baseline")
+    ].copy()
+    figure = plot_results(
+        subset_df,
+        random_baseline,
+        all_feature_baseline,
+        "ridge",
+        "librispeech-train-clean-100",
+        "ablation",
+    )
+    figure + p9.theme(figure_size=(6, 6))
+    figure.show()
+
+    # Also plot subset of wav2vec2-base results for quick inspection
+    subset_df = all_results_df[
+        (all_results_df["modelname"] == "Audio: wav2vec2-base")
+        & (all_results_df["librispeech_split"] == "librispeech-train-clean-100")
+        & (all_results_df["probename"] == "random-forest")
+        # & (all_results_df["manipulation_mode"] == "ablation")
+    ].copy()
+    if not subset_df.empty:
+        all_feature_baseline = all_results_df[
+            (all_results_df["modelname"] == "Audio: wav2vec2-base")
+            & (all_results_df["probename"] == "random-forest")
+            & (all_results_df["librispeech_split"] == "librispeech-train-clean-100")
+            & (all_results_df["manipulation_mode"] == "none")
+        ].copy()
+        random_baseline = all_results_df[
+            (all_results_df["modelname"] == "Audio: wav2vec2-base")
+            & (all_results_df["probename"] == "random-forest")
+            & (all_results_df["librispeech_split"] == "librispeech-train-clean-100")
+            & (all_results_df["manipulation_mode"] == "random_baseline")
+        ].copy()
+        figure = plot_results(
+            subset_df,
+            random_baseline,
+            all_feature_baseline,
+            "random-forest",
+            "librispeech-train-clean-100",
+            "ablation",
+        )
+        figure + p9.theme(figure_size=(6, 6))
+        figure.show()
 
 
 def plot_coefficients(coefficients):
@@ -490,4 +552,4 @@ if __name__ == "__main__":
     all_results_df = all_results_df[
         all_results_df["modelname"] != "Text: bert-base-uncased"
     ]
-    plot_results(all_results_df, save=False)
+    plot_all_results(all_results_df, save=False)

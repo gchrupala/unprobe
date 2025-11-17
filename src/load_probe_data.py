@@ -144,8 +144,8 @@ def format_data(
         modelname: The name of the transformer model used to extract hidden states.
         seq_sampling: The sequence sampling method used. Options are "random_frames", "mean", "none"
     Returns:
-        processed_X: The processed input features.
-        processed_Y: The processed target hidden states.
+        feature_sets: The processed input features.
+        model_hidden_states: The processed target hidden states.
         data_shape: A dictionary containing the shape of each feature component.
 
     """
@@ -265,7 +265,7 @@ def format_data(
     logger.info("Loaded all data files")
     logger.info(f"Number of valid fileIDs: {len(valid_fileIDs)}")
 
-    processed_Y = []
+    model_hidden_states = []
     filename_timestamp = []
     all_input_features = []
 
@@ -426,6 +426,7 @@ def format_data(
 
             # Find the corresponding DNN word embedding
             char_start_idx = ort_alignment.loc[word_idx, "char_idx_start"]
+            char_end_idx = ort_alignment.loc[word_idx, "char_idx_end"]
             # Find at which interval in the numpy array dnn_word_embeddings['offset_mapping'] the char_start_idx falls into
             dnn_offset_mappings = dnn_word_embeddings["offset_mapping"]
             dnn_word_idx = np.where(
@@ -444,9 +445,8 @@ def format_data(
 
             # Use offset mapping to look up syntax features as well
             syntax_word_idx = np.where(
-                np.array(syntax_feats_offset_mapping)[:, 0]
-                <= char_start_idx
-                & (np.array(syntax_feats_offset_mapping)[:, 1] > char_start_idx)
+                (np.array(syntax_feats_offset_mapping)[:, 0] <= char_start_idx)
+                & (np.array(syntax_feats_offset_mapping)[:, 1] >= char_end_idx)
             )
             if syntax_word_idx[0].size == 0:
                 logger.info(
@@ -480,7 +480,7 @@ def format_data(
             }
 
             all_input_features.append(input_feature_components)
-            processed_Y.append(utt_dnn_hidden_state)
+            model_hidden_states.append(utt_dnn_hidden_state)
             filename_timestamp.append(
                 (fileID, frame_index)
             ) if raw_frame_indices is None else filename_timestamp.append(
@@ -534,7 +534,7 @@ def format_data(
     logger.info("Concatenating input features...")
     logger.info(f"Input features include: {INPUT_FEATURE_SELECT_COMPONENTS}")
     # Now concatenate all input features to form the final input feature matrix
-    processed_X = np.array(
+    feature_sets = np.array(
         np.concatenate(
             [
                 all_input_features_dict[feature_name]
@@ -549,11 +549,11 @@ def format_data(
         for feature_name in INPUT_FEATURE_SELECT_COMPONENTS
     }
 
-    # Processed_Y shape should be (num_frames, num_layers, hidden_size)
-    logger.info(f"Processed X shape: {processed_X.shape}")
-    processed_Y = np.array(processed_Y)
-    logger.info(f"Processed Y shape: {processed_Y.shape}")
-    return processed_X, processed_Y, filename_timestamp, data_shape  # type: ignore
+    # model_hidden_states shape should be (num_frames, num_layers, hidden_size)
+    logger.info(f"Processed X shape: {feature_sets.shape}")
+    model_hidden_states = np.array(model_hidden_states)
+    logger.info(f"Processed Y shape: {model_hidden_states.shape}")
+    return feature_sets, model_hidden_states, filename_timestamp, data_shape  # type: ignore
 
 
 def load_data(
@@ -572,8 +572,8 @@ def load_data(
         seq_sampling: The sequence sampling method used. Options are "random_frames", "mean", "none"
         select_layers: List of layer indices to select from the transformer model. If None, use all layers.
     Returns:
-        processed_X: The processed input features.
-        processed_Y: The processed target hidden states.
+        feature_sets: The processed input features.
+        model_hidden_states: The processed target hidden states.
         data_shape: A dictionary containing the shape of each feature component.
 
     """
@@ -586,27 +586,31 @@ def load_data(
     if os.path.exists(formatted_data_path) and not overwrite:
         logger.info(f"Loading formatted data from {formatted_data_path}")
         with open(formatted_data_path, "rb") as f:
-            processed_X, processed_Y, filename_timestamp, data_shape = pickle.load(f)
+            feature_sets, model_hidden_states, filename_timestamp, data_shape = (
+                pickle.load(f)
+            )
     else:
         # If not, format the data and save it
         logger.info(
             "Formatted data not found or overwrite flag is set, formatting data..."
         )
-        processed_X, processed_Y, filename_timestamp, data_shape = format_data(
+        feature_sets, model_hidden_states, filename_timestamp, data_shape = format_data(
             librispeech_split=librispeech_split,
             modelname=modelname,
             seq_sampling=seq_sampling,
         )
         with open(formatted_data_path, "wb") as f:
-            pickle.dump((processed_X, processed_Y, filename_timestamp, data_shape), f)
+            pickle.dump(
+                (feature_sets, model_hidden_states, filename_timestamp, data_shape), f
+            )
         logger.info(f"Saved formatted data to {formatted_data_path}")
 
     if select_layers is not None:
         logger.info(f"Selecting layers: {select_layers}")
-        processed_Y = processed_Y[:, select_layers, :]
+        model_hidden_states = model_hidden_states[:, select_layers, :]
 
         logger.info(
-            f"Selected processed_Y shape after layer selection: {processed_Y.shape}"
+            f"Selected model_hidden_states shape after layer selection: {model_hidden_states.shape}"
         )
 
     if normalize_features:
@@ -615,21 +619,19 @@ def load_data(
         # We normalize features in a column-wise manner so that each feature has zero mean and unit variance
         logger.info("Normalizing input features")
         scaler = StandardScaler()
-        processed_X = scaler.fit_transform(processed_X)
+        feature_sets = scaler.fit_transform(feature_sets)
         logger.info("Normalized input features")
 
-    return processed_X, processed_Y, filename_timestamp, data_shape
+    return feature_sets, model_hidden_states, filename_timestamp, data_shape
 
 
 def sanity_check_pca():
-    from scipy.stats import loguniform
     from sklearn.compose import TransformedTargetRegressor
     from sklearn.decomposition import PCA
     from sklearn.linear_model import Ridge
     from sklearn.metrics import r2_score
     from sklearn.model_selection import (
         GridSearchCV,
-        RandomizedSearchCV,
         train_test_split,
     )
     from sklearn.pipeline import Pipeline
@@ -789,15 +791,15 @@ if __name__ == "__main__":
     seq_sampling = "random_frames"
     overwrite = False
     select_layers = [0, 6, 12]
-    processed_X, processed_Y, _, data_shape = format_data(
+    feature_sets, model_hidden_states, _, data_shape = format_data(
         librispeech_split=librispeech_split,
         modelname=modelname,
         seq_sampling=seq_sampling,
     )  # For testing purposes
     reduced_Y = dimension_reduction(
-        processed_Y, n_components=100
+        model_hidden_states, n_components=100
     )  # Reduce to 100 dimensions
     print(data_shape)
-    print(f"Processed X shape: {processed_X.shape}")
-    print(f"Processed Y shape: {processed_Y.shape}")
+    print(f"Processed X shape: {feature_sets.shape}")
+    print(f"Processed Y shape: {model_hidden_states.shape}")
     print(f"Reduced Y shape: {reduced_Y.shape}")

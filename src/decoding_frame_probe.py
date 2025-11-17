@@ -5,8 +5,10 @@ import os
 import pickle
 import sys
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
 from sklearn.linear_model import Ridge
 
 # Import r2 score for regression evaluation
@@ -50,6 +52,19 @@ else:
     ALIGNMENT_ROOT = os.path.join(PROJECT_ROOT, "data")
     SAVEPATH = os.path.join(PROJECT_ROOT, "experimental_data")
     RESULTS_ROOT = os.path.join(PROJECT_ROOT, "results")
+
+
+# Syntax feature indices mapping
+syntax_feature_idx = {
+    "POS": 0,
+    "Dependency_Label": 1,
+    "Constituent_Label": 2,
+    "Tree_Depth": 3,
+    "Tree_Depth_Normed": 4,
+    "Word_Position": 5,
+    "Word_Position_Normed": 6,
+    "Path_from_Root": (7, -1),
+}
 
 
 def run_probe(
@@ -96,7 +111,10 @@ def run_probe(
 
     for start_idx, end_idx, name in tqdm(section_shapes, desc="Feature Groups"):
         start_idx = int(start_idx)
-        end_idx = int(end_idx)
+        if name == "syntax_feature":
+            end_idx = start_idx + 7  # Exclude Path_from_Root for now
+        else:
+            end_idx = int(end_idx)
 
         actual_y_train = y_train[:, start_idx:end_idx]
         actual_y_test = y_test[:, start_idx:end_idx]
@@ -123,22 +141,108 @@ def run_probe(
             best_model = GS.best_estimator_
             predictions = best_model.predict(X_test_layer)
             r2 = r2_score(actual_y_test, predictions, multioutput="variance_weighted")
+            raw_r2 = r2_score(
+                actual_y_test, np.zeros_like(actual_y_test), multioutput="raw_values"
+            )
             layer_result = {
                 "feature_group": name,
                 "layer": layer,
                 "probe": probe_name,
                 "r2_score": r2,
+                "raw_r2": raw_r2,
             }
             results.append(layer_result)
 
     return results
 
 
+def syntax_deep_dive(
+    model_hidden_states,
+    feature_sets,
+    data_shape,
+    filename_timestamp,
+    probe_name="ridge",
+):
+    syntax_results = []
+
+    # Split data into training and testing sets
+    X_train, X_test, y_train, y_test, train_filenames, test_filenames = (
+        train_test_split(
+            model_hidden_states,
+            feature_sets,
+            filename_timestamp,
+            test_size=0.2,
+            random_state=42,
+        )
+    )
+
+    section_shapes = np.array(get_section_shapes(data_shape=data_shape))
+
+    # Only get the syntax feature group
+    syntax_shape = [x for x in section_shapes if x[2] == "syntax_feature"][0]
+
+    start_idx = int(syntax_shape[0])
+    end_idx = int(syntax_shape[1])
+
+    actual_y_train = y_train[:, start_idx:end_idx]
+    actual_y_test = y_test[:, start_idx:end_idx]
+
+    # Analyze syntax features in more detail
+    # For syntax features, we further split the features and skip the Path_from_Root feature
+    syntax_features = []
+    for feature_name, idx in syntax_feature_idx.items():
+        if feature_name == "Path_from_Root":
+            continue
+        if isinstance(idx, tuple):
+            continue
+        else:
+            train_feat = actual_y_train[:, idx]
+            test_feat = actual_y_test[:, idx]
+
+        GS = GridSearchCV(
+            pick_probe(probe_name)[0],
+            pick_probe(probe_name)[1],
+            cv=5,
+            n_jobs=-1,
+            verbose=0,
+        )
+        for layer in tqdm(
+            range(model_hidden_states.shape[1]),
+            desc=f"Layers - {feature_name}",
+            leave=False,
+        ):
+            X_train_layer = X_train[:, layer, :]
+            X_test_layer = X_test[:, layer, :]
+            from sklearn.preprocessing import StandardScaler
+
+            scaler = StandardScaler()
+            X_train_layer = scaler.fit_transform(X_train_layer)
+            X_test_layer = scaler.transform(X_test_layer)
+
+            GS.fit(X_train_layer, train_feat)
+            best_model = GS.best_estimator_
+            predictions = best_model.predict(X_test_layer)
+            r2 = r2_score(test_feat, predictions, multioutput="variance_weighted")
+            raw_r2 = r2_score(
+                test_feat, np.zeros_like(test_feat), multioutput="raw_values"
+            )
+            layer_result = {
+                "feature_group": f"{feature_name}",
+                "layer": layer,
+                "probe": probe_name,
+                "r2_score": r2,
+                "raw_r2": raw_r2,
+            }
+            syntax_results.append(layer_result)
+    return syntax_results
+
+
 def main():
     librispeech_split = "dev-clean"
+    librispeech_split = "train-clean-100"
     modelname = "wav2vec2-base"
     select_layers = None
-    normalize_features = True
+    normalize_features = False
     overwrite = False
     probe_name = "ridge"
     feature_sets, model_hidden_states, filename_timestamp, data_shape = load_data(
@@ -163,9 +267,23 @@ def main():
     )
 
     results_df = pd.DataFrame(results)
+    rename_feature_group = {
+        "Prosodic & Voice Quality": "Prosodic Features",
+        "Spectral Envelope": "Spectral Features",
+        "Formant Characteristics": "Formants",
+        "syntax_feature": "Syntactic Features",
+        "ppg_feature": "PPG",
+        "spk_embedding": "Speaker Embedding",
+        "metadata": "Metadata",
+        "dnn_word_embedding": "DNN Word Embedding",
+    }
     # plot the results
-    import matplotlib.pyplot as plt
-    import seaborn as sns
+    results_df["feature_group"] = results_df["feature_group"].map(rename_feature_group)
+
+    results_df.to_csv(
+        f"{RESULTS_ROOT}/decoding_frame_probe_results_{modelname}_{librispeech_split}.csv",
+        index=False,
+    )
 
     plt.figure(figsize=(10, 6))
     sns.lineplot(
@@ -174,6 +292,54 @@ def main():
     plt.title(f"Decoding Frame Probe Results for {modelname} on {librispeech_split}")
     plt.xlabel("Layer")
     plt.ylabel("R2 Score")
-    plt.legend(title="Feature Group")
+    plt.legend(title="Feature Group", bbox_to_anchor=(1.05, 1), loc="upper left")
+
     plt.grid()
+    plt.tight_layout()
+    # Save the plot
+    plt.savefig(
+        f"{RESULTS_ROOT}/figures/decoding_frame_probe_results_{modelname}_{librispeech_split}.png",
+        bbox_inches="tight",
+    )
     plt.show()
+
+    syntax_results = syntax_deep_dive(
+        model_hidden_states=model_hidden_states,
+        feature_sets=feature_sets,
+        data_shape=data_shape,
+        filename_timestamp=filename_timestamp,
+        probe_name=probe_name,
+    )
+
+    # plot syntax deep dive results
+    syntax_results_df = pd.DataFrame(syntax_results)
+    syntax_results_df.to_csv(
+        f"{RESULTS_ROOT}/decoding_frame_probe_syntax_deep_dive_{modelname}_{librispeech_split}.csv",
+        index=False,
+    )
+    plt.figure(figsize=(10, 6))
+    sns.lineplot(
+        data=syntax_results_df,
+        x="layer",
+        y="r2_score",
+        hue="feature_group",
+        marker="o",
+    )
+    plt.title(
+        f"Decoding Frame Probe Syntax Deep Dive Results for {modelname} on {librispeech_split}"
+    )
+    plt.xlabel("Layer")
+    plt.ylabel("R2 Score")
+    plt.legend(title="Syntax Feature", bbox_to_anchor=(1.05, 1), loc="upper left")
+    plt.grid()
+    plt.tight_layout()
+    # Save the plot
+    plt.savefig(
+        f"{RESULTS_ROOT}/figures/decoding_frame_probe_syntax_deep_dive_{modelname}_{librispeech_split}.png",
+        bbox_inches="tight",
+    )
+    plt.show()
+
+
+if __name__ == "__main__":
+    main()

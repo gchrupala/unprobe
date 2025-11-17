@@ -42,6 +42,7 @@ model_layer_dict = {
     "roberta-base": 12,
     "bert-base-uncased": 12,
     "ModernBERT-base": 22,
+    "wav2vec2-base-superb-sid": 12,
 }
 
 # Set up logger with time, name, level, and message
@@ -200,12 +201,18 @@ def load_dimreduction_files(results_dir: str):
                 x=x_var,
                 y=y_var,
                 color="manipulated_feature_group",
+                shape="manipulated_feature_group",
                 group="manipulated_feature_group",
             ),
             alpha=0.7,
         )
         + p9.geom_point(
-            p9.aes(x=x_var, y=y_var, color="manipulated_feature_group"),
+            p9.aes(
+                x=x_var,
+                y=y_var,
+                color="manipulated_feature_group",
+                shape="manipulated_feature_group",
+            ),
             data=subset_df,
         )
         # Add the baselines with distinct linetypes and colors for clarity
@@ -227,6 +234,7 @@ def load_dimreduction_files(results_dir: str):
             linetype="dotted",
         )
         + p9.scale_color_discrete(name="Manip. Feat. Grp")
+        + p9.scale_shape_discrete(name="Manip. Feat. Grp")
         # Put the x-axis ticks from 0 to max layer for every 3rd layer
         + p9.scale_x_continuous(breaks=range(0, subset_df["layer"].max() + 1, 3))
         + p9.theme(
@@ -313,6 +321,7 @@ def plot_results(all_results_df: pd.DataFrame, save=False) -> None:
                     x="norm_layer",
                     y="test_score",
                     color="manipulated_feature_group",
+                    shape="manipulated_feature_group",
                     group="manipulated_feature_group",
                 ),
                 alpha=0.7,
@@ -320,7 +329,10 @@ def plot_results(all_results_df: pd.DataFrame, save=False) -> None:
             )
             + p9.geom_point(
                 p9.aes(
-                    x="norm_layer", y="test_score", color="manipulated_feature_group"
+                    x="norm_layer",
+                    y="test_score",
+                    color="manipulated_feature_group",
+                    shape="manipulated_feature_group",
                 ),
                 data=subset_df,
             )
@@ -350,6 +362,7 @@ def plot_results(all_results_df: pd.DataFrame, save=False) -> None:
                 ),
             )
             + p9.scale_color_discrete(name="Manipulated Feature Group")
+            + p9.scale_shape_discrete(name="Manipulated Feature Group")
             + p9.labs(
                 x="Layer (from shallow to deep, normalized)",
                 y="Test Score (R²)",

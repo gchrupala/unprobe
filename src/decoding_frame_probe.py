@@ -162,7 +162,7 @@ def syntax_deep_dive(
     feature_sets,
     data_shape,
     filename_timestamp,
-    probe_name="ridge",
+    probe_name="ridge_classifier",
 ):
     syntax_results = []
 
@@ -223,16 +223,16 @@ def syntax_deep_dive(
             GS.fit(X_train_layer, train_feat)
             best_model = GS.best_estimator_
             predictions = best_model.predict(X_test_layer)
-            r2 = r2_score(test_feat, predictions, multioutput="variance_weighted")
-            raw_r2 = r2_score(
-                test_feat, np.zeros_like(test_feat), multioutput="raw_values"
-            )
+            # r2 = r2_score(test_feat, predictions, multioutput="variance_weighted")
+            # raw_r2 = r2_score(
+            #     test_feat, np.zeros_like(test_feat), multioutput="raw_values"
+            # )
+            accuracy = np.mean(predictions == test_feat)
             layer_result = {
                 "feature_group": f"{feature_name}",
                 "layer": layer,
                 "probe": probe_name,
-                "r2_score": r2,
-                "raw_r2": raw_r2,
+                "accuracy": accuracy,
             }
             syntax_results.append(layer_result)
     return syntax_results

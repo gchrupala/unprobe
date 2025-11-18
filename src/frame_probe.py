@@ -123,6 +123,15 @@ def pick_probe(probe_name: str = "ridge", n_components: None | int = None):
             # "regressor__solver": ["auto", "sag", "saga", "lsqr", "cholesky"],
             # "regressor__max_iter": [1000, 2000,  3000],
         }
+    elif probe_name == "ridge_classifier":
+        from sklearn.linear_model import RidgeClassifier
+
+        model = RidgeClassifier()
+        param_grid = {
+            "alpha": [10**x for x in range(-3, 5)],
+            # "solver": ["auto", "sag", "saga", "lsqr", "cholesky"],
+            # "max_iter": [1000, 2000,  3000],
+        }
 
     else:
         raise ValueError(f"Probe {probe_name} not supported")

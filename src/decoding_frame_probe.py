@@ -98,6 +98,9 @@ def run_probe(
     results = []
 
     # Split data into training and testing sets
+    # Use speakerID to stratify the train-test-split to avoid data leakage
+    speakerID = [x[0].split("-")[0] for x in filename_timestamp]
+
     X_train, X_test, y_train, y_test, train_filenames, test_filenames = (
         train_test_split(
             model_hidden_states,
@@ -105,8 +108,11 @@ def run_probe(
             filename_timestamp,
             test_size=0.2,
             random_state=42,
+            stratify=speakerID,
         )
     )
+    train_speakerID = [x[0].split("-")[0] for x in train_filenames]
+    test_speakerID = [x[0].split("-")[0] for x in test_filenames]
 
     section_shapes = np.array(get_section_shapes(data_shape=data_shape))
 
@@ -190,9 +196,12 @@ def syntax_deep_dive(
 
     # Analyze syntax features in more detail
     # For syntax features, we further split the features and skip the Path_from_Root feature
-    syntax_features = []
     for feature_name, idx in syntax_feature_idx.items():
-        if feature_name == "Path_from_Root":
+        if feature_name in [
+            "Path_from_Root",
+            "Word_Position_Normed",
+            "Tree_Depth_Normed",
+        ]:
             continue
         if isinstance(idx, tuple):
             continue
@@ -220,6 +229,10 @@ def syntax_deep_dive(
             X_train_layer = scaler.fit_transform(X_train_layer)
             X_test_layer = scaler.transform(X_test_layer)
 
+            # Turn train_feat and test_feat into class labels
+            train_feat = train_feat.astype(int)
+            test_feat = test_feat.astype(int)
+
             GS.fit(X_train_layer, train_feat)
             best_model = GS.best_estimator_
             predictions = best_model.predict(X_test_layer)
@@ -235,13 +248,38 @@ def syntax_deep_dive(
                 "accuracy": accuracy,
             }
             syntax_results.append(layer_result)
+    # Add baseline accuracy for each syntax feature based on the most frequent class
+    for feature_name, idx in syntax_feature_idx.items():
+        if feature_name in [
+            "Path_from_Root",
+            "Word_Position_Normed",
+            "Tree_Depth_Normed",
+        ]:
+            continue
+        if isinstance(idx, tuple):
+            continue
+        else:
+            test_feat = actual_y_test[:, idx]
+        test_feat = test_feat.astype(int)
+        # Calculate the most frequent class accuracy
+        label, count = np.unique(test_feat, return_counts=True)
+        most_frequent_class = label[np.argmax(count)]
+        baseline_accuracy = np.mean(test_feat == most_frequent_class)
+        layer_result = {
+            "feature_group": f"{feature_name}_baseline",
+            "layer": -1,
+            "probe": probe_name,
+            "accuracy": baseline_accuracy,
+        }
+        syntax_results.append(layer_result)
     return syntax_results
 
 
 def main():
     librispeech_split = "dev-clean"
     librispeech_split = "train-clean-100"
-    modelname = "wav2vec2-base"
+    # modelname = "wav2vec2-base"
+    modelname = "bert-base-uncased"
     select_layers = None
     normalize_features = False
     overwrite = False
@@ -251,8 +289,10 @@ def main():
         modelname=modelname,
         seq_sampling="random_frames",
         select_layers=select_layers,
-        normalize_features=normalize_features,
         overwrite=overwrite,
+        reduce_dnn_word_embedding=True,
+        one_hot_encode_syntax=True,
+        normalize_features=normalize_features,
     )
 
     # Check the variance of model_hidden_states and feature_sets
@@ -269,22 +309,17 @@ def main():
 
     results_df = pd.DataFrame(results)
     rename_feature_group = {
-        "Prosodic & Voice Quality": "Prosodic Features",
-        "Spectral Envelope": "Spectral Features",
-        "Formant Characteristics": "Formants",
+        "OtherAcoustic": "Other Acoustic Features",
+        "SpectralInfo": "Spectral Features",
+        "Formants": "Formants",
         "syntax_feature": "Syntactic Features",
         "ppg_feature": "PPG",
         "spk_embedding": "Speaker Embedding",
-        "metadata": "Metadata",
         "dnn_word_embedding": "DNN Word Embedding",
     }
+
     # plot the results
     results_df["feature_group"] = results_df["feature_group"].map(rename_feature_group)
-
-    results_df.to_csv(
-        f"{RESULTS_ROOT}/decoding_frame_probe_results_{modelname}_{librispeech_split}.csv",
-        index=False,
-    )
 
     all_results_plot = (
         p9.ggplot(
@@ -311,7 +346,22 @@ def main():
         bbox_inches="tight",
     )
 
-    print(all_results_plot)
+    results_df.to_csv(
+        f"{RESULTS_ROOT}/decoding_frame_probe_results_{modelname}_{librispeech_split}.csv",
+        index=False,
+    )
+
+    # Switch feature loading
+    feature_sets, model_hidden_states, filename_timestamp, data_shape = load_data(
+        librispeech_split=librispeech_split,
+        modelname=modelname,
+        seq_sampling="random_frames",
+        select_layers=select_layers,
+        overwrite=overwrite,
+        reduce_dnn_word_embedding=False,
+        one_hot_encode_syntax=False,
+        normalize_features=normalize_features,
+    )
 
     syntax_results = syntax_deep_dive(
         model_hidden_states=model_hidden_states,
@@ -323,16 +373,21 @@ def main():
 
     # plot syntax deep dive results
     syntax_results_df = pd.DataFrame(syntax_results)
-    syntax_results_df.to_csv(
-        f"{RESULTS_ROOT}/decoding_frame_probe_syntax_deep_dive_{modelname}_{librispeech_split}.csv",
-        index=False,
-    )
+
+    syntax_results_baseline = syntax_results_df[
+        syntax_results_df["layer"] == -1
+    ].reset_index(drop=True)
+    # Rename feature groups for better plotting
+    syntax_results_baseline["feature_group"] = syntax_results_baseline[
+        "feature_group"
+    ].str.replace("_baseline", "")
+    syntax_results_df = syntax_results_df[syntax_results_df["layer"] != -1]
 
     syntax_results_plot = (
         p9.ggplot(
             syntax_results_df,
             p9.aes(
-                x="layer", y="r2_score", color="feature_group", shape="feature_group"
+                x="layer", y="accuracy", color="feature_group", shape="feature_group"
             ),
         )
         + p9.geom_line()
@@ -341,19 +396,34 @@ def main():
             f"Decoding Frame Probe Syntax Deep Dive Results for {modelname} on {librispeech_split}"
         )
         + p9.xlab("Layer")
-        + p9.ylab("R2 Score")
+        + p9.ylab("Probing Accuracy")
         + p9.theme(legend_position="right")
         + p9.scale_color_discrete(name="Syntax Feature")
         + p9.scale_shape_discrete(name="Syntax Feature")
         + p9.theme(figure_size=(10, 6), dpi=300)
+        + p9.geom_hline(
+            p9.aes(
+                yintercept="accuracy",
+                color="feature_group",
+            ),
+            data=syntax_results_baseline,
+            show_legend=True,
+            linetype="dashed",
+        )
     )
     # Save the plot
     syntax_results_plot.save(
         filename=f"{RESULTS_ROOT}/figures/decoding_frame_probe_syntax_deep_dive_{modelname}_{librispeech_split}.png",
         bbox_inches="tight",
     )
-    print(all_results_plot)
-    print(syntax_results_plot)
+
+    syntax_results_df.to_csv(
+        f"{RESULTS_ROOT}/decoding_frame_probe_syntax_deep_dive_{modelname}_{librispeech_split}.csv",
+        index=False,
+    )
+
+    all_results_plot.show()
+    syntax_results_plot.show()
 
 
 if __name__ == "__main__":

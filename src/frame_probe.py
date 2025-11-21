@@ -511,6 +511,237 @@ def run_probe(
     return results
 
 
+def run_probe_bottom_up(
+    processed_X: np.ndarray,
+    processed_y: np.ndarray,
+    data_shape: dict,
+    filename_timestamp: list[tuple],
+    feature_groups: list[tuple],
+    probe_name: str = "ridge",
+    select_layers: list[int] | None = None,
+    zeroing: bool = True,
+    ablation: bool = True,
+    permutation: bool = True,
+    results_path: str = RESULTS_ROOT,
+    save_predictions: bool = False,
+    dim_reduction: int | bool | None = False,
+) -> list[dict]:
+    """Runs the probing task on the given data in a bottom-up manner.
+
+    Args:
+        processed_X: The input data.
+        processed_y: The target data.
+        data_shape: The shape of the data.
+        filename_timestamp: The list of filename and timestamp tuples.
+        probe_name: The name of the probe to use. Options are 'ridge' and 'random_forest'.
+        feature_groups: The feature groups to use for probing.
+        select_layers: The layers to use for probing. If None, all layers are used.
+        zeroing: Whether to perform zeroing manipulation.
+        ablation: Whether to perform ablation manipulation.
+        permutation: Whether to perform permutation manipulation.
+        results_path: The directory to save the results to.
+    Returns:
+        A list of dictionaries containing the results.
+    """
+
+    section_shapes = np.array(get_section_shapes(data_shape=data_shape))
+
+    if not any((zeroing, ablation, permutation)):
+        logger.warning(
+            "At least one manipulation mode must be True, setting ablation to True"
+        )
+        ablation = True
+
+    results = []
+
+    for layer in trange(processed_y.shape[1], desc="Layers in selected layers"):
+        layer_results = []
+        current_layer = select_layers[layer] if select_layers is not None else layer
+        logger.info(
+            f"Probing with {probe_name} on selected DNN model layer {current_layer}..."
+        )
+        if dim_reduction is not False:
+            regressor, param_grid = pick_probe(probe_name, n_components=dim_reduction)
+        else:
+            regressor, param_grid = pick_probe(probe_name)
+        GS = GridSearchCV(
+            estimator=regressor,
+            param_grid=param_grid,
+            n_jobs=-1,
+            cv=5,
+            verbose=1,
+        )
+        (
+            X_train,
+            X_test,
+            y_train,
+            y_test,
+            filename_timestamp_train,
+            filename_timestamp_test,
+        ) = train_test_split(
+            processed_X,
+            processed_y[:, layer, :],
+            filename_timestamp,
+            test_size=0.2,
+            random_state=42,
+        )
+
+        if isinstance(dim_reduction, int) and dim_reduction >= y_train.shape[1]:
+            logger.warning(
+                f"dim_reduction {dim_reduction} is greater than or equal to output feature dimension {y_train.shape[1]}. Skipping dimensionality reduction."
+            )
+
+            dim_reduction = False
+        if dim_reduction is not False:
+            from sklearn.decomposition import PCA
+
+            pca = PCA(n_components=dim_reduction, svd_solver="full")
+            y_train = pca.fit_transform(y_train)
+            y_test = pca.transform(y_test)
+            logger.info(
+                f"Applied PCA with n_components={dim_reduction} for layer {current_layer}"
+            )
+            # Save PCA for future use
+            with open(
+                os.path.join(results_path, f"layer_{current_layer}_target_pca.pkl"),
+                "wb",
+            ) as f:
+                pickle.dump(pca, f)
+            logger.info(
+                f"Saved target feature PCA for layer {current_layer} to {os.path.join(results_path, f'layer_{current_layer}_target_pca.pkl')}"
+            )
+            logger.info(f"New y_train shape: {y_train.shape}")
+
+        GS.fit(X_train, y_train)
+        # train_score = GS.score(X_train, y_train)
+        # test_score = GS.score(X_test, y_test)
+        train_score = r2_score(
+            y_train,
+            GS.predict(X_train),
+            multioutput="variance_weighted",
+            train_data=y_train,
+        )
+        test_score = r2_score(
+            y_test,
+            GS.predict(X_test),
+            multioutput="variance_weighted",
+            train_data=y_train,
+        )
+
+        result = {
+            "layer": current_layer,
+            "train_score": train_score,
+            "test_score": test_score,
+            "best_params": GS.best_params_,
+            "best_score": GS.best_score_,
+            "feature_group": "all",
+        }
+        layer_results.append(result)
+
+        feature_pred_dict = {
+            "layer": current_layer,
+            "filename_timestamp_test": filename_timestamp_test,
+            "features": X_test,
+            "groundtruth": y_test,
+            "full_feature_predictions": GS.predict(X_test),
+        }
+
+        # Add random baseline with shuffled x to predict y
+        regressor, param_grid = pick_probe(probe_name)
+        # We can skip the GridSearchCV here and just use the best_params from above
+        regressor.set_params(**GS.best_params_)
+        # Shuffle processed_X
+        shuffled_X = processed_X.copy()
+        np.random.shuffle(shuffled_X)
+        X_train_rand, X_test_rand, y_train_rand, y_test_rand = train_test_split(
+            shuffled_X, processed_y[:, layer, :], test_size=0.2, random_state=42
+        )
+        regressor.fit(X_train_rand, y_train_rand)
+        # random_train_score = regressor.score(X_train_rand, y_train_rand)
+        # random_test_score = regressor.score(X_test_rand, y_test_rand)
+        random_train_score = r2_score(
+            y_train_rand,
+            regressor.predict(X_train_rand),
+            multioutput="variance_weighted",
+            train_data=y_train_rand,
+        )
+        random_test_score = r2_score(
+            y_test_rand,
+            regressor.predict(X_test_rand),
+            multioutput="variance_weighted",
+            train_data=y_train_rand,
+        )
+        result = {
+            "layer": current_layer,
+            "train_score": random_train_score,
+            "test_score": random_test_score,
+            "best_params": GS.best_params_,
+            "best_score": GS.best_score_,
+            "feature_group": "random_baseline",
+        }
+        layer_results.append(result)
+        for group in feature_groups:
+            # Create a mask and use the section shapes to mask the areas of input feature that we want to manipulate
+            mask_array = np.zeros(X_train.shape[1], dtype=bool)
+            feature_names = []
+            for name in group:
+                range_start, range_end, feature_name = section_shapes[
+                    section_shapes[:, 2] == name
+                ][0]
+                mask_array[int(range_start) : int(range_end)] = (
+                    True  # Mark the group features to keep
+                )
+                feature_names.append(feature_name)
+            group_name = (
+                "+".join(feature_names) if len(feature_names) > 1 else feature_names[0]
+            )
+            # Bottom-up probing by using only the features in the current group
+            selected_x_train = X_train.copy()[:, mask_array]
+            selected_x_test = X_test.copy()[:, mask_array]
+            # Reinitialize the regressor again
+            regressor, param_grid = pick_probe(probe_name)
+            GS_bottom_up = GridSearchCV(
+                estimator=regressor,
+                param_grid=param_grid,
+                n_jobs=-1,
+            )
+            GS_bottom_up.fit(selected_x_train, y_train)
+            bottom_up_train_score = r2_score(
+                y_train,
+                GS_bottom_up.predict(selected_x_train),
+                multioutput="variance_weighted",
+                train_data=y_train,
+            )
+            bottom_up_test_score = r2_score(
+                y_test,
+                GS_bottom_up.predict(selected_x_test),
+                multioutput="variance_weighted",
+                train_data=y_train,
+            )
+            result = {
+                "layer": current_layer,
+                "train_score": bottom_up_train_score,
+                "test_score": bottom_up_test_score,
+                "best_params": GS_bottom_up.best_params_,
+                "best_score": GS_bottom_up.best_score_,
+                "feature_group": group_name,
+            }
+            layer_results.append(result)
+            feature_pred_dict["bottom_up_" + group_name] = GS_bottom_up.predict(
+                selected_x_test
+            )
+
+        # Write the layer results to a csv file after each layer is done
+        df = pd.DataFrame(layer_results)
+        df.to_csv(
+            f"{results_path}/bottom-up-layer_results_{current_layer}.csv", index=False
+        )
+
+        # Append the layer results to the overall results
+        results.extend(layer_results)
+    return results
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -582,14 +813,6 @@ def parse_args():
     )
     args = parser.parse_args()
     return args
-
-
-feature_groups = [
-    ("dnn_word_embedding", "syntax_feature"),
-    ("Prosodic & Voice Quality", "spk_embedding"),
-    ("Formant Characteristics", "ppg_feature"),
-    ("Spectral Envelope", "ppg_feature"),
-]
 
 
 def main():
@@ -736,7 +959,22 @@ def main():
         json.dump(data_shape, f)
     logger.info("Data formatted.")
     logger.info("Running probe...")
-    results = run_probe(
+    # results = run_probe(
+    #     processed_X=processed_X,
+    #     processed_y=processed_Y,
+    #     data_shape=data_shape,
+    #     feature_groups=feature_groups,
+    #     filename_timestamp=filename_timestamp,
+    #     probe_name=probe_name,
+    #     select_layers=select_layers,
+    #     zeroing=zeroing,
+    #     ablation=ablation,
+    #     permutation=permutation,
+    #     results_path=results_path,
+    #     save_predictions=save_predictions,
+    #     dim_reduction=dim_reduction,
+    # )
+    results = run_probe_bottom_up(
         processed_X=processed_X,
         processed_y=processed_Y,
         data_shape=data_shape,

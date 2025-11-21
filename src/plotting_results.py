@@ -56,7 +56,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def load_result_files(results_dir: str) -> pd.DataFrame:
+def load_result_files(
+    results_dir: str, results_file_pattern: str = "librispeech-*/**/layer_*.csv"
+) -> pd.DataFrame:
     # logger.info(f"Loading result files from {results_dir}...")
     if not os.path.exists(results_dir):
         logger.error(f"Results directory {results_dir} does not exist.")
@@ -64,7 +66,7 @@ def load_result_files(results_dir: str) -> pd.DataFrame:
 
     # all_results_files = glob.glob(os.path.join(results_dir, "*.csv"))
     all_results_files = glob.glob(
-        os.path.join(results_dir, "librispeech-*/**/*.csv"), recursive=True
+        os.path.join(results_dir, results_file_pattern), recursive=True
     )
     all_results_files = [
         x
@@ -259,6 +261,15 @@ All feature baseline is the best case results with all features intact. The feat
 """
 
 
+bottom_up_caption = """\
+Baselines:
+- Black dashed line: Random Baseline
+- Black dotted line: All Feature Baseline
+All feature baseline is the best case results with all features groups present. 
+The other curves are the results with JUST one feature group present (bottom-up).
+"""
+
+
 def plot_results(
     subset_df,
     random_baseline,
@@ -313,8 +324,8 @@ def plot_results(
             dpi=300,
             plot_caption=p9.element_text(ha="left", margin={"t": 1, "units": "lines"}),
         )
-        + p9.scale_color_discrete(name="Manipulated Feature Group")
-        + p9.scale_shape_discrete(name="Manipulated Feature Group")
+        + p9.scale_color_discrete(name=f"{manipulation.capitalize()} Feature Group")
+        + p9.scale_shape_discrete(name=f"{manipulation.capitalize()} Feature Group")
         + p9.labs(
             x="Layer (from shallow to deep, normalized)",
             y="Test Score (R²)",
@@ -411,15 +422,62 @@ def plot_all_results(all_results_df: pd.DataFrame, save=False) -> None:
         & (all_results_df["librispeech_split"] == "librispeech-train-clean-100")
         & (all_results_df["manipulation_mode"] == "random_baseline")
     ].copy()
-    figure = plot_results(
-        subset_df,
-        random_baseline,
-        all_feature_baseline,
-        "ridge",
-        "librispeech-train-clean-100",
-        "ablation",
+    figure = (
+        p9.ggplot()
+        + p9.facet_wrap("~ modelname", ncol=3)
+        + p9.geom_line(
+            p9.aes(
+                x="norm_layer",
+                y="test_score",
+                color="manipulated_feature_group",
+                shape="manipulated_feature_group",
+                group="manipulated_feature_group",
+            ),
+            alpha=0.7,
+            data=subset_df,
+        )
+        + p9.geom_point(
+            p9.aes(
+                x="norm_layer",
+                y="test_score",
+                color="manipulated_feature_group",
+                shape="manipulated_feature_group",
+            ),
+            data=subset_df,
+        )
+        # Add the baselines with distinct linetypes and colors for clarity
+        + p9.geom_line(
+            p9.aes(x="norm_layer", y="test_score"),
+            alpha=0.7,
+            data=random_baseline,
+            color="black",
+            linetype="dashed",
+        )
+        + p9.geom_line(
+            p9.aes(
+                x="norm_layer",
+                y="test_score",
+            ),
+            alpha=0.7,
+            data=all_feature_baseline,
+            color="black",
+            linetype="dotted",
+        )
+        + p9.theme(
+            figure_size=(10, 6),
+            dpi=300,
+            plot_caption=p9.element_text(ha="left", margin={"t": 1, "units": "lines"}),
+        )
+        + p9.scale_color_discrete(name="Ablation Feature Group")
+        + p9.scale_shape_discrete(name="Ablation Feature Group")
+        + p9.labs(
+            x="Layer (from shallow to deep, normalized)",
+            y="Test Score (R²)",
+            title="Encoding Probe Performance Across Model Layers",
+            subtitle="Probe: ridge, Librispeech Split: librispeech-train-clean-100, Manipulation: ablation",
+            caption=caption,
+        )
     )
-    figure + p9.theme(figure_size=(6, 6))
     figure.show()
     figure.save(
         os.path.join(
@@ -559,4 +617,138 @@ if __name__ == "__main__":
     all_results_df = all_results_df[
         all_results_df["modelname"] != "Text: bert-base-uncased"
     ]
+
+    rename_feature_group = {
+        "Prosodic & Voice Quality": "Prosodic Features",
+        "Spectral Envelope": "Spectral Features",
+        "Formant Characteristics": "Formants",
+        "syntax_feature": "Syntactic Features",
+        "ppg_feature": "PPG",
+        "spk_embedding": "Speaker Embedding",
+        "metadata": "Metadata",
+        "dnn_word_embedding": "DNN Word Embedding",
+    }
+    # plot the results
+    all_results_df["manipulated_feature_group"] = all_results_df[
+        "manipulated_feature_group"
+    ].map(rename_feature_group)
+
     plot_all_results(all_results_df, save=False)
+
+    librispeech_split = "librispeech-train-clean-100"
+    modelname = "wav2vec2-base"
+    modelname = "bert-base-uncased"
+    bottom_up_results_df = load_result_files(
+        results_dir=RESULTS_ROOT,
+        results_file_pattern=f"{librispeech_split}/{modelname}/ridge_frame_probe_normalized/bottom-up-layer_*.csv",
+    )
+    rename_feature_group = {
+        "SpectralInfo": "Spectral Features",
+        "Formant Characteristics": "Formants",
+        "syntax_feature": "Syntactic Features",
+        "ppg_feature": "PPG",
+        "spk_embedding": "Speaker Embedding",
+        "metadata": "Metadata",
+        "dnn_word_embedding": "DNN Word Embedding",
+        "OtherAcoustic": "Other Acoustic Features",
+        "Formants": "Formants",
+    }
+    decoding_probe_results = pd.read_csv(
+        f"/home/gshen/work_dir/unprobe/results/decoding_frame_probe_results_{modelname}_train-clean-100.csv"
+    )
+    # rename r2_score to test_score
+    decoding_probe_results = decoding_probe_results.rename(
+        columns={"r2_score": "test_score"}
+    )
+    decoding_probe_results["Probing_Direction"] = "Decoding Probe"
+
+    bottom_up_results_df["Probing_Direction"] = "Encoding Probe"
+    # Get the bottom-up results for all feature
+    # plot the results
+
+    bottom_up_baselines = bottom_up_results_df[
+        (bottom_up_results_df["feature_group"] == "all")
+        | (bottom_up_results_df["feature_group"] == "random_baseline")
+    ]
+
+    bottom_up_results_df = bottom_up_results_df[
+        (bottom_up_results_df["feature_group"] != "all")
+        & (bottom_up_results_df["feature_group"] != "random_baseline")
+    ]
+    bottom_up_results_df["feature_group"] = bottom_up_results_df["feature_group"].map(
+        rename_feature_group
+    )
+
+    # Join the decoding probe results with bottom-up results
+    comparison_results_df = pd.concat(
+        [bottom_up_results_df, decoding_probe_results]
+    ).reset_index(drop=True)
+
+    # Drop columns with any NaN values
+    comparison_results_df = comparison_results_df.dropna(axis=1, how="any")
+
+    # Plot the bottom-up results with a facet_wrap on Probing Direction
+    plot = (
+        p9.ggplot(comparison_results_df)
+        + p9.geom_line(
+            p9.aes(
+                x="layer",
+                y="test_score",
+                color="feature_group",
+                shape="feature_group",
+                group="feature_group",
+            ),
+            alpha=0.7,
+        )
+        + p9.geom_point(
+            p9.aes(
+                x="layer",
+                y="test_score",
+                color="feature_group",
+                shape="feature_group",
+                group="feature_group",
+            ),
+            alpha=0.7,
+        )
+        + p9.facet_wrap("~ Probing_Direction", ncol=2, scales="free_y")
+        # Add the baselines with distinct linetypes and colors for clarity
+        + p9.geom_line(
+            p9.aes(x="layer", y="test_score"),
+            alpha=0.7,
+            data=bottom_up_baselines[
+                bottom_up_baselines["feature_group"] == "random_baseline"
+            ],
+            color="black",
+            linetype="dashed",
+        )
+        + p9.geom_line(
+            p9.aes(
+                x="layer",
+                y="test_score",
+            ),
+            alpha=0.7,
+            data=bottom_up_baselines[bottom_up_baselines["feature_group"] == "all"],
+            color="black",
+            linetype="dotted",
+        )
+        + p9.labs(
+            x="Layer (from shallow to deep)",
+            y="Test Score (R²)",
+            title=f"Bottom-Up Encoding Probe Performance Across {modelname} Model Layers vs Decoding Probe",
+            caption=bottom_up_caption,
+        )
+        # Rename legend
+        + p9.scale_color_discrete(name="Feature Group")
+        + p9.scale_shape_discrete(name="Feature Group")
+        # Break the x axis at intervals of 3
+        + p9.scale_x_continuous(
+            breaks=range(0, comparison_results_df["layer"].max() + 1, 3)
+        )
+        + p9.theme(
+            figure_size=(10, 6),
+            dpi=300,
+            plot_caption=p9.element_text(ha="left", margin={"t": 1, "units": "lines"}),
+        )
+    )
+
+    plot.show()

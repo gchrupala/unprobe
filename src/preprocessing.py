@@ -407,7 +407,7 @@ def extract_syntax_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]
                     word_location_in_sentence,
                     word_location_in_sentence_norm,
                 ]
-                + path_from_root,
+                # + path_from_root,
             )
             syntax_feats.append(word_features)
 
@@ -419,6 +419,7 @@ def extract_syntax_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]
         all_syntax_feats[fileID] = {
             "features": np.array(syntax_feats),
             "offset_mapping": offset_mapping,
+            "words": [word.text for word in sent],
         }
 
     return all_syntax_feats
@@ -763,11 +764,17 @@ def extract_dnn_word_embedding(
 
         inputs = {k: v.to(device) for k, v in encoded_input.items()}
         with torch.no_grad():
-            outputs = model(**inputs, output_hidden_states=False)
+            outputs = model(**inputs, output_hidden_states=True)
+
+        # Get the non-contextualized token embeddings from the 0-th layer
 
         hidden_states = (
-            outputs.last_hidden_state.cpu().numpy().squeeze(0)
+            outputs.hidden_states[0].cpu().squeeze(0).numpy()
         )  # (seq_len, hidden_size)
+
+        # hidden_states = (
+        #     outputs.last_hidden_state.cpu().numpy().squeeze(0)
+        # )  # (seq_len, hidden_size)
 
         # word_embeddings_list = []
         # current_word_id = None

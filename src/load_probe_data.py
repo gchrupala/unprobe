@@ -43,15 +43,14 @@ else:
 ACOUSTIC_FEATURE_NAMES = []
 
 INPUT_FEATURE_SELECT_COMPONENTS = [
-    # "acoustic_features",
-    "Prosodic & Voice Quality",
-    "Spectral Envelope",
-    "Formant Characteristics",
+    "OtherAcoustic",
+    "SpectralInfo",
+    "Formants",
     # "word_embedding",
     "syntax_feature",
     "ppg_feature",
     "spk_embedding",
-    "metadata",
+    # "metadata",
     # "word_form_feature",
     "dnn_word_embedding",
 ]
@@ -146,7 +145,7 @@ def format_data(
     Returns:
         feature_sets: The processed input features.
         model_hidden_states: The processed target hidden states.
-        data_shape: A dictionary containing the shape of each feature component.
+        filename_timestamp: List of tuples containing (fileID, frame_index) for each data point.
 
     """
 
@@ -442,6 +441,7 @@ def format_data(
             dnn_word_embedding = dnn_word_embeddings["word_embeddings"][
                 dnn_word_idx
             ].flatten()
+            dnn_token = dnn_word_embeddings["words"][dnn_word_idx]
 
             # Use offset mapping to look up syntax features as well
             syntax_word_idx = np.where(
@@ -454,6 +454,7 @@ def format_data(
                 )
                 continue
             syntax_feature = np.array(syntax_feats)[syntax_word_idx].flatten()
+            syntax_token = all_syntax_features[fileID]["words"][syntax_word_idx[0][0]]
 
             # Get the corresponding PPG features for current frame index
             ppg_feature = ppg_features[int(token_time // 10)].flatten()
@@ -477,6 +478,8 @@ def format_data(
                 "metadata": metadata,
                 "word_form_feature": word_form_feature,
                 "dnn_word_embedding": dnn_word_embedding,
+                "dnn_token": dnn_token,
+                "syntax_token": syntax_token,
             }
 
             all_input_features.append(input_feature_components)
@@ -486,6 +489,11 @@ def format_data(
             ) if raw_frame_indices is None else filename_timestamp.append(
                 (fileID, frame_index, raw_frame_indices[i])
             )
+
+    # # Check that for each word, the dnn_token is a substring of syntax_token
+    # word_pairs = [(x['dnn_token'], x['syntax_token']) for x in all_input_features]
+    # for word_pair in word_pairs:
+    #     assert word_pair[0] in word_pair[1].lower()
 
     # We restructure all_input_features to be a dictionary of numpy arrays for each feature component
     logger.info("Processing input features...")
@@ -503,33 +511,55 @@ def format_data(
     logger.info(
         f"Processed DNN word embeddings shape before PCA: {all_input_features_dict['dnn_word_embedding'].shape}"
     )
-    from sklearn.decomposition import PCA
-    from sklearn.preprocessing import StandardScaler
 
-    scaler = StandardScaler()
-    all_input_features_dict["dnn_word_embedding"] = scaler.fit_transform(
-        all_input_features_dict["dnn_word_embedding"]
-    )
+    return all_input_features_dict, model_hidden_states, filename_timestamp
 
-    pca = PCA(n_components=100)
-    all_input_features_dict["dnn_word_embedding"] = pca.fit_transform(
-        all_input_features_dict["dnn_word_embedding"]
-    )
 
-    logger.info(
-        f"Processed DNN word embeddings shape after PCA: {all_input_features_dict['dnn_word_embedding'].shape}"
-    )
+def further_process(
+    model_hidden_states,
+    all_input_features_dict: dict,
+    reduce_dnn_word_embedding: bool = True,
+    one_hot_encode_syntax: bool = True,
+    normalize_features: bool = True,
+):
+    if reduce_dnn_word_embedding:
+        # Apply dimension reduction to processed_dnn_word_embeddings using PCA to 100 dimensions
+        from sklearn.decomposition import PCA
+        from sklearn.preprocessing import StandardScaler
 
-    # Pad syntax_features to have the same length with zeros
-    syntax_feats_max_length = max(
-        [x.shape[0] for x in all_input_features_dict["syntax_feature"]]
-    )
-    syntax_feats_array = np.zeros(
-        (len(all_input_features_dict["syntax_feature"]), syntax_feats_max_length)
-    )
-    for i, syntax_feature in enumerate(all_input_features_dict["syntax_feature"]):
-        syntax_feats_array[i, : syntax_feature.shape[0]] = syntax_feature
-    all_input_features_dict["syntax_feature"] = syntax_feats_array
+        scaler = StandardScaler()
+        all_input_features_dict["dnn_word_embedding"] = scaler.fit_transform(
+            all_input_features_dict["dnn_word_embedding"]
+        )
+
+        pca = PCA(n_components=100)
+        all_input_features_dict["dnn_word_embedding"] = pca.fit_transform(
+            all_input_features_dict["dnn_word_embedding"]
+        )
+
+        logger.info(
+            f"Processed DNN word embeddings shape after PCA: {all_input_features_dict['dnn_word_embedding'].shape}"
+        )
+
+    if one_hot_encode_syntax:
+        # One hot encode the individual columns within syntax_feature
+        from sklearn.preprocessing import OneHotEncoder
+
+        # mask out the normed features for one-hot encoding
+        syntax_feature_array = np.array(all_input_features_dict["syntax_feature"])
+        syntax_feature_mask = np.ones_like(syntax_feature_array, dtype=bool)
+        # Normed features are -1 and -3rd columns in each group of 7 features
+        syntax_feature_mask[:, -1] = False
+        syntax_feature_mask[:, -3] = False
+        syntax_feature_array = syntax_feature_array[:, syntax_feature_mask[0]]
+        encoder = OneHotEncoder(sparse_output=False)
+        onehot_encoded_columns = []
+        for original_syntax_feat in syntax_feature_array.T:
+            original_syntax_feat = original_syntax_feat.reshape(-1, 1)
+            onehot_encoded_col = encoder.fit_transform(original_syntax_feat)
+            onehot_encoded_columns.append(onehot_encoded_col)
+        syntax_feature_onehot = np.concatenate(onehot_encoded_columns, axis=1)
+        all_input_features_dict["syntax_feature"] = syntax_feature_onehot
 
     logger.info("Concatenating input features...")
     logger.info(f"Input features include: {INPUT_FEATURE_SELECT_COMPONENTS}")
@@ -551,9 +581,38 @@ def format_data(
 
     # model_hidden_states shape should be (num_frames, num_layers, hidden_size)
     logger.info(f"Processed X shape: {feature_sets.shape}")
-    model_hidden_states = np.array(model_hidden_states)
+    model_hidden_states = np.array(
+        model_hidden_states
+    )  # Convert list to numpy array # type: ignore
     logger.info(f"Processed Y shape: {model_hidden_states.shape}")
-    return feature_sets, model_hidden_states, filename_timestamp, data_shape  # type: ignore
+
+    if normalize_features:
+        normalize_groups = [
+            "OtherAcoustic",
+            "SpectralInfo",
+            "Formants",
+        ]
+        from sklearn.preprocessing import StandardScaler
+
+        # We normalize features in a column-wise manner so that each feature has zero mean and unit variance
+        logger.info("Normalizing input features")
+        scaler = StandardScaler()
+        # We only want to normalize the features inside normalize_groups
+        feature_indices_to_normalize = []
+        start_idx = 0
+        for feature_name in INPUT_FEATURE_SELECT_COMPONENTS:
+            feature_dim = data_shape[feature_name][0]
+            end_idx = start_idx + feature_dim
+            if feature_name in normalize_groups:
+                feature_indices_to_normalize.extend(list(range(start_idx, end_idx)))
+            start_idx = end_idx
+        feature_sets_to_normalize = feature_sets[:, feature_indices_to_normalize]
+        feature_sets_normalized = scaler.fit_transform(feature_sets_to_normalize)
+        # Replace the normalized features back to feature_sets
+        feature_sets[:, feature_indices_to_normalize] = feature_sets_normalized
+        logger.info("Normalized input features")
+
+    return feature_sets, model_hidden_states, data_shape
 
 
 def load_data(
@@ -563,6 +622,8 @@ def load_data(
     select_layers: list | None = None,
     overwrite: bool = False,
     normalize_features: bool = True,
+    one_hot_encode_syntax: bool = True,
+    reduce_dnn_word_embedding: bool = True,
 ):
     """
     Load the formatted data for probing tasks.
@@ -586,23 +647,21 @@ def load_data(
     if os.path.exists(formatted_data_path) and not overwrite:
         logger.info(f"Loading formatted data from {formatted_data_path}")
         with open(formatted_data_path, "rb") as f:
-            feature_sets, model_hidden_states, filename_timestamp, data_shape = (
-                pickle.load(f)
-            )
+            feature_sets, model_hidden_states, filename_timestamp = pickle.load(f)
+
+        logger.info("Loaded formatted data successfully")
     else:
         # If not, format the data and save it
         logger.info(
             "Formatted data not found or overwrite flag is set, formatting data..."
         )
-        feature_sets, model_hidden_states, filename_timestamp, data_shape = format_data(
+        feature_sets, model_hidden_states, filename_timestamp = format_data(
             librispeech_split=librispeech_split,
             modelname=modelname,
             seq_sampling=seq_sampling,
         )
         with open(formatted_data_path, "wb") as f:
-            pickle.dump(
-                (feature_sets, model_hidden_states, filename_timestamp, data_shape), f
-            )
+            pickle.dump((feature_sets, model_hidden_states, filename_timestamp), f)
         logger.info(f"Saved formatted data to {formatted_data_path}")
 
     if select_layers is not None:
@@ -613,14 +672,13 @@ def load_data(
             f"Selected model_hidden_states shape after layer selection: {model_hidden_states.shape}"
         )
 
-    if normalize_features:
-        from sklearn.preprocessing import StandardScaler
-
-        # We normalize features in a column-wise manner so that each feature has zero mean and unit variance
-        logger.info("Normalizing input features")
-        scaler = StandardScaler()
-        feature_sets = scaler.fit_transform(feature_sets)
-        logger.info("Normalized input features")
+    feature_sets, model_hidden_states, data_shape = further_process(
+        model_hidden_states,
+        feature_sets,
+        reduce_dnn_word_embedding=reduce_dnn_word_embedding,
+        one_hot_encode_syntax=one_hot_encode_syntax,
+        normalize_features=normalize_features,
+    )
 
     return feature_sets, model_hidden_states, filename_timestamp, data_shape
 

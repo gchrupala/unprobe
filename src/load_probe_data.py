@@ -504,7 +504,6 @@ def format_data(
             for input_feature_components in all_input_features
         ]
 
-    # Apply dimension reduction to processed_dnn_word_embeddings using PCA to 100 dimensions
     all_input_features_dict["dnn_word_embedding"] = np.array(
         all_input_features_dict["dnn_word_embedding"]
     )
@@ -519,11 +518,14 @@ def further_process(
     model_hidden_states,
     all_input_features_dict: dict,
     reduce_dnn_word_embedding: bool = True,
+    reduce_speaker_embedding: bool = True,
     one_hot_encode_syntax: bool = True,
     normalize_features: bool = True,
+    n_components: int | float | None = 0.9,
 ):
     if reduce_dnn_word_embedding:
-        # Apply dimension reduction to processed_dnn_word_embeddings using PCA to 100 dimensions
+        # Apply dimension reduction to processed_dnn_word_embeddings using PCA so that 90% variance is retained by default
+        # Change n_components to an integer or float to specify the number of components or variance ratio to retain
         from sklearn.decomposition import PCA
         from sklearn.preprocessing import StandardScaler
 
@@ -532,13 +534,36 @@ def further_process(
             all_input_features_dict["dnn_word_embedding"]
         )
 
-        pca = PCA(n_components=100)
+        pca = PCA(
+            n_components=n_components
+        )  # Use pca to retain 90% variance by default
         all_input_features_dict["dnn_word_embedding"] = pca.fit_transform(
             all_input_features_dict["dnn_word_embedding"]
         )
 
         logger.info(
             f"Processed DNN word embeddings shape after PCA: {all_input_features_dict['dnn_word_embedding'].shape}"
+        )
+    if reduce_speaker_embedding:
+        # Apply dimension reduction to speaker_embedding using PCA so that 90% variance is retained by default
+        # Change n_components to an integer or float to specify the number of components or variance ratio to retain
+        from sklearn.decomposition import PCA
+        from sklearn.preprocessing import StandardScaler
+
+        scaler = StandardScaler()
+        all_input_features_dict["spk_embedding"] = scaler.fit_transform(
+            all_input_features_dict["spk_embedding"]
+        )
+
+        pca = PCA(
+            n_components=n_components
+        )  # Use pca to retain 90% variance by default
+        all_input_features_dict["spk_embedding"] = pca.fit_transform(
+            all_input_features_dict["spk_embedding"]
+        )
+
+        logger.info(
+            f"Processed speaker embeddings shape after PCA: {all_input_features_dict['spk_embedding'].shape}"
         )
 
     if one_hot_encode_syntax:
@@ -849,7 +874,7 @@ if __name__ == "__main__":
     seq_sampling = "random_frames"
     overwrite = False
     select_layers = [0, 6, 12]
-    feature_sets, model_hidden_states, _, data_shape = format_data(
+    all_input_features_dict, model_hidden_states, filename_timestamp = format_data(
         librispeech_split=librispeech_split,
         modelname=modelname,
         seq_sampling=seq_sampling,

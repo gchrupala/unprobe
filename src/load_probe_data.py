@@ -43,10 +43,11 @@ else:
 ACOUSTIC_FEATURE_NAMES = []
 
 INPUT_FEATURE_SELECT_COMPONENTS = [
-    "OtherAcoustic",
-    "SpectralInfo",
-    "Formants",
+    # "OtherAcoustic",
+    # "SpectralInfo",
+    # "Formants",
     # "word_embedding",
+    "eGeMAPSv02",
     "syntax_feature",
     "ppg_feature",
     "spk_embedding",
@@ -71,38 +72,42 @@ def get_opensmile_feature_names():
 
     feature_names = smile.feature_names
 
+    # feature_groups = {
+    #     "OtherAcoustic": [
+    #         "Loudness_sma3",
+    #         "F0semitoneFrom27.5Hz_sma3nz",
+    #         "jitterLocal_sma3nz",
+    #         "shimmerLocaldB_sma3nz",
+    #         "HNRdBACF_sma3nz",
+    #         "logRelF0-H1-H2_sma3nz",
+    #         "logRelF0-H1-A3_sma3nz",
+    #     ],
+    #     "SpectralInfo": [
+    #         "alphaRatio_sma3",
+    #         "hammarbergIndex_sma3",
+    #         "slope0-500_sma3",
+    #         "slope500-1500_sma3",
+    #         "spectralFlux_sma3",
+    #         "mfcc1_sma3",
+    #         "mfcc2_sma3",
+    #         "mfcc3_sma3",
+    #         "mfcc4_sma3",
+    #     ],
+    #     "Formants": [
+    #         "F1frequency_sma3nz",
+    #         "F1bandwidth_sma3nz",
+    #         "F1amplitudeLogRelF0_sma3nz",
+    #         "F2frequency_sma3nz",
+    #         "F2bandwidth_sma3nz",
+    #         "F2amplitudeLogRelF0_sma3nz",
+    #         "F3frequency_sma3nz",
+    #         "F3bandwidth_sma3nz",
+    #         "F3amplitudeLogRelF0_sma3nz",
+    #     ],
+    # }
+
     feature_groups = {
-        "OtherAcoustic": [
-            "Loudness_sma3",
-            "F0semitoneFrom27.5Hz_sma3nz",
-            "jitterLocal_sma3nz",
-            "shimmerLocaldB_sma3nz",
-            "HNRdBACF_sma3nz",
-            "logRelF0-H1-H2_sma3nz",
-            "logRelF0-H1-A3_sma3nz",
-        ],
-        "SpectralInfo": [
-            "alphaRatio_sma3",
-            "hammarbergIndex_sma3",
-            "slope0-500_sma3",
-            "slope500-1500_sma3",
-            "spectralFlux_sma3",
-            "mfcc1_sma3",
-            "mfcc2_sma3",
-            "mfcc3_sma3",
-            "mfcc4_sma3",
-        ],
-        "Formants": [
-            "F1frequency_sma3nz",
-            "F1bandwidth_sma3nz",
-            "F1amplitudeLogRelF0_sma3nz",
-            "F2frequency_sma3nz",
-            "F2bandwidth_sma3nz",
-            "F2amplitudeLogRelF0_sma3nz",
-            "F3frequency_sma3nz",
-            "F3bandwidth_sma3nz",
-            "F3amplitudeLogRelF0_sma3nz",
-        ],
+        "eGeMAPSv02": feature_names,
     }
 
     # Grab the corresponding index for each feature within each group
@@ -267,6 +272,7 @@ def format_data(
     model_hidden_states = []
     filename_timestamp = []
     all_input_features = []
+    num_skip_cls_sep = 0
 
     for fileID in tqdm(valid_fileIDs):
         spk_embedding = np.array(all_speaker_embeddings[fileID])
@@ -347,12 +353,11 @@ def format_data(
             if offset_mappings is not None:
                 # For text models, the frame_index corresponds to the subword token index
                 # So we need to look up the actual word index from offset_mapping
-                if frame_index == 0:
-                    # If the frame_index is 0, it means it's the [CLS] token
+                if np.all(offset_mappings[frame_index] == np.array([0, 0])):
+                    # If the offset_mapping is [0,0], it means it's the [CLS] or [SEP] token
                     # We can skip this frame
-                    logger.info(
-                        f"Skipping [CLS] token for fileID {fileID} at frame_index {frame_index}"
-                    )
+                    num_skip_cls_sep += 1
+
                     continue
                 # Use offset_mappings to get the word index
                 start_char_idx = offset_mappings[frame_index][
@@ -393,6 +398,7 @@ def format_data(
                 )
 
             else:
+                # For audio models, the frame_index corresponds to the time in ms and there's no offset_mapping
                 token_time = frame_index
                 # Get the corresponding word and syntax features for current frame index
                 # To get the word embedding we need to find the index of the word in ort_alignment
@@ -414,6 +420,8 @@ def format_data(
                     .reset_index(drop=True)
                     .to_numpy()
                 )
+                # Look up the word start char index
+                start_char_idx = ort_alignment.loc[word_idx, "char_idx_start"].values[0]
             word_idx = word_idx.values[0]
             if utt_lld_frames.shape[0] != 5:
                 continue
@@ -423,14 +431,14 @@ def format_data(
 
             word_form_feature = word_form_embeddings[word_idx].flatten()
 
-            # Find the corresponding DNN word embedding
-            char_start_idx = ort_alignment.loc[word_idx, "char_idx_start"]
-            char_end_idx = ort_alignment.loc[word_idx, "char_idx_end"]
+            # # Find the corresponding DNN word embedding
+            # char_start_idx = ort_alignment.loc[word_idx, "char_idx_start"]
+            # char_end_idx = ort_alignment.loc[word_idx, "char_idx_end"]
             # Find at which interval in the numpy array dnn_word_embeddings['offset_mapping'] the char_start_idx falls into
             dnn_offset_mappings = dnn_word_embeddings["offset_mapping"]
             dnn_word_idx = np.where(
-                (dnn_offset_mappings[:, 0] <= char_start_idx)
-                & (dnn_offset_mappings[:, 1] > char_start_idx)
+                (dnn_offset_mappings[:, 0] <= start_char_idx)
+                & (dnn_offset_mappings[:, 1] > start_char_idx)
             )[0]
             if dnn_word_idx.size == 0:
                 logger.info(
@@ -445,8 +453,8 @@ def format_data(
 
             # Use offset mapping to look up syntax features as well
             syntax_word_idx = np.where(
-                (np.array(syntax_feats_offset_mapping)[:, 0] <= char_start_idx)
-                & (np.array(syntax_feats_offset_mapping)[:, 1] >= char_end_idx)
+                (np.array(syntax_feats_offset_mapping)[:, 0] <= start_char_idx)
+                & (np.array(syntax_feats_offset_mapping)[:, 1] >= start_char_idx)
             )
             if syntax_word_idx[0].size == 0:
                 logger.info(
@@ -494,7 +502,7 @@ def format_data(
     # word_pairs = [(x['dnn_token'], x['syntax_token']) for x in all_input_features]
     # for word_pair in word_pairs:
     #     assert word_pair[0] in word_pair[1].lower()
-
+    logger.info(f"Skipping [CLS] or [SEP] token count: {num_skip_cls_sep}")
     # We restructure all_input_features to be a dictionary of numpy arrays for each feature component
     logger.info("Processing input features...")
     all_input_features_dict = {}
@@ -573,9 +581,8 @@ def further_process(
         # mask out the normed features for one-hot encoding
         syntax_feature_array = np.array(all_input_features_dict["syntax_feature"])
         syntax_feature_mask = np.ones_like(syntax_feature_array, dtype=bool)
-        # Normed features are -1 and -3rd columns in each group of 7 features
-        syntax_feature_mask[:, -1] = False
-        syntax_feature_mask[:, -3] = False
+        # Floating point features to be excluded from one-hot encoding
+        syntax_feature_mask[:, -4:] = False
         syntax_feature_array = syntax_feature_array[:, syntax_feature_mask[0]]
         encoder = OneHotEncoder(sparse_output=False)
         onehot_encoded_columns = []
@@ -585,6 +592,22 @@ def further_process(
             onehot_encoded_columns.append(onehot_encoded_col)
         syntax_feature_onehot = np.concatenate(onehot_encoded_columns, axis=1)
         all_input_features_dict["syntax_feature"] = syntax_feature_onehot
+
+    if normalize_features:
+        normalize_groups = [
+            "eGeMAPSv02",
+        ]
+        from sklearn.preprocessing import StandardScaler
+
+        for group_name in normalize_groups:
+            # We normalize features in a column-wise manner so that each feature has zero mean and unit variance
+            scaler = StandardScaler()
+            # We only want to normalize the features inside normalize_groups
+            feature_sets_to_normalize = all_input_features_dict[group_name]
+            feature_sets_normalized = scaler.fit_transform(feature_sets_to_normalize)
+            # Replace the normalized features back to feature_sets
+            all_input_features_dict[group_name] = feature_sets_normalized
+            logger.info(f"Input features {group_name} normalized.")
 
     logger.info("Concatenating input features...")
     logger.info(f"Input features include: {INPUT_FEATURE_SELECT_COMPONENTS}")
@@ -610,32 +633,6 @@ def further_process(
         model_hidden_states
     )  # Convert list to numpy array # type: ignore
     logger.info(f"Processed Y shape: {model_hidden_states.shape}")
-
-    if normalize_features:
-        normalize_groups = [
-            "OtherAcoustic",
-            "SpectralInfo",
-            "Formants",
-        ]
-        from sklearn.preprocessing import StandardScaler
-
-        # We normalize features in a column-wise manner so that each feature has zero mean and unit variance
-        logger.info("Normalizing input features")
-        scaler = StandardScaler()
-        # We only want to normalize the features inside normalize_groups
-        feature_indices_to_normalize = []
-        start_idx = 0
-        for feature_name in INPUT_FEATURE_SELECT_COMPONENTS:
-            feature_dim = data_shape[feature_name][0]
-            end_idx = start_idx + feature_dim
-            if feature_name in normalize_groups:
-                feature_indices_to_normalize.extend(list(range(start_idx, end_idx)))
-            start_idx = end_idx
-        feature_sets_to_normalize = feature_sets[:, feature_indices_to_normalize]
-        feature_sets_normalized = scaler.fit_transform(feature_sets_to_normalize)
-        # Replace the normalized features back to feature_sets
-        feature_sets[:, feature_indices_to_normalize] = feature_sets_normalized
-        logger.info("Normalized input features")
 
     return feature_sets, model_hidden_states, data_shape
 
@@ -871,6 +868,7 @@ if __name__ == "__main__":
     librispeech_split = "dev-clean"
     modelname = "facebook/hubert-base-ls960"
     modelname = "facebook/wav2vec2-base"
+    modelname = "google-bert/bert-base-uncased"
     seq_sampling = "random_frames"
     overwrite = False
     select_layers = [0, 6, 12]

@@ -263,7 +263,6 @@ All feature baseline is the best case results with all features intact. The feat
 
 bottom_up_caption = """\
 Baselines:
-- Black dashed line: Random Baseline
 - Black dotted line: All Feature Baseline
 All feature baseline is the best case results with all features groups present. 
 The other curves are the results with JUST one feature group present (bottom-up).
@@ -611,36 +610,12 @@ def plot_coefficients(coefficients):
     return coefficient_dict
 
 
-if __name__ == "__main__":
-    all_results_df = load_result_files(results_dir=RESULTS_ROOT)
-    # Remove bert-base-uncased from the results
-    all_results_df = all_results_df[
-        all_results_df["modelname"] != "Text: bert-base-uncased"
-    ]
-
-    rename_feature_group = {
-        "Prosodic & Voice Quality": "Prosodic Features",
-        "Spectral Envelope": "Spectral Features",
-        "Formant Characteristics": "Formants",
-        "syntax_feature": "Syntactic Features",
-        "ppg_feature": "PPG",
-        "spk_embedding": "Speaker Embedding",
-        "metadata": "Metadata",
-        "dnn_word_embedding": "DNN Word Embedding",
-    }
-    # plot the results
-    all_results_df["manipulated_feature_group"] = all_results_df[
-        "manipulated_feature_group"
-    ].map(rename_feature_group)
-
-    plot_all_results(all_results_df, save=False)
-
-    librispeech_split = "librispeech-train-clean-100"
-    modelname = "wav2vec2-base"
-    modelname = "bert-base-uncased"
+def plot_encode_decode_comparison(
+    librispeech_split="train-clean-100", modelname="wav2vec2-base"
+):
     bottom_up_results_df = load_result_files(
         results_dir=RESULTS_ROOT,
-        results_file_pattern=f"{librispeech_split}/{modelname}/ridge_frame_probe_normalized/bottom-up-layer_*.csv",
+        results_file_pattern=f"librispeech-{librispeech_split}/{modelname}/ridge_frame_probe_normalized/bottom-up-layer_*.csv",
     )
     rename_feature_group = {
         "SpectralInfo": "Spectral Features",
@@ -654,7 +629,7 @@ if __name__ == "__main__":
         "Formants": "Formants",
     }
     decoding_probe_results = pd.read_csv(
-        f"/home/gshen/work_dir/unprobe/results/decoding_frame_probe_results_{modelname}_train-clean-100.csv"
+        f"/home/gshen/work_dir/unprobe/results/decoding_frame_probe_results_{modelname}_{librispeech_split}.csv"
     )
     # rename r2_score to test_score
     decoding_probe_results = decoding_probe_results.rename(
@@ -663,14 +638,10 @@ if __name__ == "__main__":
     decoding_probe_results["Probing_Direction"] = "Decoding Probe"
 
     bottom_up_results_df["Probing_Direction"] = "Encoding Probe"
-    # Get the bottom-up results for all feature
-    # plot the results
-
     bottom_up_baselines = bottom_up_results_df[
         (bottom_up_results_df["feature_group"] == "all")
-        | (bottom_up_results_df["feature_group"] == "random_baseline")
+        # | (bottom_up_results_df["feature_group"] == "random_baseline")
     ]
-
     bottom_up_results_df = bottom_up_results_df[
         (bottom_up_results_df["feature_group"] != "all")
         & (bottom_up_results_df["feature_group"] != "random_baseline")
@@ -678,7 +649,6 @@ if __name__ == "__main__":
     bottom_up_results_df["feature_group"] = bottom_up_results_df["feature_group"].map(
         rename_feature_group
     )
-
     # Join the decoding probe results with bottom-up results
     comparison_results_df = pd.concat(
         [bottom_up_results_df, decoding_probe_results]
@@ -734,7 +704,7 @@ if __name__ == "__main__":
         + p9.labs(
             x="Layer (from shallow to deep)",
             y="Test Score (R²)",
-            title=f"Bottom-Up Encoding Probe Performance Across {modelname} Model Layers vs Decoding Probe",
+            title=f"Direct Comparison between Encoding Probe and Decoding Probe Performance\nAcross {modelname} Model Layers ({librispeech_split})",
             caption=bottom_up_caption,
         )
         # Rename legend
@@ -752,3 +722,28 @@ if __name__ == "__main__":
     )
 
     plot.show()
+
+
+if __name__ == "__main__":
+    all_results_df = load_result_files(results_dir=RESULTS_ROOT)
+    # Remove bert-base-uncased from the results
+    all_results_df = all_results_df[
+        all_results_df["modelname"] != "Text: bert-base-uncased"
+    ]
+
+    rename_feature_group = {
+        "Prosodic & Voice Quality": "Prosodic Features",
+        "Spectral Envelope": "Spectral Features",
+        "Formant Characteristics": "Formants",
+        "syntax_feature": "Syntactic Features",
+        "ppg_feature": "PPG",
+        "spk_embedding": "Speaker Embedding",
+        "metadata": "Metadata",
+        "dnn_word_embedding": "DNN Word Embedding",
+    }
+    # plot the results
+    all_results_df["manipulated_feature_group"] = all_results_df[
+        "manipulated_feature_group"
+    ].map(rename_feature_group)
+
+    plot_all_results(all_results_df, save=False)

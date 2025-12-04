@@ -748,15 +748,40 @@ def bert_check():
     probe_name = "ridge"
     select_layers = None
     normalize_features = True
+    all_results = []
+
+    # Do a check on how many word embeddings are exactly the same
     feature_sets, model_hidden_state, filename_timestamp, data_shape = load_data(
         librispeech_split=librispeech_split,
         modelname=modelname,
         select_layers=select_layers,
         normalize_features=normalize_features,
         reduce_dnn_word_embedding=False,
+        one_hot_encode_syntax=False,
+    )
+    sections_shape = get_section_shapes(data_shape=data_shape)
+    group = "dnn_word_embedding"
+    range_start, range_end, feature_name = np.array(sections_shape)[
+        np.array(sections_shape)[:, 2] == group
+    ][0]
+    input_features = feature_sets[:, int(range_start) : int(range_end)]
+    for layer in range(model_hidden_state.shape[1]):
+        num_same = np.sum(
+            np.all(input_features == model_hidden_state[:, layer, :], axis=1)
+        )
+        logger.info(
+            f"Layer {layer}: Number of identical samples between input and output: {num_same} out of {input_features.shape[0]}"
+        )
+
+    feature_sets, model_hidden_state, filename_timestamp, data_shape = load_data(
+        librispeech_split=librispeech_split,
+        modelname=modelname,
+        select_layers=select_layers,
+        normalize_features=normalize_features,
+        reduce_dnn_word_embedding=False,
+        one_hot_encode_syntax=True,
     )
 
-    all_results = []
     # Pick just the DNN word embedding from feature sets
     sections_shape = get_section_shapes(data_shape=data_shape)
     for group in ["dnn_word_embedding", "syntax_feature"]:
@@ -790,6 +815,7 @@ def bert_check():
                 test_size=0.2,
                 random_state=42,
             )
+
             GS.fit(X_train, y_train)
             train_score = r2_score(
                 y_train,
@@ -815,42 +841,39 @@ def bert_check():
             }
             all_results.append(results)
 
-            if group == "dnn_word_embedding":
-                # Run decoding probe on BERT embeddings
+            regressor, param_grid = pick_probe(probe_name)
 
-                regressor, param_grid = pick_probe(probe_name)
+            GS = GridSearchCV(
+                estimator=regressor,
+                param_grid=param_grid,
+                n_jobs=-1,
+                cv=5,
+                verbose=1,
+            )
+            GS.fit(y_train, X_train)
+            train_score = r2_score(
+                X_train,
+                GS.predict(y_train),
+                multioutput="variance_weighted",
+                train_data=X_train,
+            )
+            test_score = r2_score(
+                X_test,
+                GS.predict(y_test),
+                multioutput="variance_weighted",
+                train_data=X_train,
+            )
 
-                GS = GridSearchCV(
-                    estimator=regressor,
-                    param_grid=param_grid,
-                    n_jobs=-1,
-                    cv=5,
-                    verbose=1,
-                )
-                GS.fit(y_train, X_train)
-                train_score = r2_score(
-                    X_train,
-                    GS.predict(y_train),
-                    multioutput="variance_weighted",
-                    train_data=y_train,
-                )
-                test_score = r2_score(
-                    X_test,
-                    GS.predict(y_test),
-                    multioutput="variance_weighted",
-                    train_data=X_train,
-                )
-
-                results = {
-                    "layer": layer,
-                    "train_score": train_score,
-                    "test_score": test_score,
-                    "best_params": GS.best_params_,
-                    "best_score": GS.best_score_,
-                    "feature_group": "dnn_word_embedding",
-                    "probe_direction": "decoding",
-                }
-                all_results.append(results)
+            results = {
+                "layer": layer,
+                "train_score": train_score,
+                "test_score": test_score,
+                "best_params": GS.best_params_,
+                "best_score": GS.best_score_,
+                "feature_group": group,
+                "probe_direction": "decoding",
+            }
+            all_results.append(results)
 
     # Plot the results and use facet wrap on probe_direction
     results_df = pd.DataFrame(all_results)
@@ -860,13 +883,15 @@ def bert_check():
         p9.ggplot(results_df, p9.aes(x="layer", y="test_score", color="feature_group"))
         + p9.geom_line()
         + p9.geom_point()
-        + p9.facet_wrap("~probe_direction")
+        + p9.facet_grid("probe_direction ~ ")
         + p9.ggtitle(
             f"BERT encoding probing results on LibriSpeech {librispeech_split}"
         )
     )
 
     plot.show()
+
+
 
 
 def parse_args():

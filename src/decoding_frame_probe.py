@@ -173,6 +173,8 @@ def syntax_deep_dive(
     syntax_results = []
 
     # Split data into training and testing sets
+    # Use speakerID to stratify the train-test-split to avoid data leakage
+    speakerID = [x[0].split("-")[0] for x in filename_timestamp]
     X_train, X_test, y_train, y_test, train_filenames, test_filenames = (
         train_test_split(
             model_hidden_states,
@@ -180,6 +182,7 @@ def syntax_deep_dive(
             filename_timestamp,
             test_size=0.2,
             random_state=42,
+            stratify=speakerID,
         )
     )
 

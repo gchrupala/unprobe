@@ -140,8 +140,8 @@ def pick_probe(probe_name: str = "ridge", n_components: None | int = None):
 
 
 def run_probe(
-    processed_X: np.ndarray,
-    processed_y: np.ndarray,
+    feature_sets: np.ndarray,
+    model_hidden_states: np.ndarray,
     data_shape: dict,
     filename_timestamp: list[tuple],
     feature_groups: list[tuple],
@@ -157,8 +157,8 @@ def run_probe(
     """Runs the probing task on the given data.
 
     Args:
-        processed_X: The input data.
-        processed_y: The target data.
+        feature_sets: The input data.
+        model_hidden_states: The target data.
         data_shape: The shape of the data.
         filename_timestamp: The list of filename and timestamp tuples.
         probe_name: The name of the probe to use. Options are 'ridge' and 'random_forest'.
@@ -182,7 +182,7 @@ def run_probe(
 
     results = []
 
-    for layer in trange(processed_y.shape[1], desc="Layers in selected layers"):
+    for layer in trange(model_hidden_states.shape[1], desc="Layers in selected layers"):
         layer_results = []
         current_layer = select_layers[layer] if select_layers is not None else layer
         logger.info(
@@ -207,8 +207,8 @@ def run_probe(
             filename_timestamp_train,
             filename_timestamp_test,
         ) = train_test_split(
-            processed_X,
-            processed_y[:, layer, :],
+            feature_sets,
+            model_hidden_states[:, layer, :],
             filename_timestamp,
             test_size=0.2,
             random_state=42,
@@ -281,11 +281,11 @@ def run_probe(
         regressor, param_grid = pick_probe(probe_name)
         # We can skip the GridSearchCV here and just use the best_params from above
         regressor.set_params(**GS.best_params_)
-        # Shuffle processed_X
-        shuffled_X = processed_X.copy()
+        # Shuffle feature_sets
+        shuffled_X = feature_sets.copy()
         np.random.shuffle(shuffled_X)
         X_train_rand, X_test_rand, y_train_rand, y_test_rand = train_test_split(
-            shuffled_X, processed_y[:, layer, :], test_size=0.2, random_state=42
+            shuffled_X, model_hidden_states[:, layer, :], test_size=0.2, random_state=42
         )
         regressor.fit(X_train_rand, y_train_rand)
         # random_train_score = regressor.score(X_train_rand, y_train_rand)
@@ -512,8 +512,8 @@ def run_probe(
 
 
 def run_probe_bottom_up(
-    processed_X: np.ndarray,
-    processed_y: np.ndarray,
+    feature_sets: np.ndarray,
+    model_hidden_states: np.ndarray,
     data_shape: dict,
     filename_timestamp: list[tuple],
     feature_groups: list[tuple],
@@ -529,8 +529,8 @@ def run_probe_bottom_up(
     """Runs the probing task on the given data in a bottom-up manner.
 
     Args:
-        processed_X: The input data.
-        processed_y: The target data.
+        feature_sets: The input data.
+        model_hidden_states: The target data.
         data_shape: The shape of the data.
         filename_timestamp: The list of filename and timestamp tuples.
         probe_name: The name of the probe to use. Options are 'ridge' and 'random_forest'.
@@ -554,7 +554,7 @@ def run_probe_bottom_up(
 
     results = []
 
-    for layer in trange(processed_y.shape[1], desc="Layers in selected layers"):
+    for layer in trange(model_hidden_states.shape[1], desc="Layers in selected layers"):
         layer_results = []
         current_layer = select_layers[layer] if select_layers is not None else layer
         logger.info(
@@ -579,8 +579,8 @@ def run_probe_bottom_up(
             filename_timestamp_train,
             filename_timestamp_test,
         ) = train_test_split(
-            processed_X,
-            processed_y[:, layer, :],
+            feature_sets,
+            model_hidden_states[:, layer, :],
             filename_timestamp,
             test_size=0.2,
             random_state=42,
@@ -650,11 +650,11 @@ def run_probe_bottom_up(
         regressor, param_grid = pick_probe(probe_name)
         # We can skip the GridSearchCV here and just use the best_params from above
         regressor.set_params(**GS.best_params_)
-        # Shuffle processed_X
-        shuffled_X = processed_X.copy()
+        # Shuffle feature_sets
+        shuffled_X = feature_sets.copy()
         np.random.shuffle(shuffled_X)
         X_train_rand, X_test_rand, y_train_rand, y_test_rand = train_test_split(
-            shuffled_X, processed_y[:, layer, :], test_size=0.2, random_state=42
+            shuffled_X, model_hidden_states[:, layer, :], test_size=0.2, random_state=42
         )
         regressor.fit(X_train_rand, y_train_rand)
         # random_train_score = regressor.score(X_train_rand, y_train_rand)
@@ -730,6 +730,83 @@ def run_probe_bottom_up(
             feature_pred_dict["bottom_up_" + group_name] = GS_bottom_up.predict(
                 selected_x_test
             )
+
+            if group_name == "ppg_feature":
+                # Convert ppg_feature from probability into different kind of representation and see if result changes
+                selected_x_train_top = np.argmax(selected_x_train, axis=1)
+                selected_x_test_top = np.argmax(selected_x_test, axis=1)
+
+                regressor, param_grid = pick_probe(probe_name)
+                GS_bottom_up_phone_ID = GridSearchCV(
+                    estimator=regressor,
+                    param_grid=param_grid,
+                    n_jobs=-1,
+                )
+                GS_bottom_up_phone_ID.fit(selected_x_train_top.reshape(-1, 1), y_train)
+                bottom_up_phone_ID_train_score = r2_score(
+                    y_train,
+                    GS_bottom_up_phone_ID.predict(selected_x_train_top.reshape(-1, 1)),
+                    multioutput="variance_weighted",
+                    train_data=y_train,
+                )
+                bottom_up_phone_ID_test_score = r2_score(
+                    y_test,
+                    GS_bottom_up_phone_ID.predict(selected_x_test_top.reshape(-1, 1)),
+                    multioutput="variance_weighted",
+                    train_data=y_train,
+                )
+                result = {
+                    "layer": current_layer,
+                    "train_score": bottom_up_phone_ID_train_score,
+                    "test_score": bottom_up_phone_ID_test_score,
+                    "best_params": GS_bottom_up_phone_ID.best_params_,
+                    "best_score": GS_bottom_up_phone_ID.best_score_,
+                    "feature_group": "ppg_ID",
+                }
+                layer_results.append(result)
+                feature_pred_dict["bottom_up_" + "ppg_ID"] = (
+                    GS_bottom_up_phone_ID.predict(selected_x_test_top.reshape(-1, 1))
+                )
+                # Now do onehot encoding
+                from sklearn.preprocessing import OneHotEncoder
+
+                ohe = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
+                selected_x_train_ohe = ohe.fit_transform(
+                    selected_x_train_top.reshape(-1, 1)
+                )
+                selected_x_test_ohe = ohe.transform(selected_x_test_top.reshape(-1, 1))
+                # Reinitialize the regressor again
+                regressor, param_grid = pick_probe(probe_name)
+                GS_bottom_up_ohe = GridSearchCV(
+                    estimator=regressor,
+                    param_grid=param_grid,
+                    n_jobs=-1,
+                )
+                GS_bottom_up_ohe.fit(selected_x_train_ohe, y_train)
+                bottom_up_ohe_train_score = r2_score(
+                    y_train,
+                    GS_bottom_up_ohe.predict(selected_x_train_ohe),
+                    multioutput="variance_weighted",
+                    train_data=y_train,
+                )
+                bottom_up_ohe_test_score = r2_score(
+                    y_test,
+                    GS_bottom_up_ohe.predict(selected_x_test_ohe),
+                    multioutput="variance_weighted",
+                    train_data=y_train,
+                )
+                result = {
+                    "layer": current_layer,
+                    "train_score": bottom_up_ohe_train_score,
+                    "test_score": bottom_up_ohe_test_score,
+                    "best_params": GS_bottom_up_ohe.best_params_,
+                    "best_score": GS_bottom_up_ohe.best_score_,
+                    "feature_group": group_name + "_onehot",
+                }
+                layer_results.append(result)
+                feature_pred_dict["bottom_up_" + group_name + "_onehot"] = (
+                    GS_bottom_up_ohe.predict(selected_x_test_ohe)
+                )
 
         # Write the layer results to a csv file after each layer is done
         df = pd.DataFrame(layer_results)
@@ -1091,7 +1168,7 @@ def main():
 
     logger.info("Formatting data for probe...")
 
-    processed_X, processed_Y, filename_timestamp, data_shape = load_data(
+    feature_sets, model_hidden_states, filename_timestamp, data_shape = load_data(
         librispeech_split=librispeech_split,
         modelname=modelname,
         seq_sampling="random_frames",
@@ -1121,8 +1198,8 @@ def main():
     logger.info("Data formatted.")
     logger.info("Running probe...")
     top_down_results = run_probe(
-        processed_X=processed_X,
-        processed_y=processed_Y,
+        feature_sets=feature_sets,
+        model_hidden_states=model_hidden_states,
         data_shape=data_shape,
         feature_groups=feature_groups,
         filename_timestamp=filename_timestamp,
@@ -1139,8 +1216,8 @@ def main():
     if bottom_up_probe:
         logger.info("Running bottom-up probe...")
         bottom_up_results = run_probe_bottom_up(
-            processed_X=processed_X,
-            processed_y=processed_Y,
+            feature_sets=feature_sets,
+            model_hidden_states=model_hidden_states,
             data_shape=data_shape,
             feature_groups=feature_groups,
             filename_timestamp=filename_timestamp,

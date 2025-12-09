@@ -20,6 +20,7 @@ if "snellius" in hostname:
     ALIGNMENT_ROOT = DATASET_ROOT.replace("LibriSpeech", "librispeech_textgrids")
     SAVEPATH = "/projects/prjs1586/experimental_data"
     RESULTS_ROOT = "/projects/prjs1586/experimental_results"
+    FIGURES_ROOT = "/projects/prjs1586/experimental_figures"
 
 else:
     # If running on local machine, use the local dataset root
@@ -28,6 +29,7 @@ else:
     ALIGNMENT_ROOT = os.path.join(PROJECT_ROOT, "data")
     SAVEPATH = os.path.join(PROJECT_ROOT, "experimental_data")
     RESULTS_ROOT = os.path.join(PROJECT_ROOT, "results")
+    FIGURES_ROOT = os.path.join(PROJECT_ROOT, "figures")
 
 model_layer_dict = {
     "wav2vec2-base": 12,
@@ -396,7 +398,7 @@ def plot_all_results(all_results_df: pd.DataFrame, save=False) -> None:
 
         if save:
             figure_filename = f"probe_{probename}_librispeech-{librispeech_split}_manipulation-{manipulation}_results.png"
-            figure_path = os.path.join(RESULTS_ROOT, "figures", figure_filename)
+            figure_path = os.path.join(FIGURES_ROOT, figure_filename)
             os.makedirs(os.path.dirname(figure_path), exist_ok=True)
             figure.save(figure_path)
             logger.info(f"Saved figure to {figure_path}")
@@ -480,8 +482,7 @@ def plot_all_results(all_results_df: pd.DataFrame, save=False) -> None:
     figure.show()
     figure.save(
         os.path.join(
-            RESULTS_ROOT,
-            "figures",
+            FIGURES_ROOT,
             "probe_ridge_librispeech-train-clean-100_manipulation-ablation_wav2vec2-base_results.png",
         )
     )
@@ -627,6 +628,7 @@ def plot_encode_decode_comparison(
         "dnn_word_embedding": "DNN Word Embedding",
         "OtherAcoustic": "Other Acoustic Features",
         "Formants": "Formants",
+        "eGeMAPSv02": "eGeMAPSv02",
     }
     decoding_probe_results = pd.read_csv(
         f"/home/gshen/work_dir/unprobe/results/decoding_frame_probe_results_{modelname}_{librispeech_split}.csv"
@@ -647,7 +649,7 @@ def plot_encode_decode_comparison(
         & (bottom_up_results_df["feature_group"] != "random_baseline")
     ]
     bottom_up_results_df["feature_group"] = bottom_up_results_df["feature_group"].map(
-        rename_feature_group
+        lambda x: rename_feature_group.get(x, x)
     )
     # Join the decoding probe results with bottom-up results
     comparison_results_df = pd.concat(
@@ -726,10 +728,10 @@ def plot_encode_decode_comparison(
 
 if __name__ == "__main__":
     all_results_df = load_result_files(results_dir=RESULTS_ROOT)
-    # Remove bert-base-uncased from the results
-    all_results_df = all_results_df[
-        all_results_df["modelname"] != "Text: bert-base-uncased"
-    ]
+    # # Remove bert-base-uncased from the results
+    # all_results_df = all_results_df[
+    #     all_results_df["modelname"] != "Text: bert-base-uncased"
+    # ]
 
     rename_feature_group = {
         "Prosodic & Voice Quality": "Prosodic Features",
@@ -740,10 +742,18 @@ if __name__ == "__main__":
         "spk_embedding": "Speaker Embedding",
         "metadata": "Metadata",
         "dnn_word_embedding": "DNN Word Embedding",
+        "eGeMAPSv02": "eGeMAPSv02",
     }
     # plot the results
     all_results_df["manipulated_feature_group"] = all_results_df[
         "manipulated_feature_group"
-    ].map(rename_feature_group)
+    ].map(lambda x: rename_feature_group.get(x, x))
 
-    plot_all_results(all_results_df, save=False)
+    plot_all_results(all_results_df, save=True)
+
+    plot_encode_decode_comparison(
+        librispeech_split="train-clean-100", modelname="wav2vec2-base"
+    )
+    plot_encode_decode_comparison(
+        librispeech_split="train-clean-100", modelname="bert-base-uncased"
+    )

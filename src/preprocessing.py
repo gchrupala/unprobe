@@ -752,47 +752,49 @@ def extract_dnn_word_embedding(
 
         # Get the non-contextualized token embeddings from the 0-th layer
 
-        hidden_states = (
-            outputs.hidden_states[0].cpu().squeeze(0).numpy()
+        token_embeddings = (
+            outputs.hidden_states[0].cpu().squeeze(0)
         )  # (seq_len, hidden_size)
 
-        # hidden_states = (
-        #     outputs.last_hidden_state.cpu().numpy().squeeze(0)
-        # )  # (seq_len, hidden_size)
+        # Aggregate Sub-words into Word Embeddings
+        word_level_embeddings = []
+        word_list = []
 
-        # word_embeddings_list = []
-        # current_word_id = None
-        # current_word_tokens = []
-        # for token_idx, word_id in enumerate(word_ids):
-        #     if word_id is None:
-        #         continue
-        #     if word_id != current_word_id:
-        #         if current_word_tokens:
-        #             # Average the embeddings of the tokens for the previous word
-        #             word_embedding = torch.mean(torch.stack(current_word_tokens), dim=0)
-        #             word_embeddings_list.append(word_embedding.cpu().numpy())
-        #         current_word_id = word_id
-        #         current_word_tokens = [hidden_states[0, token_idx]]
-        #     else:
-        #         current_word_tokens.append(hidden_states[0, token_idx])
+        # Get unique word IDs, removing None (which corresponds to [CLS] and [SEP])
+        unique_word_ids = set(w for w in word_ids if w is not None)
 
-        # # Handle the last word
-        # if current_word_tokens:
-        #     word_embedding = torch.mean(torch.stack(current_word_tokens), dim=0)
-        #     word_embeddings_list.append(word_embedding.cpu().numpy())
+        for w_id in sorted(list(unique_word_ids)):
+            # 1. Find indices of sub-tokens belonging to this word_id
+            indices = [i for i, x in enumerate(word_ids) if x == w_id]
+
+            # 2. Select those embeddings
+            # We use torch indexing here as it acts on the GPU/Tensor directly
+            selected_embeddings = token_embeddings[indices]
+
+            # 3. Average them
+            # dim=0 averages along the number of tokens, resulting in (hidden_size,)
+            avg_embedding = selected_embeddings.mean(dim=0)
+
+            word_level_embeddings.append(avg_embedding)
+
+            # Optional: Grab the actual word string for verification
+            start_char = offset_mapping[indices[0]][0]
+            end_char = offset_mapping[indices[-1]][1]
+
+            # Extract the word from original text
+            current_word = text[start_char:end_char]
+            word_list.append(current_word)
+
+        # Convert list of tensors to a single tensor or numpy array
+        word_level_embeddings = torch.stack(word_level_embeddings).cpu().numpy()
 
         fileID = example["fileID"]  # type: ignore
-        words = tokenizer.convert_ids_to_tokens(encoded_input["input_ids"][0])
-        # Remove [CLS] and [SEP] tokens
-        # words = [w for w in words if w not in tokenizer.all_special_tokens]
-        # Join subword tokens back together to form words
-        # words = tokenizer.convert_ids_to_tokens(encoded_input["input_ids"][0])
-        # words = [w for w in words if w not in tokenizer.all_special_tokens]
-        # words = tokenizer.convert_tokens_to_string(words).split()
+        tokens = tokenizer.convert_ids_to_tokens(encoded_input["input_ids"][0])
 
         word_embeddings[fileID] = {
-            "word_embeddings": hidden_states,
-            "words": words,
+            "word_embeddings": word_level_embeddings,
+            "words": word_list,
+            "tokens": tokens,
             "offset_mapping": offset_mapping,
         }
 
@@ -835,7 +837,7 @@ def extract_text_representation(
     ):
         n_frames = kwargs.get("n_frames", 5)
 
-        inputs = tokenizer(
+        encoded_input = tokenizer(
             example["sent"],  # type: ignore
             return_tensors="pt",
             padding=True,
@@ -843,15 +845,17 @@ def extract_text_representation(
             return_offsets_mapping=True,
         )
 
-        offset_mapping = inputs.pop("offset_mapping").cpu().squeeze().numpy()
+        offset_mapping = encoded_input.pop("offset_mapping").cpu().squeeze().numpy()
         fileID = example["fileID"]  # type: ignore
-        inputs = {k: v.to(device) for k, v in inputs.items()}
+        word_ids = encoded_input.word_ids()
+        encoded_input = {k: v.to(device) for k, v in encoded_input.items()}
         with torch.no_grad():
-            outputs = model(**inputs, output_hidden_states=True)
+            outputs = model(**encoded_input, output_hidden_states=True)
             # output shape need to be (batch_size, seq_len, hidden_size)
             # Save all hidden states and preserve seq_len dimension with shape (batch_size, layer, seq_len, hidden_size)
             hidden_states = outputs.hidden_states
         hidden_states = torch.stack(hidden_states, dim=1)
+
         if seq_sampling == "mean":
             # Take the mean over the seq_len dimension
             hidden_states = hidden_states.mean(dim=2)
@@ -864,6 +868,7 @@ def extract_text_representation(
                 hidden_states.shape[2], n_frames, replace=False
             )
             frame_indices = np.sort(frame_indices)
+
         elif seq_sampling == "none":
             frame_indices = np.arange(hidden_states.shape[2])
             pass
@@ -881,6 +886,7 @@ def extract_text_representation(
             "frame_token_indices": {
                 "frame_indices": frame_indices,
                 "offset_mapping": offset_mapping,
+                "word_ids": word_ids,
             },
         }
     return text_representations

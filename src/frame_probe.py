@@ -892,8 +892,6 @@ def bert_check():
     plot.show()
 
 
-
-
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -963,6 +961,16 @@ def parse_args():
         default=f"{SAVEPATH}/default_feature_groups.json",
         help="The feature groups to use for probing.",
     )
+    parser.add_argument(
+        "--syntax_deep_dive",
+        action="store_true",
+        help="Whether to run the syntax deep dive analysis.",
+    )
+    parser.add_argument(
+        "--bottom_up_probe",
+        action="store_true",
+        help="Whether to run the bottom-up probe analysis.",
+    )
     args = parser.parse_args()
     return args
 
@@ -979,6 +987,7 @@ def main():
     save_predictions = args.save_predictions
     normalize_features = args.normalize_features
     normalize_string = "normalized" if normalize_features else "unnormalized"
+    bottom_up_probe = args.bottom_up_probe
 
     try:
         dim_reduction = int(args.dim_reduction)
@@ -1111,22 +1120,7 @@ def main():
         json.dump(data_shape, f)
     logger.info("Data formatted.")
     logger.info("Running probe...")
-    # results = run_probe(
-    #     processed_X=processed_X,
-    #     processed_y=processed_Y,
-    #     data_shape=data_shape,
-    #     feature_groups=feature_groups,
-    #     filename_timestamp=filename_timestamp,
-    #     probe_name=probe_name,
-    #     select_layers=select_layers,
-    #     zeroing=zeroing,
-    #     ablation=ablation,
-    #     permutation=permutation,
-    #     results_path=results_path,
-    #     save_predictions=save_predictions,
-    #     dim_reduction=dim_reduction,
-    # )
-    results = run_probe_bottom_up(
+    top_down_results = run_probe(
         processed_X=processed_X,
         processed_y=processed_Y,
         data_shape=data_shape,
@@ -1141,6 +1135,24 @@ def main():
         save_predictions=save_predictions,
         dim_reduction=dim_reduction,
     )
+
+    if bottom_up_probe:
+        logger.info("Running bottom-up probe...")
+        bottom_up_results = run_probe_bottom_up(
+            processed_X=processed_X,
+            processed_y=processed_Y,
+            data_shape=data_shape,
+            feature_groups=feature_groups,
+            filename_timestamp=filename_timestamp,
+            probe_name=probe_name,
+            select_layers=select_layers,
+            zeroing=zeroing,
+            ablation=ablation,
+            permutation=permutation,
+            results_path=results_path,
+            save_predictions=save_predictions,
+            dim_reduction=dim_reduction,
+        )
 
     # logger.info("Saving all results...")
     # df = pd.DataFrame(results)

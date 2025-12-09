@@ -20,7 +20,7 @@ if "snellius" in hostname:
     ALIGNMENT_ROOT = DATASET_ROOT.replace("LibriSpeech", "librispeech_textgrids")
     SAVEPATH = "/projects/prjs1586/experimental_data"
     RESULTS_ROOT = "/projects/prjs1586/experimental_results"
-    FIGURES_ROOT = "/projects/prjs1586/experimental_figures"
+    FIGURES_ROOT = os.path.join(PROJECT_ROOT, "figures")
 
 else:
     # If running on local machine, use the local dataset root

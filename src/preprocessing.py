@@ -796,6 +796,7 @@ def extract_dnn_word_embedding(
             "words": word_list,
             "tokens": tokens,
             "offset_mapping": offset_mapping,
+            "word_ids": word_ids,
         }
 
     return word_embeddings

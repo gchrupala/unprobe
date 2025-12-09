@@ -314,6 +314,8 @@ def format_data(
             char_idx_ends.append(cumulative_char_count)
             # Add 1 to cumulative_char_count to account for the space
             cumulative_char_count += 1
+            # TODO: punctuations exists in the text but not in the alignment. this is a problem.
+            # Also the Subword tokenization may split words into multiple tokens, need to handle that as well.
         ort_alignment["char_idx_start"] = char_idx_starts
         ort_alignment["char_idx_end"] = char_idx_ends
 
@@ -359,33 +361,22 @@ def format_data(
                     num_skip_cls_sep += 1
 
                     continue
-                # Use offset_mappings to get the word index
-                start_char_idx = offset_mappings[frame_index][
-                    0
-                ]  # start char index of the token
-                # Find the word index in ort_alignment that contains this char index
-                word_idx = ort_alignment[
-                    (ort_alignment["char_idx_start"] <= start_char_idx)
-                    & (ort_alignment["char_idx_end"] > start_char_idx)
-                ].index
+                word_idx = utt_dnn_hidden_states["frame_token_indices"]["word_ids"][
+                    frame_index
+                ]
 
-                if word_idx.empty:
-                    logger.info(
-                        f"Empty word_idx for fileID {fileID} at frame_index {frame_index}"
-                    )
+                if word_idx > ort_alignment.index.max():
+                    # Skip if word_idx is out of bounds, this is probably due to punctuations
                     continue
 
-                token_start_time = (
+                token_start_time = int(
                     ort_alignment.loc[word_idx, "start"] * 1000
                 )  # Convert to ms
-                token_end_time = (
+                token_end_time = int(
                     ort_alignment.loc[word_idx, "end"] * 1000
                 )  # Convert to ms
                 # Get the middle time of the token in ms as integer and round to the nearest 10 ms
-                token_time = (
-                    int((token_start_time.iloc[0] + token_end_time.iloc[0]) / 2 / 10)
-                    * 10
-                )
+                token_time = int((token_start_time + token_end_time) / 2 / 10) * 10
 
                 utt_lld_frames = (
                     utt_lld[
@@ -396,7 +387,7 @@ def format_data(
                     .reset_index(drop=True)
                     .to_numpy()
                 )
-
+                start_char_idx = ort_alignment.loc[word_idx, "char_idx_start"]
             else:
                 # For audio models, the frame_index corresponds to the time in ms and there's no offset_mapping
                 token_time = frame_index
@@ -409,6 +400,7 @@ def format_data(
                 if word_idx.empty:
                     # skip if no word found
                     continue
+                word_idx = word_idx.values[0]
 
                 # Get the corresponding lld rows for current frame index +- 2 frames
                 utt_lld_frames = (
@@ -421,8 +413,8 @@ def format_data(
                     .to_numpy()
                 )
                 # Look up the word start char index
-                start_char_idx = ort_alignment.loc[word_idx, "char_idx_start"].values[0]
-            word_idx = word_idx.values[0]
+                start_char_idx = ort_alignment.loc[word_idx, "char_idx_start"]
+
             if utt_lld_frames.shape[0] != 5:
                 continue
             # utt_lld_names = utt_lld.columns.tolist()
@@ -431,36 +423,21 @@ def format_data(
 
             word_form_feature = word_form_embeddings[word_idx].flatten()
 
-            # # Find the corresponding DNN word embedding
-            # char_start_idx = ort_alignment.loc[word_idx, "char_idx_start"]
-            # char_end_idx = ort_alignment.loc[word_idx, "char_idx_end"]
-            # Find at which interval in the numpy array dnn_word_embeddings['offset_mapping'] the char_start_idx falls into
-            dnn_offset_mappings = dnn_word_embeddings["offset_mapping"]
-            dnn_word_idx = np.where(
-                (dnn_offset_mappings[:, 0] <= start_char_idx)
-                & (dnn_offset_mappings[:, 1] > start_char_idx)
-            )[0]
-            if dnn_word_idx.size == 0:
-                logger.info(
-                    "Char start index not found in DNN embeddings: Skipped",
-                )
-                continue
-            dnn_word_idx = dnn_word_idx[0]
-            dnn_word_embedding = dnn_word_embeddings["word_embeddings"][
-                dnn_word_idx
-            ].flatten()
-            dnn_token = dnn_word_embeddings["words"][dnn_word_idx]
+            # Find the corresponding DNN word embedding
+            dnn_word_embedding = dnn_word_embeddings["word_embeddings"][word_idx]
 
             # Use offset mapping to look up syntax features as well
             syntax_word_idx = np.where(
                 (np.array(syntax_feats_offset_mapping)[:, 0] <= start_char_idx)
-                & (np.array(syntax_feats_offset_mapping)[:, 1] >= start_char_idx)
+                & (np.array(syntax_feats_offset_mapping)[:, 1] > start_char_idx)
             )
             if syntax_word_idx[0].size == 0:
-                logger.info(
-                    "Char start index not found in syntax features: Skipped",
-                )
+                # logger.info(
+                #     "Char start index not found in syntax features: Skipped",
+                # )
+                # This is mainly due to the sentencizer in spacy splitting the sentences up
                 continue
+
             syntax_feature = np.array(syntax_feats)[syntax_word_idx].flatten()
             syntax_token = all_syntax_features[fileID]["words"][syntax_word_idx[0][0]]
 
@@ -486,7 +463,6 @@ def format_data(
                 "metadata": metadata,
                 "word_form_feature": word_form_feature,
                 "dnn_word_embedding": dnn_word_embedding,
-                "dnn_token": dnn_token,
                 "syntax_token": syntax_token,
             }
 
@@ -529,7 +505,7 @@ def further_process(
     reduce_speaker_embedding: bool = True,
     one_hot_encode_syntax: bool = True,
     normalize_features: bool = True,
-    n_components: int | float | None = 0.9,
+    n_components: int | float | None = 0.95,
 ):
     if reduce_dnn_word_embedding:
         # Apply dimension reduction to processed_dnn_word_embeddings using PCA so that 90% variance is retained by default

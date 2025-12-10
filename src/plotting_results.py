@@ -244,7 +244,7 @@ def load_dimreduction_files(results_dir: str):
         + p9.theme(
             figure_size=(10, 10),
             dpi=300,
-            plot_caption=p9.element_text(ha="left", margin={"t": 1, "units": "lines"}),
+            # plot_caption=p9.element_text(ha="left", margin={"t": 1, "units": "lines"}),
         )
         + p9.labs(
             x="Layer (from shallow to deep)",
@@ -323,7 +323,7 @@ def plot_results(
         + p9.theme(
             figure_size=(10, 10),
             dpi=300,
-            plot_caption=p9.element_text(ha="left", margin={"t": 1, "units": "lines"}),
+            # plot_caption=p9.element_text(ha="left", margin={"t": 1, "units": "lines"}),
         )
         + p9.scale_color_discrete(name=f"{manipulation.capitalize()} Feature Group")
         + p9.scale_shape_discrete(name=f"{manipulation.capitalize()} Feature Group")
@@ -332,7 +332,7 @@ def plot_results(
             y="Test Score (R²)",
             title="Encoding Probe Performance Across Model Layers",
             subtitle=f"Probe: {probename}, Librispeech Split: {librispeech_split} Manipulation: {manipulation}",
-            caption=caption,
+            # caption=caption,
         )
     )
 
@@ -467,7 +467,7 @@ def plot_all_results(all_results_df: pd.DataFrame, save=False) -> None:
         + p9.theme(
             figure_size=(10, 6),
             dpi=300,
-            plot_caption=p9.element_text(ha="left", margin={"t": 1, "units": "lines"}),
+            # plot_caption=p9.element_text(ha="left", margin={"t": 1, "units": "lines"}),
         )
         + p9.scale_color_discrete(name="Ablation Feature Group")
         + p9.scale_shape_discrete(name="Ablation Feature Group")
@@ -476,7 +476,7 @@ def plot_all_results(all_results_df: pd.DataFrame, save=False) -> None:
             y="Test Score (R²)",
             title="Encoding Probe Performance Across Model Layers",
             subtitle="Probe: ridge, Librispeech Split: librispeech-train-clean-100, Manipulation: ablation",
-            caption=caption,
+            # caption=caption,
         )
     )
     figure.show()
@@ -712,7 +712,7 @@ def plot_encode_decode_comparison(
             x="Layer (from shallow to deep)",
             y="Test Score (R²)",
             title=f"Direct Comparison between Encoding Probe and Decoding Probe Performance\nAcross {modelname} Model Layers ({librispeech_split})",
-            caption=bottom_up_caption,
+            # caption=bottom_up_caption,
         )
         # Rename legend
         + p9.scale_color_discrete(name="Feature Group")
@@ -724,7 +724,7 @@ def plot_encode_decode_comparison(
         + p9.theme(
             figure_size=(10, 6),
             dpi=300,
-            plot_caption=p9.element_text(ha="left", margin={"t": 1, "units": "lines"}),
+            # plot_caption=p9.element_text(ha="left", margin={"t": 1, "units": "lines"}),
         )
     )
 
@@ -827,7 +827,9 @@ if __name__ == "__main__":
         "manipulated_feature_group"
     ].map(lambda x: rename_feature_group.get(x, x))
 
-    # plot_all_results(all_results_df, save=True)
+    # Skip all the text models in all_results_df
+    all_results_df = all_results_df[~all_results_df["modelname"].str.contains("Text:")]
+    plot_all_results(all_results_df, save=True)
 
     plot_encode_decode_comparison(
         librispeech_split="train-clean-100", modelname="wav2vec2-base"

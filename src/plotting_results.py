@@ -656,6 +656,11 @@ def plot_encode_decode_comparison(
         [bottom_up_results_df, decoding_probe_results]
     ).reset_index(drop=True)
 
+    # Drop the feature groups with names ppg_ID and ppg_feature_onehot
+    comparison_results_df = comparison_results_df[
+        ~comparison_results_df["feature_group"].isin(["ppg_ID", "ppg_feature_onehot"])
+    ]
+
     # Drop columns with any NaN values
     comparison_results_df = comparison_results_df.dropna(axis=1, how="any")
 
@@ -725,6 +730,79 @@ def plot_encode_decode_comparison(
 
     plot.show()
 
+    plot.save(
+        os.path.join(
+            FIGURES_ROOT,
+            f"encode_decode_comparison_{modelname}_{librispeech_split}.png",
+        )
+    )
+
+
+def plot_ppg_feature_representation():
+    librispeech_split = "train-clean-100"
+    modelname = "wav2vec2-base"
+    bottom_up_results_df = load_result_files(
+        results_dir=RESULTS_ROOT,
+        results_file_pattern=f"librispeech-{librispeech_split}/{modelname}/ridge_frame_probe_normalized/bottom-up-layer_*.csv",
+    )
+
+    ppg_results_df = bottom_up_results_df[
+        bottom_up_results_df["feature_group"].str.contains("ppg|PPG")
+    ]
+
+    # Rename the columns for better visualization
+    rename_feature_group = {
+        "ppg_feature": "Original Phonetic Posteriorgrams",
+        "ppg_ID": "Phone ID from PPGs",
+        "ppg_feature_onehot": "One-hot Encoded PPGs",
+    }
+    ppg_results_df.loc[:, "feature_group"] = ppg_results_df["feature_group"].map(
+        lambda x: rename_feature_group.get(x, x)
+    )
+
+    plot = (
+        p9.ggplot(ppg_results_df)
+        + p9.geom_line(
+            p9.aes(
+                x="layer",
+                y="test_score",
+                color="feature_group",
+                shape="feature_group",
+                group="feature_group",
+            ),
+            alpha=0.7,
+        )
+        + p9.geom_point(
+            p9.aes(
+                x="layer",
+                y="test_score",
+                color="feature_group",
+                shape="feature_group",
+                group="feature_group",
+            ),
+            alpha=0.7,
+        )
+        + p9.labs(
+            x="Layer (from shallow to deep)",
+            y="Test Score (R²)",
+            title=f"Encoding Probe Performance on \nDifferent PPG Feature Representations\nAcross {modelname} Model Layers ({librispeech_split})",
+        )
+        + p9.scale_x_continuous(breaks=range(0, ppg_results_df["layer"].max() + 1, 3))
+        + p9.theme(
+            figure_size=(8, 6),
+            dpi=300,
+        )
+    )
+
+    plot.show()
+
+    plot.save(
+        os.path.join(
+            FIGURES_ROOT,
+            f"ppg_feature_representation_{modelname}_{librispeech_split}.png",
+        )
+    )
+
 
 if __name__ == "__main__":
     all_results_df = load_result_files(results_dir=RESULTS_ROOT)
@@ -749,7 +827,7 @@ if __name__ == "__main__":
         "manipulated_feature_group"
     ].map(lambda x: rename_feature_group.get(x, x))
 
-    plot_all_results(all_results_df, save=True)
+    # plot_all_results(all_results_df, save=True)
 
     plot_encode_decode_comparison(
         librispeech_split="train-clean-100", modelname="wav2vec2-base"
@@ -757,3 +835,4 @@ if __name__ == "__main__":
     plot_encode_decode_comparison(
         librispeech_split="train-clean-100", modelname="bert-base-uncased"
     )
+    plot_ppg_feature_representation()

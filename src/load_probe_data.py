@@ -50,8 +50,8 @@ INPUT_FEATURE_SELECT_COMPONENTS = [
     "eGeMAPSv02",
     "syntax_feature",
     "ppg_feature",
-    "spk_embedding",
-    # "metadata",
+    # "spk_embedding",
+    "metadata",
     # "word_form_feature",
     "dnn_word_embedding",
 ]
@@ -481,13 +481,12 @@ def format_data(
     logger.info(f"Skipping [CLS] or [SEP] token count: {num_skip_cls_sep}")
     # We restructure all_input_features to be a dictionary of numpy arrays for each feature component
     logger.info("Processing input features...")
+    # We turn the list of dictionaries into a dictionary of lists
     all_input_features_dict = {}
-    for feature_name in INPUT_FEATURE_SELECT_COMPONENTS:
+    for feature_name in all_input_features[0].keys():
         all_input_features_dict[feature_name] = [
-            input_feature_components[feature_name]
-            for input_feature_components in all_input_features
+            x[feature_name] for x in all_input_features
         ]
-
     all_input_features_dict["dnn_word_embedding"] = np.array(
         all_input_features_dict["dnn_word_embedding"]
     )
@@ -501,12 +500,28 @@ def format_data(
 def further_process(
     model_hidden_states,
     all_input_features_dict: dict,
+    selected_input_components: list,
     reduce_dnn_word_embedding: bool = True,
     reduce_speaker_embedding: bool = True,
     one_hot_encode_syntax: bool = True,
+    one_hot_encode_metadata: bool = True,
     normalize_features: bool = True,
     n_components: int | float | None = 0.95,
+    select_layers: list | None = None,
 ):
+    # Use selected_input_components to select which features in the dictionary we want to keep
+    for feature_name in selected_input_components:
+        if feature_name not in all_input_features_dict.keys():
+            raise ValueError(f"Feature {feature_name} not found in input features.")
+        all_input_features_dict[feature_name] = np.array(
+            all_input_features_dict[feature_name]
+        )
+
+    # Remove features not in selected_input_components
+    for feature_name in list(all_input_features_dict.keys()):
+        if feature_name not in selected_input_components:
+            del all_input_features_dict[feature_name]
+
     if reduce_dnn_word_embedding:
         # Apply dimension reduction to processed_dnn_word_embeddings using PCA so that 90% variance is retained by default
         # Change n_components to an integer or float to specify the number of components or variance ratio to retain
@@ -529,26 +544,29 @@ def further_process(
             f"Processed DNN word embeddings shape after PCA: {all_input_features_dict['dnn_word_embedding'].shape}"
         )
     if reduce_speaker_embedding:
-        # Apply dimension reduction to speaker_embedding using PCA so that 90% variance is retained by default
-        # Change n_components to an integer or float to specify the number of components or variance ratio to retain
-        from sklearn.decomposition import PCA
-        from sklearn.preprocessing import StandardScaler
+        if "spk_embedding" not in all_input_features_dict.keys():
+            logger.warning("Speaker embedding feature not found in input features.")
+        else:
+            # Apply dimension reduction to speaker_embedding using PCA so that 90% variance is retained by default
+            # Change n_components to an integer or float to specify the number of components or variance ratio to retain
+            from sklearn.decomposition import PCA
+            from sklearn.preprocessing import StandardScaler
 
-        scaler = StandardScaler()
-        all_input_features_dict["spk_embedding"] = scaler.fit_transform(
-            all_input_features_dict["spk_embedding"]
-        )
+            scaler = StandardScaler()
+            all_input_features_dict["spk_embedding"] = scaler.fit_transform(
+                all_input_features_dict["spk_embedding"]
+            )
 
-        pca = PCA(
-            n_components=n_components
-        )  # Use pca to retain 90% variance by default
-        all_input_features_dict["spk_embedding"] = pca.fit_transform(
-            all_input_features_dict["spk_embedding"]
-        )
+            pca = PCA(
+                n_components=n_components
+            )  # Use pca to retain 90% variance by default
+            all_input_features_dict["spk_embedding"] = pca.fit_transform(
+                all_input_features_dict["spk_embedding"]
+            )
 
-        logger.info(
-            f"Processed speaker embeddings shape after PCA: {all_input_features_dict['spk_embedding'].shape}"
-        )
+            logger.info(
+                f"Processed speaker embeddings shape after PCA: {all_input_features_dict['spk_embedding'].shape}"
+            )
 
     if one_hot_encode_syntax:
         # One hot encode the individual columns within syntax_feature
@@ -569,6 +587,29 @@ def further_process(
         syntax_feature_onehot = np.concatenate(onehot_encoded_columns, axis=1)
         all_input_features_dict["syntax_feature"] = syntax_feature_onehot
 
+    if one_hot_encode_metadata:
+        # First check if metadata is in the dictionary
+        if "metadata" in all_input_features_dict.keys():
+            from sklearn.preprocessing import OneHotEncoder
+
+            # Onehot encode the first column "SpeakerID-OH" and second column "ChapterID-OH"
+            speakerIDS = all_input_features_dict["metadata"][:, 0]
+            chapterIDS = all_input_features_dict["metadata"][:, 1]
+            encoder = OneHotEncoder(sparse_output=False)
+            speakerIDS_onehot = encoder.fit_transform(speakerIDS.reshape(-1, 1))
+            chapterIDS_onehot = encoder.fit_transform(chapterIDS.reshape(-1, 1))
+            all_input_features_dict["SpeakerID-OH"] = speakerIDS_onehot
+            all_input_features_dict["ChapterID-OH"] = chapterIDS_onehot
+            # Delete the metadata key from the dictionary
+            del all_input_features_dict["metadata"]
+            selected_input_components += ["SpeakerID-OH", "ChapterID-OH"]
+            selected_input_components.remove("metadata")
+
+        else:
+            logger.warning(
+                "Metadata feature not found in input features, skipping one-hot encoding for metadata."
+            )
+
     if normalize_features:
         normalize_groups = [
             "eGeMAPSv02",
@@ -586,13 +627,13 @@ def further_process(
             logger.info(f"Input features {group_name} normalized.")
 
     logger.info("Concatenating input features...")
-    logger.info(f"Input features include: {INPUT_FEATURE_SELECT_COMPONENTS}")
+    logger.info(f"Input features include: {selected_input_components}")
     # Now concatenate all input features to form the final input feature matrix
     feature_sets = np.array(
         np.concatenate(
             [
                 all_input_features_dict[feature_name]
-                for feature_name in INPUT_FEATURE_SELECT_COMPONENTS
+                for feature_name in selected_input_components
             ],
             axis=1,
         )
@@ -600,14 +641,20 @@ def further_process(
 
     data_shape = {
         feature_name: all_input_features_dict[feature_name][0].shape
-        for feature_name in INPUT_FEATURE_SELECT_COMPONENTS
+        for feature_name in selected_input_components
     }
 
     # model_hidden_states shape should be (num_frames, num_layers, hidden_size)
     logger.info(f"Processed X shape: {feature_sets.shape}")
-    model_hidden_states = np.array(
-        model_hidden_states
-    )  # Convert list to numpy array # type: ignore
+    model_hidden_states = np.array(model_hidden_states)  # Convert list to numpy array
+    if select_layers is not None:
+        logger.info(f"Selecting layers: {select_layers}")
+        model_hidden_states = model_hidden_states[:, select_layers, :]
+
+        logger.info(
+            f"Selected model_hidden_states shape after layer selection: {model_hidden_states.shape}"
+        )
+
     logger.info(f"Processed Y shape: {model_hidden_states.shape}")
 
     return feature_sets, model_hidden_states, data_shape
@@ -662,20 +709,14 @@ def load_data(
             pickle.dump((feature_sets, model_hidden_states, filename_timestamp), f)
         logger.info(f"Saved formatted data to {formatted_data_path}")
 
-    if select_layers is not None:
-        logger.info(f"Selecting layers: {select_layers}")
-        model_hidden_states = model_hidden_states[:, select_layers, :]
-
-        logger.info(
-            f"Selected model_hidden_states shape after layer selection: {model_hidden_states.shape}"
-        )
-
     feature_sets, model_hidden_states, data_shape = further_process(
         model_hidden_states,
         feature_sets,
+        selected_input_components=INPUT_FEATURE_SELECT_COMPONENTS,
         reduce_dnn_word_embedding=reduce_dnn_word_embedding,
         one_hot_encode_syntax=one_hot_encode_syntax,
         normalize_features=normalize_features,
+        select_layers=select_layers,
     )
 
     return feature_sets, model_hidden_states, filename_timestamp, data_shape

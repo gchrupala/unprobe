@@ -113,22 +113,26 @@ def run_probe(
     )
     train_speakerID = [x[0].split("-")[0] for x in train_filenames]
     test_speakerID = [x[0].split("-")[0] for x in test_filenames]
+    train_bookID = [x[0].split("-")[1] for x in train_filenames]
+    test_bookID = [x[0].split("-")[1] for x in test_filenames]
 
     section_shapes = np.array(get_section_shapes(data_shape=data_shape))
 
     for start_idx, end_idx, name in tqdm(section_shapes, desc="Feature Groups"):
-        start_idx = int(start_idx)
-        if name == "syntax_feature":
-            end_idx = start_idx + 7  # Exclude Path_from_Root for now
-        else:
-            end_idx = int(end_idx)
+        # Skip metadata features for now
+        if name in ["metadata", "spk_embedding"]:
+            continue
+        actual_y_train = y_train[:, int(start_idx) : int(end_idx)]
+        actual_y_test = y_test[:, int(start_idx) : int(end_idx)]
 
-        actual_y_train = y_train[:, start_idx:end_idx]
-        actual_y_test = y_test[:, start_idx:end_idx]
+        if actual_y_train.shape[1] == 1:
+            estimator, param_grid = pick_probe(probe_name + "_classifier")
+        else:
+            estimator, param_grid = pick_probe(probe_name)
 
         GS = GridSearchCV(
-            pick_probe(probe_name)[0],
-            pick_probe(probe_name)[1],
+            estimator,
+            param_grid,
             cv=5,
             n_jobs=-1,
             verbose=0,
@@ -147,19 +151,69 @@ def run_probe(
             GS.fit(X_train_layer, actual_y_train)
             best_model = GS.best_estimator_
             predictions = best_model.predict(X_test_layer)
-            r2 = r2_score(actual_y_test, predictions, multioutput="variance_weighted")
-            raw_r2 = r2_score(
-                actual_y_test, np.zeros_like(actual_y_test), multioutput="raw_values"
-            )
+            if actual_y_train.shape[1] == 1:
+                # Use accuracy for classifier evaluation
+                predictions = predictions.reshape(-1, 1)
+                score = np.mean(predictions == actual_y_test)
+                raw_score = np.nan
+            else:
+                score = r2_score(
+                    actual_y_test, predictions, multioutput="variance_weighted"
+                )
+                raw_score = r2_score(
+                    actual_y_test,
+                    np.zeros_like(actual_y_test),
+                    multioutput="raw_values",
+                )
             layer_result = {
                 "feature_group": name,
                 "layer": layer,
                 "probe": probe_name,
-                "r2_score": r2,
-                "raw_r2": raw_r2,
+                "score": score,
+                "raw_score": raw_score,
             }
             results.append(layer_result)
 
+    for metadata_IDs, name in (
+        ((train_speakerID, test_speakerID), "speakerID"),
+        ((train_bookID, test_bookID), "bookID"),
+    ):
+        train_IDs, test_IDs = metadata_IDs
+        for layer in tqdm(
+            range(model_hidden_states.shape[1]),
+            desc="Metadata Layers",
+            leave=False,
+        ):
+            X_train_layer = X_train[:, layer, :]
+            X_test_layer = X_test[:, layer, :]
+            from sklearn.preprocessing import StandardScaler
+
+            scaler = StandardScaler()
+            X_train_layer = scaler.fit_transform(X_train_layer)
+            X_test_layer = scaler.transform(X_test_layer)
+
+            estimator, param_grid = pick_probe(probe_name + "_classifier")
+
+            GS = GridSearchCV(
+                estimator,
+                param_grid,
+                cv=5,
+                n_jobs=-1,
+                verbose=0,
+            )
+
+            GS.fit(X_train_layer, train_IDs)
+            best_model = GS.best_estimator_
+            predictions = best_model.predict(X_test_layer)
+            accuracy = np.mean(predictions == test_IDs)
+            layer_result = {
+                "feature_group": name,
+                "layer": layer,
+                "probe": probe_name,
+                "score": accuracy,
+                "raw_score": np.nan,
+            }
+            results.append(layer_result)
     return results
 
 
@@ -305,6 +359,8 @@ def main():
         overwrite=overwrite,
         reduce_dnn_word_embedding=True,
         one_hot_encode_syntax=True,
+        one_hot_encode_metadata=False,
+        argmax_ppg=True,
         normalize_features=normalize_features,
     )
 
@@ -326,21 +382,23 @@ def main():
         "SpectralInfo": "Spectral Features",
         "Formants": "Formants",
         "syntax_feature": "Syntactic Features",
-        "ppg_feature": "PPG",
+        "ppg_feature": "Phonetic PosteriorGram",
         "spk_embedding": "Speaker Embedding",
-        "dnn_word_embedding": "DNN Word Embedding",
+        "dnn_word_embedding": "BERT Word Embedding",
         "eGeMAPSv02": "eGeMAPSv02",
+        "bookID": "Book ID",
+        "speakerID": "Speaker ID",
     }
 
     # plot the results
-    results_df["feature_group"] = results_df["feature_group"].map(rename_feature_group)
+    results_df["feature_group"] = results_df["feature_group"].map(
+        lambda x: rename_feature_group.get(x, x)
+    )
 
     all_results_plot = (
         p9.ggplot(
             results_df,
-            p9.aes(
-                x="layer", y="r2_score", color="feature_group", shape="feature_group"
-            ),
+            p9.aes(x="layer", y="score", color="feature_group", shape="feature_group"),
         )
         + p9.geom_line()
         + p9.geom_point()
@@ -373,7 +431,7 @@ def main():
             modelname=modelname,
             seq_sampling="random_frames",
             select_layers=select_layers,
-            overwrite=overwrite,
+            overwrite=False,
             reduce_dnn_word_embedding=False,
             one_hot_encode_syntax=False,
             normalize_features=normalize_features,

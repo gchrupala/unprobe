@@ -378,16 +378,6 @@ def format_data(
                 # Get the middle time of the token in ms as integer and round to the nearest 10 ms
                 token_time = int((token_start_time + token_end_time) / 2 / 10) * 10
 
-                utt_lld_frames = (
-                    utt_lld[
-                        (utt_lld["start_ms"] >= token_time - 20)
-                        & (utt_lld["start_ms"] <= token_time + 20)
-                    ]
-                    .drop(columns=["start", "end", "start_ms"])
-                    .reset_index(drop=True)
-                    .to_numpy()
-                )
-                start_char_idx = ort_alignment.loc[word_idx, "char_idx_start"]
             else:
                 # For audio models, the frame_index corresponds to the time in ms and there's no offset_mapping
                 token_time = frame_index
@@ -402,20 +392,24 @@ def format_data(
                     continue
                 word_idx = word_idx.values[0]
 
-                # Get the corresponding lld rows for current frame index +- 2 frames
-                utt_lld_frames = (
-                    utt_lld[
-                        (utt_lld["start_ms"] >= token_time - 20)
-                        & (utt_lld["start_ms"] <= token_time + 20)
-                    ]
-                    .drop(columns=["start", "end", "start_ms"])
-                    .reset_index(drop=True)
-                    .to_numpy()
-                )
-                # Look up the word start char index
-                start_char_idx = ort_alignment.loc[word_idx, "char_idx_start"]
+            # Get the corresponding lld rows using the lower and upper bounds
 
-            if utt_lld_frames.shape[0] != 5:
+            lowerbound = token_time  # - 20
+            upperbound = token_time  # + 20
+
+            utt_lld_frames = (
+                utt_lld[
+                    (utt_lld["start_ms"] >= lowerbound)
+                    & (utt_lld["start_ms"] <= upperbound)
+                ]
+                .drop(columns=["start", "end", "start_ms"])
+                .reset_index(drop=True)
+                .to_numpy()
+            )
+            # Look up the word start char index
+            start_char_idx = ort_alignment.loc[word_idx, "char_idx_start"]
+
+            if utt_lld_frames.shape[0] != 1:  # Check lower and upper bound for amount
                 continue
             # utt_lld_names = utt_lld.columns.tolist()
 
@@ -505,6 +499,7 @@ def further_process(
     reduce_speaker_embedding: bool = True,
     one_hot_encode_syntax: bool = True,
     one_hot_encode_metadata: bool = True,
+    argmax_ppg: bool = False,
     normalize_features: bool = True,
     n_components: int | float | None = 0.95,
     select_layers: list | None = None,
@@ -610,6 +605,11 @@ def further_process(
                 "Metadata feature not found in input features, skipping one-hot encoding for metadata."
             )
 
+    if argmax_ppg:
+        # We convert the 40 dimensional PPG features into a Phoneme ID by taking the argmax
+        ppg_features = all_input_features_dict["ppg_feature"]
+        ppg_phoneme_ids = np.argmax(ppg_features, axis=1).reshape(-1, 1)
+        all_input_features_dict["ppg_feature"] = ppg_phoneme_ids
     if normalize_features:
         normalize_groups = [
             "eGeMAPSv02",
@@ -668,6 +668,8 @@ def load_data(
     overwrite: bool = False,
     normalize_features: bool = True,
     one_hot_encode_syntax: bool = True,
+    one_hot_encode_metadata: bool = True,
+    argmax_ppg: bool = False,
     reduce_dnn_word_embedding: bool = True,
 ):
     """
@@ -715,6 +717,8 @@ def load_data(
         selected_input_components=INPUT_FEATURE_SELECT_COMPONENTS,
         reduce_dnn_word_embedding=reduce_dnn_word_embedding,
         one_hot_encode_syntax=one_hot_encode_syntax,
+        one_hot_encode_metadata=one_hot_encode_metadata,
+        argmax_ppg=argmax_ppg,
         normalize_features=normalize_features,
         select_layers=select_layers,
     )
@@ -851,7 +855,7 @@ def dimension_reduction(hidden_states: np.ndarray, n_components: int | None = No
     return reduced_hidden_states
 
 
-def get_section_shapes(data_shape: dict) -> list:
+def get_section_shapes(data_shape: dict) -> np.ndarray:
     """
     Get the shape of a specific section from the data_shape dictionary.
     Args:
@@ -878,7 +882,7 @@ def get_section_shapes(data_shape: dict) -> list:
         end_idx += data_shape[section_name][0]
         section_shapes.append([start_idx, end_idx, section_name])
 
-    return section_shapes
+    return np.array(section_shapes)
 
 
 if __name__ == "__main__":

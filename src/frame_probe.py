@@ -969,7 +969,7 @@ def bert_check():
     plot.show()
 
 
-def parse_args():
+def parse_args(use_default=False):
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--librispeech_split",
@@ -1048,7 +1048,11 @@ def parse_args():
         action="store_true",
         help="Whether to run the bottom-up probe analysis.",
     )
-    args = parser.parse_args()
+
+    if use_default:
+        args = parser.parse_args([])
+    else:
+        args = parser.parse_args()
     return args
 
 

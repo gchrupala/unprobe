@@ -618,24 +618,13 @@ def plot_encode_decode_comparison(
         results_dir=RESULTS_ROOT,
         results_file_pattern=f"librispeech-{librispeech_split}/{modelname}/ridge_frame_probe_normalized/bottom-up-layer_*.csv",
     )
-    rename_feature_group = {
-        "SpectralInfo": "Spectral Features",
-        "Formant Characteristics": "Formants",
-        "syntax_feature": "Syntactic Features",
-        "ppg_feature": "PPG",
-        "spk_embedding": "Speaker Embedding",
-        "metadata": "Metadata",
-        "dnn_word_embedding": "DNN Word Embedding",
-        "OtherAcoustic": "Other Acoustic Features",
-        "Formants": "Formants",
-        "eGeMAPSv02": "eGeMAPSv02",
-    }
+
     decoding_probe_results = pd.read_csv(
         f"/home/gshen/work_dir/unprobe/results/decoding_frame_probe_results_{modelname}_{librispeech_split}.csv"
     )
-    # rename r2_score to test_score
+    # rename score to test_score
     decoding_probe_results = decoding_probe_results.rename(
-        columns={"r2_score": "test_score"}
+        columns={"score": "test_score"}
     )
     decoding_probe_results["Probing_Direction"] = "Decoding Probe"
 
@@ -648,9 +637,7 @@ def plot_encode_decode_comparison(
         (bottom_up_results_df["feature_group"] != "all")
         & (bottom_up_results_df["feature_group"] != "random_baseline")
     ]
-    bottom_up_results_df["feature_group"] = bottom_up_results_df["feature_group"].map(
-        lambda x: rename_feature_group.get(x, x)
-    )
+
     # Join the decoding probe results with bottom-up results
     comparison_results_df = pd.concat(
         [bottom_up_results_df, decoding_probe_results]
@@ -664,6 +651,25 @@ def plot_encode_decode_comparison(
     # Drop columns with any NaN values
     comparison_results_df = comparison_results_df.dropna(axis=1, how="any")
 
+    rename_feature_group = {
+        "SpectralInfo": "Spectral Features",
+        "Formant Characteristics": "Formants",
+        "syntax_feature": "Syntactic Features",
+        "ppg_feature": "Phonetic PosteriorGram",
+        "spk_embedding": "Speaker Embedding",
+        "metadata": "Metadata",
+        "dnn_word_embedding": "BERT Word Embedding",
+        "OtherAcoustic": "Other Acoustic Features",
+        "Formants": "Formants",
+        "eGeMAPSv02": "eGeMAPSv02",
+        "SpeakerID-OH": "Speaker ID",
+        "DNN Word Embedding": "BERT Word Embedding",
+        "ChapterID-OH": "Chapter ID",
+        "Book ID": "Chapter ID",
+    }
+    comparison_results_df["feature_group"] = comparison_results_df["feature_group"].map(
+        lambda x: rename_feature_group.get(x, x)
+    )
     # Plot the bottom-up results with a facet_wrap on Probing Direction
     plot = (
         p9.ggplot(comparison_results_df)

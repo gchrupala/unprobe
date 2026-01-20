@@ -396,6 +396,8 @@ def format_data(
 
             lowerbound = token_time  # - 20
             upperbound = token_time  # + 20
+            # Get the number of 10ms frames between lowerbound and upperbound
+            no_frames = (upperbound - lowerbound) // 10 + 1
 
             utt_lld_frames = (
                 utt_lld[
@@ -409,7 +411,7 @@ def format_data(
             # Look up the word start char index
             start_char_idx = ort_alignment.loc[word_idx, "char_idx_start"]
 
-            if utt_lld_frames.shape[0] != 1:  # Check lower and upper bound for amount
+            if utt_lld_frames.shape[0] != no_frames:  # Check if no_frames match
                 continue
             # utt_lld_names = utt_lld.columns.tolist()
 
@@ -498,6 +500,7 @@ def further_process(
     reduce_dnn_word_embedding: bool = True,
     reduce_speaker_embedding: bool = True,
     one_hot_encode_syntax: bool = True,
+    one_hot_encode_syntax_separate: bool = False,
     one_hot_encode_metadata: bool = True,
     argmax_ppg: bool = False,
     normalize_features: bool = True,
@@ -581,6 +584,31 @@ def further_process(
             onehot_encoded_columns.append(onehot_encoded_col)
         syntax_feature_onehot = np.concatenate(onehot_encoded_columns, axis=1)
         all_input_features_dict["syntax_feature"] = syntax_feature_onehot
+    if one_hot_encode_syntax_separate:
+        # One hot encode individual columns within syntax feature like above
+        # But save the one-hot encoded syntax features as separate components in the dictionary
+        # Syntax feature indices mapping
+        syntax_feature_idx = {
+            "POS": 0,
+            "Dependency_Label": 1,
+            # "Constituent_Label": 2,
+            "Tree_Depth": 3,
+            # "Tree_Depth_Normed": 4,
+            "Word_Position": 5,
+            # "Word_Position_Normed": 6,
+        }
+        from sklearn.preprocessing import OneHotEncoder
+
+        syntax_feature_array = np.array(all_input_features_dict["syntax_feature"])
+        encoder = OneHotEncoder(sparse_output=False)
+        for feature_name, idx in syntax_feature_idx.items():
+            original_syntax_feat = syntax_feature_array[:, idx].reshape(-1, 1)
+            onehot_encoded_col = encoder.fit_transform(original_syntax_feat)
+            all_input_features_dict[f"syntax_{feature_name}_OH"] = onehot_encoded_col
+            selected_input_components.append(f"syntax_{feature_name}_OH")
+        # Remove the original syntax_feature from selected_input_components
+        selected_input_components.remove("syntax_feature")
+        del all_input_features_dict["syntax_feature"]
 
     if one_hot_encode_metadata:
         # First check if metadata is in the dictionary
@@ -668,6 +696,7 @@ def load_data(
     overwrite: bool = False,
     normalize_features: bool = True,
     one_hot_encode_syntax: bool = True,
+    one_hot_encode_syntax_separate: bool = False,
     one_hot_encode_metadata: bool = True,
     argmax_ppg: bool = False,
     reduce_dnn_word_embedding: bool = True,
@@ -717,6 +746,7 @@ def load_data(
         selected_input_components=INPUT_FEATURE_SELECT_COMPONENTS,
         reduce_dnn_word_embedding=reduce_dnn_word_embedding,
         one_hot_encode_syntax=one_hot_encode_syntax,
+        one_hot_encode_syntax_separate=one_hot_encode_syntax_separate,
         one_hot_encode_metadata=one_hot_encode_metadata,
         argmax_ppg=argmax_ppg,
         normalize_features=normalize_features,

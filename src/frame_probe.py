@@ -1177,8 +1177,13 @@ def main():
         modelname=modelname,
         seq_sampling="random_frames",
         select_layers=select_layers,
-        normalize_features=normalize_features,
         overwrite=args.overwrite,
+        reduce_dnn_word_embedding=True,
+        one_hot_encode_syntax=True,
+        one_hot_encode_syntax_separate=False,
+        one_hot_encode_metadata=True,
+        argmax_ppg=False,
+        normalize_features=normalize_features,
     )
 
     feature_groups_config = os.path.join(SAVEPATH, args.feature_groups_config)

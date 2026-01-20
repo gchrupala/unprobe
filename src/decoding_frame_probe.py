@@ -1,16 +1,10 @@
-import argparse
-import json
 import logging
 import os
-import pickle
 import sys
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import plotnine as p9
-import seaborn as sns
-from sklearn.linear_model import Ridge
 
 # Import r2 score for regression evaluation
 from sklearn.metrics import r2_score
@@ -392,7 +386,7 @@ def main():
 
     # plot the results
     results_df["feature_group"] = results_df["feature_group"].map(
-        lambda x: rename_feature_group.get(x, x)
+        lambda x: rename_feature_group.get(x, x)  # type: ignore
     )
 
     all_results_plot = (

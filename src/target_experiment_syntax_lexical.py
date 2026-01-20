@@ -2,8 +2,6 @@
 # to investigate how well different feature groups (syntax, lexical) interact in the
 # hidden representations of a DNN model pre-trained with audio data.
 
-import argparse
-import json
 import logging
 import os
 import pickle
@@ -396,7 +394,7 @@ def plot_results_split(librispeech_split, modelname, r=3):
 
     # Set the color mapping programmatically according to config_name
     unique_config_names = results_df["config_name"].unique().tolist()
-    color_palette = plt.get_cmap("tab10").colors
+    color_palette = plt.get_cmap("tab10").colors  # type: ignore
     color_mapping = {
         config_name: color_palette[i % len(color_palette)]
         for i, config_name in enumerate(unique_config_names)
@@ -422,7 +420,7 @@ def plot_results_split(librispeech_split, modelname, r=3):
             color = color_mapping.get(
                 config_name, "#000000"
             )  # Default to black if not found
-            marker = markers_mapping.get(config_name, "o")
+            marker = markers_mapping.get(config_name, "o")  # type: ignore
             plt.plot(
                 group["layer"],
                 group["test_score"],
@@ -447,7 +445,7 @@ def plot_results_split(librispeech_split, modelname, r=3):
         color = color_mapping.get(
             config_name, "#808080"
         )  # Default to gray if not found
-        marker = markers_mapping.get(config_name, "o")
+        marker = markers_mapping.get(config_name, "o")  # type: ignore
         plt.plot(
             group["layer"],
             group["test_score"],

@@ -520,7 +520,10 @@ def further_process(
         if feature_name not in selected_input_components:
             del all_input_features_dict[feature_name]
 
-    if reduce_dnn_word_embedding:
+    if (
+        reduce_dnn_word_embedding
+        and "dnn_word_embedding" in all_input_features_dict.keys()
+    ):
         # Apply dimension reduction to processed_dnn_word_embeddings using PCA so that 90% variance is retained by default
         # Change n_components to an integer or float to specify the number of components or variance ratio to retain
         from sklearn.decomposition import PCA
@@ -541,32 +544,29 @@ def further_process(
         logger.info(
             f"Processed DNN word embeddings shape after PCA: {all_input_features_dict['dnn_word_embedding'].shape}"
         )
-    if reduce_speaker_embedding:
-        if "spk_embedding" not in all_input_features_dict.keys():
-            logger.warning("Speaker embedding feature not found in input features.")
-        else:
-            # Apply dimension reduction to speaker_embedding using PCA so that 90% variance is retained by default
-            # Change n_components to an integer or float to specify the number of components or variance ratio to retain
-            from sklearn.decomposition import PCA
-            from sklearn.preprocessing import StandardScaler
+    if reduce_speaker_embedding and "spk_embedding" in all_input_features_dict.keys():
+        # Apply dimension reduction to speaker_embedding using PCA so that 90% variance is retained by default
+        # Change n_components to an integer or float to specify the number of components or variance ratio to retain
+        from sklearn.decomposition import PCA
+        from sklearn.preprocessing import StandardScaler
 
-            scaler = StandardScaler()
-            all_input_features_dict["spk_embedding"] = scaler.fit_transform(
-                all_input_features_dict["spk_embedding"]
-            )
+        scaler = StandardScaler()
+        all_input_features_dict["spk_embedding"] = scaler.fit_transform(
+            all_input_features_dict["spk_embedding"]
+        )
 
-            pca = PCA(
-                n_components=n_components
-            )  # Use pca to retain 90% variance by default
-            all_input_features_dict["spk_embedding"] = pca.fit_transform(
-                all_input_features_dict["spk_embedding"]
-            )
+        pca = PCA(
+            n_components=n_components
+        )  # Use pca to retain 90% variance by default
+        all_input_features_dict["spk_embedding"] = pca.fit_transform(
+            all_input_features_dict["spk_embedding"]
+        )
 
-            logger.info(
-                f"Processed speaker embeddings shape after PCA: {all_input_features_dict['spk_embedding'].shape}"
-            )
+        logger.info(
+            f"Processed speaker embeddings shape after PCA: {all_input_features_dict['spk_embedding'].shape}"
+        )
 
-    if one_hot_encode_syntax:
+    if one_hot_encode_syntax and "syntax_feature" in all_input_features_dict.keys():
         # One hot encode the individual columns within syntax_feature
         from sklearn.preprocessing import OneHotEncoder
 
@@ -584,6 +584,7 @@ def further_process(
             onehot_encoded_columns.append(onehot_encoded_col)
         syntax_feature_onehot = np.concatenate(onehot_encoded_columns, axis=1)
         all_input_features_dict["syntax_feature"] = syntax_feature_onehot
+
     if one_hot_encode_syntax_separate:
         # One hot encode individual columns within syntax feature like above
         # But save the one-hot encoded syntax features as separate components in the dictionary
@@ -610,7 +611,7 @@ def further_process(
         selected_input_components.remove("syntax_feature")
         del all_input_features_dict["syntax_feature"]
 
-    if one_hot_encode_metadata:
+    if one_hot_encode_metadata and "metadata" in all_input_features_dict.keys():
         # First check if metadata is in the dictionary
         if "metadata" in all_input_features_dict.keys():
             from sklearn.preprocessing import OneHotEncoder
@@ -691,6 +692,7 @@ def further_process(
 def load_data(
     librispeech_split: str = "dev-clean",
     modelname: str = "facebook/wav2vec2-base",
+    selected_input_components: list = INPUT_FEATURE_SELECT_COMPONENTS,
     seq_sampling: str = "random_frames",
     select_layers: list | None = None,
     overwrite: bool = False,
@@ -743,7 +745,7 @@ def load_data(
     feature_sets, model_hidden_states, data_shape = further_process(
         model_hidden_states,
         feature_sets,
-        selected_input_components=INPUT_FEATURE_SELECT_COMPONENTS,
+        selected_input_components=selected_input_components,
         reduce_dnn_word_embedding=reduce_dnn_word_embedding,
         one_hot_encode_syntax=one_hot_encode_syntax,
         one_hot_encode_syntax_separate=one_hot_encode_syntax_separate,

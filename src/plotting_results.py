@@ -620,7 +620,7 @@ def plot_encode_decode_comparison(
     )
 
     decoding_probe_results = pd.read_csv(
-        f"/home/gshen/work_dir/unprobe/results/decoding_frame_probe_results_{modelname}_{librispeech_split}.csv"
+        f"{RESULTS_ROOT}/decoding_frame_probe_results_{modelname}_{librispeech_split}.csv"
     )
     # rename score to test_score
     decoding_probe_results = decoding_probe_results.rename(

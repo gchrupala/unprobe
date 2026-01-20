@@ -1187,13 +1187,13 @@ def main():
     )
 
     feature_groups_config = os.path.join(SAVEPATH, args.feature_groups_config)
+    feature_groups = [(x,) for x in list(data_shape.keys())]
+    with open(os.path.join(SAVEPATH, "default_feature_groups.json"), "w") as f:
+        json.dump(feature_groups, f)
     if not os.path.exists(feature_groups_config):
-        logger.warning(
-            f"Feature groups config {feature_groups_config} not found. Generating and using default groups."
+        raise FileNotFoundError(
+            f"Feature groups config {feature_groups_config} not found. Using default groups."
         )
-        feature_groups = [(x,) for x in list(data_shape.keys())]
-        with open(os.path.join(SAVEPATH, "default_feature_groups.json"), "w") as f:
-            json.dump(feature_groups, f)
     else:
         with open(feature_groups_config, "r") as f:
             feature_groups = json.load(f)

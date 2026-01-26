@@ -220,13 +220,13 @@ def load_dimreduction_files(results_dir: str):
             data=subset_df,
         )
         # Add the baselines with distinct linetypes and colors for clarity
-        + p9.geom_line(
-            p9.aes(x=x_var, y=y_var),
-            alpha=0.7,
-            data=random_baseline,
-            color="black",
-            linetype="dashed",
-        )
+        # + p9.geom_line(
+        #     p9.aes(x=x_var, y=y_var),
+        #     alpha=0.7,
+        #     data=random_baseline,
+        #     color="black",
+        #     linetype="dashed",
+        # )
         + p9.geom_line(
             p9.aes(
                 x=x_var,
@@ -257,7 +257,6 @@ def load_dimreduction_files(results_dir: str):
 
 caption = """\
 Baselines:
-- Black dashed line: Random Baseline (random_baseline)
 - Black dotted line: All Feature Baseline (all_feat_baseline)
 All feature baseline is the best case results with all features intact. The feature group manipulations should be compared against these baselines.
 """
@@ -303,13 +302,13 @@ def plot_results(
             data=subset_df,
         )
         # Add the baselines with distinct linetypes and colors for clarity
-        + p9.geom_line(
-            p9.aes(x="norm_layer", y="test_score"),
-            alpha=0.7,
-            data=random_baseline,
-            color="black",
-            linetype="dashed",
-        )
+        # + p9.geom_line(
+        #     p9.aes(x="norm_layer", y="test_score"),
+        #     alpha=0.7,
+        #     data=random_baseline,
+        #     color="black",
+        #     linetype="dashed",
+        # )
         + p9.geom_line(
             p9.aes(
                 x="norm_layer",
@@ -447,13 +446,13 @@ def plot_all_results(all_results_df: pd.DataFrame, save=False) -> None:
             data=subset_df,
         )
         # Add the baselines with distinct linetypes and colors for clarity
-        + p9.geom_line(
-            p9.aes(x="norm_layer", y="test_score"),
-            alpha=0.7,
-            data=random_baseline,
-            color="black",
-            linetype="dashed",
-        )
+        # + p9.geom_line(
+        #     p9.aes(x="norm_layer", y="test_score"),
+        #     alpha=0.7,
+        #     data=random_baseline,
+        #     color="black",
+        #     linetype="dashed",
+        # )
         + p9.geom_line(
             p9.aes(
                 x="norm_layer",

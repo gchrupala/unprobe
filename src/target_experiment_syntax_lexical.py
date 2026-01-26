@@ -117,7 +117,7 @@ def run_probe(
     modelname,
     estimator,
     param_grid,
-    additive=False,
+    bottom_up=False,
 ):
     results = []
 
@@ -130,7 +130,7 @@ def run_probe(
         logger.info(
             f"Running target experiment with feature set configuration: {config_name}..."
         )
-        if additive:
+        if bottom_up:
             mask_array = np.zeros(feature_sets.shape[1], dtype=bool)
         else:
             mask_array = np.ones(feature_sets.shape[1], dtype=bool)
@@ -140,7 +140,7 @@ def run_probe(
                 int(section_shapes[feature_idx][0]),
                 int(section_shapes[feature_idx][1]),
             )
-            if additive:
+            if bottom_up:
                 mask_array[start_idx:end_idx] = True
             else:
                 mask_array[start_idx:end_idx] = False
@@ -212,6 +212,7 @@ def main():
     normalize_features = args.normalize_features
     overwrite = args.overwrite
     probe_name = args.probe_name
+    bottom_up = True
 
     # 1. We load the data for the experiment
     logger.info("Loading data for target experiment...")
@@ -316,11 +317,15 @@ def main():
             modelname=modelname,
             estimator=estimator,
             param_grid=param_grid,
-            additive=False,
+            bottom_up=bottom_up,
         )
         results.update({name: r_results})
 
         # Save intermediate results after each r
+        if bottom_up:
+            intermediate_savepath = intermediate_savepath.replace(
+                ".pkl", "_bottom_up.pkl"
+            )
         with open(intermediate_savepath, "wb") as f:
             pickle.dump(r_results, f)
         logger.info(f"Intermediate results for {name} saved to {intermediate_savepath}")
@@ -357,17 +362,36 @@ def plot_existing_results(modelname, librispeech_split, results):
     return plot
 
 
-def plot_results_split(librispeech_split, modelname, r=3):
+def plot_results_split(librispeech_split, modelname, r=3, bottom_up=False):
     # Split the big plot into 2x3 grid and use the individual feature names as the header and show the results that has that individual
+    results_file = f"{RESULTS_ROOT}/target_experiment_syntax_lexical/{librispeech_split}_{modelname}_intermediate_r-{r}_results.pkl"
+    baseline_file = f"{RESULTS_ROOT}/target_experiment_syntax_lexical/{librispeech_split}_{modelname}_baseline_results.pkl"
+    if bottom_up:
+        results_file = results_file.replace(".pkl", "_bottom_up.pkl")
+        baseline_file = baseline_file.replace(".pkl", "_bottom_up.pkl")
+        figure_path_all = results_file.replace(".pkl", "_bottom_up.png")
+        figure_path_lexical = results_file.replace(".pkl", "_bottom_up_lexical.png")
+    else:
+        figure_path_all = results_file.replace(".pkl", ".png")
+        figure_path_lexical = results_file.replace(".pkl", "_lexical.png")
+    figure_path_all = figure_path_all.replace(
+        f"{RESULTS_ROOT}/target_experiment_syntax_lexical/",
+        f"{RESULTS_ROOT}/target_experiment_syntax_lexical/figures/",
+    )
+    figure_path_lexical = figure_path_lexical.replace(
+        f"{RESULTS_ROOT}/target_experiment_syntax_lexical/",
+        f"{RESULTS_ROOT}/target_experiment_syntax_lexical/figures/",
+    )
+    os.makedirs(os.path.dirname(figure_path_all), exist_ok=True)
     with open(
-        f"/home/gshen/work_dir/unprobe/results/target_experiment_syntax_lexical/{librispeech_split}_{modelname}_intermediate_r-{r}_results.pkl",
+        results_file,
         "rb",
     ) as f:
         r_results = pickle.load(f)
 
     # Load baseline results
     with open(
-        f"/home/gshen/work_dir/unprobe/results/target_experiment_syntax_lexical/{librispeech_split}_{modelname}_baseline_results.pkl",
+        baseline_file,
         "rb",
     ) as f:
         baseline_results = pickle.load(f)
@@ -389,6 +413,27 @@ def plot_results_split(librispeech_split, modelname, r=3):
             ["all_features", "no_syntax_no_lexical", "no_lexical"]
         )
     ].reset_index(drop=True)
+    # Rename config names for better plotting labels
+    rename_config_name = {
+        "all_features": "Topline -- All Features",
+        "no_syntax_no_lexical": "Syntax & Lexical Features",
+        "no_syntax": "Syntax Features",
+        "no_lexical": "Lexical Features",
+    }
+
+    # Keep the config names not in the rename_config_name as is
+    results_df["config_name"] = results_df["config_name"].apply(
+        lambda x: rename_config_name.get(x, x)
+    )
+    baseline_df["config_name"] = baseline_df["config_name"].apply(
+        lambda x: rename_config_name.get(x, x)
+    )
+
+    # We can remove the topline value from bottom up results since that's not a valid comparison
+    if bottom_up:
+        baseline_df = baseline_df[
+            baseline_df["config_name"] != "Topline -- All Features"
+        ]
 
     import matplotlib.pyplot as plt
 
@@ -401,40 +446,51 @@ def plot_results_split(librispeech_split, modelname, r=3):
     }
     # GIve the baseline lines with special shapes
     markers_mapping = {
-        "all_features": "s",
-        "no_syntax_no_lexical": "X",
-        "no_syntax": "o",
-        "no_lexical": "d",
+        "Topline -- All Features": "s",
+        "Syntax & Lexical Features": "X",
+        "Syntax Features": "o",
+        "Lexical Features": "d",
     }
 
-    # Setup grid
-    plt.figure(figsize=(20, 30))
-    for i, panel_name in enumerate(panels_names):
-        plt.subplot(3, 2, i + 1)
-        subset_df = results_df[
-            (results_df["config_name"].str.contains(panel_name))
-        ].reset_index(drop=True)
-        # Add topline to each subplot
-        subset_df = pd.concat([baseline_df, subset_df], ignore_index=True)
-        for config_name, group in subset_df.groupby("config_name"):
-            color = color_mapping.get(
-                config_name, "#000000"
-            )  # Default to black if not found
-            marker = markers_mapping.get(config_name, "o")  # type: ignore
-            plt.plot(
-                group["layer"],
-                group["test_score"],
-                marker=marker,
-                label=config_name,
-                color=color,
-            )
-        plt.title(f"Removal of {panel_name} + {r - 1} feature")
-        plt.xlabel("Layer")
-        plt.ylabel("Test R² Score")
-        plt.legend()
-    plt.tight_layout()
-    plt.show()
+    # # Setup grid
+    # plt.figure(figsize=(20, 30))
+    # for i, panel_name in enumerate(panels_names):
+    #     plt.subplot(3, 2, i + 1)
+    #     subset_df = results_df[
+    #         (results_df["config_name"].str.contains(panel_name))
+    #     ].reset_index(drop=True)
+    #     # Add topline to each subplot
+    #     subset_df = pd.concat([baseline_df, subset_df], ignore_index=True)
+    #     for config_name, group in subset_df.groupby("config_name"):
+    #         color = color_mapping.get(
+    #             config_name, "#000000"
+    #         )  # Default to black if not found
+    #         marker = markers_mapping.get(config_name, "o")  # type: ignore
+    #         plt.plot(
+    #             group["layer"],
+    #             group["test_score"],
+    #             marker=marker,
+    #             label=config_name,
+    #             color=color,
+    #         )
+    #     if bottom_up:
+    #         title = f"Bottom-Up Addition of {panel_name} + {r - 1} feature"
+    #     else:
+    #         title = f"Top-Down Removal of {panel_name} + {r - 1} feature"
+    #     plt.title(title)
+    #     plt.xlabel("Layer")
+    #     plt.ylabel("Test R² Score")
+    #     plt.legend()
+    # plt.tight_layout()
+    # # plt.show()
 
+    # plt.savefig(figure_path_all, dpi=300)
+    # # Clear the figure to avoid overlap
+    # plt.clf()
+    # logger.info(f"Saved figure to {figure_path_all}")
+
+    if r == 1:
+        return
     # Make a plot specifically focused on removals involving lexical features
     plt.figure(figsize=(10, 8))
     subset_df = results_df[
@@ -453,12 +509,123 @@ def plot_results_split(librispeech_split, modelname, r=3):
             label=config_name,
             color=color,
         )
-    plt.title(f"Removals Involving Lexical Features + {r - 1} Feature(s)")
+    # Set y-axis limits to focus on the relevant range
+    plt.ylim(0, 0.4)
+    if bottom_up:
+        plt.title(f"Additions Involving Lexical Features + {r - 1} Feature(s)")
+    else:
+        plt.title(f"Removals Involving Lexical Features + {r - 1} Feature(s)")
     plt.xlabel("Layer")
     plt.ylabel("Test R² Score")
     plt.legend()
     plt.tight_layout()
-    plt.show()
+    # plt.show()
+    plt.savefig(figure_path_lexical, dpi=300)
+    logger.info(f"Saved figure to {figure_path_lexical}")
+    plt.clf()
+
+
+def save_figs_results_split():
+    for bottom_up in (True, False):
+        for r in range(1, 5):
+            for modelname in ["wav2vec2-base", "bert-base-uncased"]:
+                plot_results_split(
+                    "train-clean-100", modelname, r=r, bottom_up=bottom_up
+                )
+    bottom_up = True
+    librispeech_split = "train-clean-100"
+    modelname = "wav2vec2-base"
+    r = 3
+
+
+def check_lexical_information():
+    """Use the lexical information to predict syntactic information directly one-by-one and save results to a csv file"""
+    librispeech_split = "train-clean-100"
+    modelname = "wav2vec2-base"
+    select_layers = None
+    normalize_features = True
+    overwrite = False
+
+    # 1. We load the data for the experiment
+    logger.info("Loading data for target experiment...")
+    feature_sets, _, _, data_shape = load_data(
+        librispeech_split=librispeech_split,
+        modelname=modelname,
+        seq_sampling="random_frames",
+        select_layers=select_layers,
+        overwrite=overwrite,
+        reduce_dnn_word_embedding=True,
+        one_hot_encode_syntax=False,
+        one_hot_encode_syntax_separate=False,
+        one_hot_encode_metadata=True,
+        argmax_ppg=False,
+        normalize_features=normalize_features,
+    )
+    syntax_feature_idx = {
+        "POS": 0,
+        "Dependency_Label": 1,
+        "Constituent_Label": 2,
+        "Tree_Depth": 3,
+        # "Tree_Depth_Normed": 4,
+        "Word_Position": 5,
+        # "Word_Position_Normed": 6,
+    }
+
+    section_shapes = get_section_shapes(data_shape)
+
+    lexical_information = feature_sets[
+        :, int(section_shapes[3, 0]) : int(section_shapes[3, 1])
+    ]
+
+    syntax_features = feature_sets[
+        :, int(section_shapes[1, 0]) : int(section_shapes[1, 1])
+    ]
+
+    results = []
+
+    for syntax_feature_name, idx in tqdm(
+        syntax_feature_idx.items(), desc="Syntax Features", position=0
+    ):
+        syntax_feature = syntax_features[:, idx]
+
+        # Turn syntax_feature into class labels
+        syntax_feature = syntax_feature.astype(int)
+
+        estimator, param_grid = pick_probe(
+            probe_name="ridge_classifier"
+        )  # Use classifier for syntax features
+        X_train, X_test, y_train, y_test = train_test_split(
+            lexical_information,
+            syntax_feature,
+            test_size=0.2,
+            random_state=42,
+        )
+        GS = GridSearchCV(
+            estimator,
+            param_grid,
+            cv=5,
+            n_jobs=-1,
+            verbose=0,
+        )
+        GS.fit(X_train, y_train)
+        train_score = GS.score(X_train, y_train)
+        test_score = GS.score(X_test, y_test)
+
+        results.append(
+            {
+                "syntax_feature": syntax_feature_name,
+                "train_score": train_score,
+                "test_score": test_score,
+                "best_params": GS.best_params_,
+            }
+        )
+    results_df = pd.DataFrame(results)
+    results_savepath = os.path.join(
+        RESULTS_ROOT,
+        "word_embedding_to_syntax_results.csv",
+    )
+    results_df.to_csv(results_savepath, index=False)
+    logger.info(f"Lexical to syntax results saved to {results_savepath}")
 
 
 if __name__ == "__main__":

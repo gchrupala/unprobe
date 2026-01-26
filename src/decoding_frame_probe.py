@@ -1,5 +1,6 @@
 import logging
 import os
+import pickle
 import sys
 
 import numpy as np
@@ -369,7 +370,58 @@ def main():
         filename_timestamp=filename_timestamp,
         probe_name=probe_name,
     )
+    # Save results
+    with open(
+        f"{RESULTS_ROOT}/decoding_frame_probe_results_{modelname}_{librispeech_split}.pickle",
+        "wb",
+    ) as f:
+        pickle.dump(results, f)
 
+    all_results_plot = plot_normal_results(modelname, librispeech_split)
+
+    if syntax_deep_dive_flag is True:
+        logger.info("Running syntax deep dive analysis...")
+
+        # Switch feature loading
+        feature_sets, model_hidden_states, filename_timestamp, data_shape = load_data(
+            librispeech_split=librispeech_split,
+            modelname=modelname,
+            seq_sampling="random_frames",
+            select_layers=select_layers,
+            overwrite=False,
+            reduce_dnn_word_embedding=False,
+            one_hot_encode_syntax=False,
+            normalize_features=normalize_features,
+        )
+
+        probeclassifier_name = probe_name + "_classifier"
+
+        syntax_results = syntax_deep_dive(
+            model_hidden_states=model_hidden_states,
+            feature_sets=feature_sets,
+            data_shape=data_shape,
+            filename_timestamp=filename_timestamp,
+            probeclassifier_name=probeclassifier_name,
+        )
+        # Save syntax results
+        with open(
+            f"{RESULTS_ROOT}/decoding_frame_probe_syntax_deep_dive_{modelname}_{librispeech_split}.pickle",
+            "wb",
+        ) as f:
+            pickle.dump(syntax_results, f)
+
+        syntax_results_plot = plot_syntax_results(modelname, librispeech_split)
+
+        all_results_plot.show()
+        syntax_results_plot.show()
+
+
+def plot_normal_results(modelname: str, librispeech_split: str):
+    with open(
+        f"{RESULTS_ROOT}/decoding_frame_probe_results_{modelname}_{librispeech_split}.pickle",
+        "rb",
+    ) as f:
+        results = pickle.load(f)
     results_df = pd.DataFrame(results)
     rename_feature_group = {
         "OtherAcoustic": "Other Acoustic Features",
@@ -416,87 +468,73 @@ def main():
         f"{RESULTS_ROOT}/decoding_frame_probe_results_{modelname}_{librispeech_split}.csv",
         index=False,
     )
-    if syntax_deep_dive_flag is True:
-        logger.info("Running syntax deep dive analysis...")
 
-        # Switch feature loading
-        feature_sets, model_hidden_states, filename_timestamp, data_shape = load_data(
-            librispeech_split=librispeech_split,
-            modelname=modelname,
-            seq_sampling="random_frames",
-            select_layers=select_layers,
-            overwrite=False,
-            reduce_dnn_word_embedding=False,
-            one_hot_encode_syntax=False,
-            normalize_features=normalize_features,
+    return all_results_plot
+
+
+def plot_syntax_results(modelname: str, librispeech_split: str):
+    with open(
+        f"{RESULTS_ROOT}/decoding_frame_probe_syntax_deep_dive_{modelname}_{librispeech_split}.pickle",
+        "rb",
+    ) as f:
+        syntax_results = pickle.load(f)
+
+    # plot syntax deep dive results
+    syntax_results_df = pd.DataFrame(syntax_results)
+
+    syntax_results_baseline = syntax_results_df[
+        syntax_results_df["layer"] == -1
+    ].reset_index(drop=True)
+    # Rename feature groups for better plotting
+    syntax_results_baseline["feature_group"] = syntax_results_baseline[
+        "feature_group"
+    ].str.replace("_baseline", "")
+    syntax_results_df = syntax_results_df[syntax_results_df["layer"] != -1]
+
+    syntax_results_plot = (
+        p9.ggplot(
+            syntax_results_df,
+            p9.aes(
+                x="layer",
+                y="accuracy",
+                color="feature_group",
+                shape="feature_group",
+            ),
         )
-
-        probeclassifier_name = probe_name + "_classifier"
-
-        syntax_results = syntax_deep_dive(
-            model_hidden_states=model_hidden_states,
-            feature_sets=feature_sets,
-            data_shape=data_shape,
-            filename_timestamp=filename_timestamp,
-            probeclassifier_name=probeclassifier_name,
+        + p9.geom_line()
+        + p9.geom_point()
+        + p9.ggtitle(
+            f"Decoding Frame Probe Syntax Deep Dive Results for {modelname} on {librispeech_split}"
         )
-
-        # plot syntax deep dive results
-        syntax_results_df = pd.DataFrame(syntax_results)
-
-        syntax_results_baseline = syntax_results_df[
-            syntax_results_df["layer"] == -1
-        ].reset_index(drop=True)
-        # Rename feature groups for better plotting
-        syntax_results_baseline["feature_group"] = syntax_results_baseline[
-            "feature_group"
-        ].str.replace("_baseline", "")
-        syntax_results_df = syntax_results_df[syntax_results_df["layer"] != -1]
-
-        syntax_results_plot = (
-            p9.ggplot(
-                syntax_results_df,
-                p9.aes(
-                    x="layer",
-                    y="accuracy",
-                    color="feature_group",
-                    shape="feature_group",
-                ),
-            )
-            + p9.geom_line()
-            + p9.geom_point()
-            + p9.ggtitle(
-                f"Decoding Frame Probe Syntax Deep Dive Results for {modelname} on {librispeech_split}"
-            )
-            + p9.xlab("Layer")
-            + p9.ylab("Probing Accuracy")
-            + p9.theme(legend_position="right")
-            + p9.scale_color_discrete(name="Syntax Feature")
-            + p9.scale_shape_discrete(name="Syntax Feature")
-            + p9.theme(figure_size=(10, 6), dpi=300)
-            + p9.geom_hline(
-                p9.aes(
-                    yintercept="accuracy",
-                    color="feature_group",
-                ),
-                data=syntax_results_baseline,
-                show_legend=True,
-                linetype="dashed",
-            )
+        + p9.xlab("Layer")
+        + p9.ylab("Probing Accuracy")
+        + p9.theme(legend_position="right")
+        + p9.scale_color_discrete(name="Syntax Feature")
+        + p9.scale_shape_discrete(name="Syntax Feature")
+        + p9.theme(figure_size=(10, 6), dpi=300)
+        # Set the y-axis limits to 0 to 1
+        + p9.ylim(0, 0.8)
+        + p9.geom_hline(
+            p9.aes(
+                yintercept="accuracy",
+                color="feature_group",
+            ),
+            data=syntax_results_baseline,
+            show_legend=True,
+            linetype="dashed",
         )
-        # Save the plot
-        syntax_results_plot.save(
-            filename=f"{RESULTS_ROOT}/figures/decoding_frame_probe_syntax_deep_dive_{modelname}_{librispeech_split}.png",
-            bbox_inches="tight",
-        )
+    )
+    # Save the plot
+    syntax_results_plot.save(
+        filename=f"{RESULTS_ROOT}/figures/decoding_frame_probe_syntax_deep_dive_{modelname}_{librispeech_split}.png",
+        bbox_inches="tight",
+    )
 
-        syntax_results_df.to_csv(
-            f"{RESULTS_ROOT}/decoding_frame_probe_syntax_deep_dive_{modelname}_{librispeech_split}.csv",
-            index=False,
-        )
-
-        all_results_plot.show()
-        syntax_results_plot.show()
+    syntax_results_df.to_csv(
+        f"{RESULTS_ROOT}/decoding_frame_probe_syntax_deep_dive_{modelname}_{librispeech_split}.csv",
+        index=False,
+    )
+    return syntax_results_plot
 
 
 if __name__ == "__main__":

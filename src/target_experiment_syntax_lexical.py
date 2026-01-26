@@ -611,14 +611,21 @@ def check_lexical_information():
         train_score = GS.score(X_train, y_train)
         test_score = GS.score(X_test, y_test)
 
+        # Establish a baseline by predicting the majority class
+        classes_, counts = np.unique(y_train, return_counts=True)
+        majority_class = classes_[np.argmax(counts)]
+        baseline_test_accuracy = np.mean(y_test == majority_class)
+
         results.append(
             {
                 "syntax_feature": syntax_feature_name,
                 "train_score": train_score,
                 "test_score": test_score,
                 "best_params": GS.best_params_,
+                "baseline_test_accuracy": baseline_test_accuracy,
             }
         )
+
     results_df = pd.DataFrame(results)
     results_savepath = os.path.join(
         RESULTS_ROOT,

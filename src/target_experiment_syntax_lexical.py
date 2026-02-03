@@ -14,8 +14,17 @@ import plotnine as p9
 from sklearn.model_selection import GridSearchCV, train_test_split
 from tqdm.auto import tqdm, trange
 
-from frame_probe import parse_args, pick_probe, r2_score
 from load_probe_data import get_section_shapes, load_data
+from utils import (
+    ALIGNMENT_ROOT,
+    DATASET_ROOT,
+    PROJECT_ROOT,
+    RESULTS_ROOT,
+    SAVEPATH,
+    parse_args,
+    pick_probe,
+    r2_score,
+)
 
 # Set up logger with time, name, level, and message
 logging.basicConfig(
@@ -27,29 +36,6 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-
-
-# Get the hostname of the machine running the code
-hostname = os.uname().nodename
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-
-
-# Setting up environmental variables depending on the cluster this code is running on
-
-if "snellius" in hostname:
-    # If running on Snellius, use the Snellius dataset root
-    DATASET_ROOT = os.path.realpath("/projects/prjs1586/corpora/LibriSpeech")
-    ALIGNMENT_ROOT = DATASET_ROOT.replace("LibriSpeech", "librispeech_textgrids")
-    SAVEPATH = "/projects/prjs1586/experimental_data"
-    RESULTS_ROOT = "/projects/prjs1586/experimental_results"
-
-else:
-    # If running on local machine, use the local dataset root
-    DATASET_ROOT = os.path.realpath("/corpora/LibriSpeech/LibriSpeech")
-    # ALIGNMENT_ROOT = os.path.expanduser(f"~/corpora/librispeech_alignment/")
-    ALIGNMENT_ROOT = os.path.join(PROJECT_ROOT, "data")
-    SAVEPATH = os.path.join(PROJECT_ROOT, "experimental_data")
-    RESULTS_ROOT = os.path.join(PROJECT_ROOT, "results")
 
 
 def plotting_results(results, modelname, librispeech_split):

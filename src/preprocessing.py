@@ -397,6 +397,13 @@ def extract_syntax_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]
             for j, node in enumerate(node_location_in_tree):
                 path_from_root[j] = node
 
+            # In addition to labels associated with the token
+            # We also add the label of the head of the token
+            # Along with the index of the head in the sentence
+
+            word_head = word.head
+            word_head_idx = word_head.i
+
             word_features = np.array(
                 [
                     word.pos,
@@ -406,6 +413,9 @@ def extract_syntax_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]
                     node_depth_in_tree_norm,
                     word_location_in_sentence,
                     word_location_in_sentence_norm,
+                    word_head.pos,
+                    word_head.dep,
+                    word_head_idx,
                 ]
                 # + path_from_root,
             )
@@ -415,11 +425,27 @@ def extract_syntax_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]
             word_start = word.idx
             word_end = word.idx + len(word.text)
             offset_mapping.append((word_start, word_end))
+        feature_names = [
+            "pos",
+            "dep",
+            "constituent_label",
+            "node_depth_in_tree",
+            "node_depth_in_tree_norm",
+            "word_location_in_sentence",
+            "word_location_in_sentence_norm",
+            "word_head_pos",
+            "word_head_dep",
+            "word_head_idx",
+        ]
+        assert len(feature_names) == len(syntax_feats[0]), (
+            "Feature names length does not match syntax features length"
+        )
 
         all_syntax_feats[fileID] = {
             "features": np.array(syntax_feats),
             "offset_mapping": offset_mapping,
             "words": [word.text for word in sent],
+            "names": feature_names,
         }
 
     return all_syntax_feats

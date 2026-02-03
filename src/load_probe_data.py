@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from utils import SAVEPATH, get_opensmile_feature_names
+
 # Set up logger with time, name, level, and message
 logging.basicConfig(
     level=logging.INFO,
@@ -19,28 +21,6 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-
-# Get the hostname of the machine running the code
-hostname = os.uname().nodename
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-
-
-# Setting up environmental variables depending on the cluster this code is running on
-
-if "snellius" in hostname:
-    # If running on Snellius, use the Snellius dataset root
-    DATASET_ROOT = os.path.realpath("/projects/prjs1586/corpora/LibriSpeech")
-    ALIGNMENT_ROOT = DATASET_ROOT.replace("LibriSpeech", "librispeech_textgrids")
-    SAVEPATH = "/projects/prjs1586/experimental_data"
-
-else:
-    # If running on local machine, use the local dataset root
-    DATASET_ROOT = os.path.realpath("/corpora/LibriSpeech/LibriSpeech")
-    # ALIGNMENT_ROOT = os.path.expanduser(f"~/corpora/librispeech_alignment/")
-    ALIGNMENT_ROOT = os.path.join(PROJECT_ROOT, "data")
-    SAVEPATH = os.path.join(PROJECT_ROOT, "experimental_data")
-
-ACOUSTIC_FEATURE_NAMES = []
 
 INPUT_FEATURE_SELECT_COMPONENTS = [
     # "OtherAcoustic",
@@ -57,77 +37,10 @@ INPUT_FEATURE_SELECT_COMPONENTS = [
 ]
 
 
-def get_opensmile_feature_names():
-    import opensmile
-
-    feature_level = opensmile.FeatureLevel.LowLevelDescriptors
-    smile = opensmile.Smile(
-        feature_set="eGeMAPSv02",
-        feature_level=feature_level,
-        verbose=True,
-        num_workers=8,
-        sampling_rate=16000,
-        resample=True,
-    )
-
-    feature_names = smile.feature_names
-
-    # feature_groups = {
-    #     "OtherAcoustic": [
-    #         "Loudness_sma3",
-    #         "F0semitoneFrom27.5Hz_sma3nz",
-    #         "jitterLocal_sma3nz",
-    #         "shimmerLocaldB_sma3nz",
-    #         "HNRdBACF_sma3nz",
-    #         "logRelF0-H1-H2_sma3nz",
-    #         "logRelF0-H1-A3_sma3nz",
-    #     ],
-    #     "SpectralInfo": [
-    #         "alphaRatio_sma3",
-    #         "hammarbergIndex_sma3",
-    #         "slope0-500_sma3",
-    #         "slope500-1500_sma3",
-    #         "spectralFlux_sma3",
-    #         "mfcc1_sma3",
-    #         "mfcc2_sma3",
-    #         "mfcc3_sma3",
-    #         "mfcc4_sma3",
-    #     ],
-    #     "Formants": [
-    #         "F1frequency_sma3nz",
-    #         "F1bandwidth_sma3nz",
-    #         "F1amplitudeLogRelF0_sma3nz",
-    #         "F2frequency_sma3nz",
-    #         "F2bandwidth_sma3nz",
-    #         "F2amplitudeLogRelF0_sma3nz",
-    #         "F3frequency_sma3nz",
-    #         "F3bandwidth_sma3nz",
-    #         "F3amplitudeLogRelF0_sma3nz",
-    #     ],
-    # }
-
-    feature_groups = {
-        "eGeMAPSv02": feature_names,
-    }
-
-    # Grab the corresponding index for each feature within each group
-    grouped_feature_indices = {}
-    for group_name, features in feature_groups.items():
-        indices = [
-            feature_names.index(feat) for feat in features if feat in feature_names
-        ]
-        grouped_feature_indices[group_name] = {
-            "feature_names": features,
-            "indices": indices,
-        }
-
-    return grouped_feature_indices
-
-
 opensmile_feature_names_json = f"{SAVEPATH}/opensmile_feature_names.json"
 if os.path.exists(opensmile_feature_names_json):
     with open(opensmile_feature_names_json, "r") as f:
-        ACOUSTIC_FEATURE_NAMES = json.load(f)
+        ACOUSTIC_FEATURE_NAMES: dict = json.load(f)
     logger.info("Loaded opensmile feature names from JSON file")
 else:
     ACOUSTIC_FEATURE_NAMES = get_opensmile_feature_names()
@@ -287,6 +200,7 @@ def format_data(
         # syntax_feats = transcription.loc[fileID]["syntax_feats"]
         syntax_feats = all_syntax_features[fileID]["features"]
         syntax_feats_offset_mapping = all_syntax_features[fileID]["offset_mapping"]
+
         # sent = transcription.loc[fileID]["words"]
 
         utt_lld = lld.loc[fileID].reset_index()
@@ -486,6 +400,8 @@ def format_data(
     all_input_features_dict["dnn_word_embedding"] = np.array(
         all_input_features_dict["dnn_word_embedding"]
     )
+    syntax_feats_names = all_syntax_features[valid_fileIDs[-1]]["names"]
+    all_input_features_dict["syntax_feature_names"] = syntax_feats_names
     logger.info(
         f"Processed DNN word embeddings shape before PCA: {all_input_features_dict['dnn_word_embedding'].shape}"
     )
@@ -502,6 +418,7 @@ def further_process(
     one_hot_encode_syntax: bool = True,
     one_hot_encode_syntax_separate: bool = False,
     one_hot_encode_metadata: bool = True,
+    add_additional_syntax_features: bool = False,
     argmax_ppg: bool = False,
     normalize_features: bool = True,
     n_components: int | float | None = 0.95,
@@ -514,11 +431,6 @@ def further_process(
         all_input_features_dict[feature_name] = np.array(
             all_input_features_dict[feature_name]
         )
-
-    # Remove features not in selected_input_components
-    for feature_name in list(all_input_features_dict.keys()):
-        if feature_name not in selected_input_components:
-            del all_input_features_dict[feature_name]
 
     if (
         reduce_dnn_word_embedding
@@ -572,10 +484,19 @@ def further_process(
 
         # mask out the normed features for one-hot encoding
         syntax_feature_array = np.array(all_input_features_dict["syntax_feature"])
-        syntax_feature_mask = np.ones_like(syntax_feature_array, dtype=bool)
+        syntax_feature_names = all_input_features_dict["syntax_feature_names"]
+        # Get the index of the feature name where they contain any of the
+        # component in the string content
+        components = ["depth", "location", "idx"]
+        syntax_to_onehot_idx = []
+        for i, feature_name in enumerate(syntax_feature_names):
+            if any(comp in feature_name.lower() for comp in components):
+                syntax_to_onehot_idx.append(i)
+        syntax_to_onehot_idx = np.array(syntax_to_onehot_idx)
+        syntax_feature_mask = np.ones_like(syntax_feature_names, dtype=bool)
         # Floating point features to be excluded from one-hot encoding
-        syntax_feature_mask[:, -4:] = False
-        syntax_feature_array = syntax_feature_array[:, syntax_feature_mask[0]]
+        syntax_feature_mask[syntax_to_onehot_idx] = False
+        syntax_feature_array = syntax_feature_array[:, syntax_feature_mask]
         encoder = OneHotEncoder(sparse_output=False)
         onehot_encoded_columns = []
         for original_syntax_feat in syntax_feature_array.T:
@@ -584,6 +505,23 @@ def further_process(
             onehot_encoded_columns.append(onehot_encoded_col)
         syntax_feature_onehot = np.concatenate(onehot_encoded_columns, axis=1)
         all_input_features_dict["syntax_feature"] = syntax_feature_onehot
+    if (
+        add_additional_syntax_features
+        and "syntax_feature" in all_input_features_dict.keys()
+    ):
+        # Use word_head_idx to look up the word embedding of the head
+        syntax_feature_names = all_input_features_dict["syntax_feature_names"]
+
+        word_head_idx_idx = syntax_feature_names.index("word_head_idx")
+        word_head_indices = all_input_features_dict["syntax_feature"][
+            :, word_head_idx_idx
+        ].astype(int)
+
+        # Look up the corresponding dnn_word_embedding for each head index
+        dnn_word_embeddings = all_input_features_dict["dnn_word_embedding"]
+        head_word_embeddings = dnn_word_embeddings[word_head_indices]
+        all_input_features_dict["syntax_head_word_embedding"] = head_word_embeddings
+        selected_input_components.append("syntax_head_word_embedding")
 
     if one_hot_encode_syntax_separate:
         # One hot encode individual columns within syntax feature like above
@@ -654,6 +592,11 @@ def further_process(
             # Replace the normalized features back to feature_sets
             all_input_features_dict[group_name] = feature_sets_normalized
             logger.info(f"Input features {group_name} normalized.")
+
+    # Remove features not in selected_input_components
+    for feature_name in list(all_input_features_dict.keys()):
+        if feature_name not in selected_input_components:
+            del all_input_features_dict[feature_name]
 
     logger.info("Concatenating input features...")
     logger.info(f"Input features include: {selected_input_components}")
@@ -742,7 +685,7 @@ def load_data(
             pickle.dump((feature_sets, model_hidden_states, filename_timestamp), f)
         logger.info(f"Saved formatted data to {formatted_data_path}")
 
-    feature_sets, model_hidden_states, data_shape = further_process(
+    processed_feature_sets, processed_model_hidden_states, data_shape = further_process(
         model_hidden_states,
         feature_sets,
         selected_input_components=selected_input_components,
@@ -755,7 +698,12 @@ def load_data(
         select_layers=select_layers,
     )
 
-    return feature_sets, model_hidden_states, filename_timestamp, data_shape
+    return (
+        processed_feature_sets,
+        processed_model_hidden_states,
+        filename_timestamp,
+        data_shape,
+    )
 
 
 def sanity_check_pca():
@@ -921,7 +869,7 @@ if __name__ == "__main__":
     librispeech_split = "dev-clean"
     modelname = "facebook/hubert-base-ls960"
     modelname = "facebook/wav2vec2-base"
-    modelname = "google-bert/bert-base-uncased"
+    # modelname = "google-bert/bert-base-uncased"
     seq_sampling = "random_frames"
     overwrite = False
     select_layers = [0, 6, 12]
@@ -929,11 +877,4 @@ if __name__ == "__main__":
         librispeech_split=librispeech_split,
         modelname=modelname,
         seq_sampling=seq_sampling,
-    )  # For testing purposes
-    reduced_Y = dimension_reduction(
-        model_hidden_states, n_components=100
-    )  # Reduce to 100 dimensions
-    print(data_shape)
-    print(f"Processed X shape: {feature_sets.shape}")
-    print(f"Processed Y shape: {model_hidden_states.shape}")
-    print(f"Reduced Y shape: {reduced_Y.shape}")
+    )

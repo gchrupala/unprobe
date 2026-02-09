@@ -313,6 +313,83 @@ def run_topdown_probe(
     return results
 
 
+def syntax_decoder_probe_baseline():
+    # We load the data and see how much syntax we can decode with just
+    # the word embedding itself
+
+    input_feature_select_components = ["word_embedding", "syntax_feature"]
+
+    feature_sets, model_hidden_states, filename_timestamp, data_shape = load_data(
+        librispeech_split="train-clean-100",
+        selected_input_components=input_feature_select_components,
+        one_hot_encode_syntax_separate=True,
+        one_hot_encode_metadata=False,
+        one_hot_encode_syntax=False,
+        argmax_ppg=False,
+        normalize_features=False,
+        reduce_dnn_word_embedding=False,
+    )
+
+    # Turn syntax_features into class labels by taking the argmax across the syntax feature dimensions
+    section_shapes = get_section_shapes(data_shape=data_shape)
+    lookup_dict = {}
+    for start, end, name in section_shapes:
+        if "syntax_" in name:
+            syntax_features = feature_sets[:, int(start) : int(end)]
+            class_labels = np.argmax(syntax_features, axis=1)
+            lookup_dict[name] = class_labels
+
+    # Use a probe classifier to see how well we can decode the syntax features using just the word embedding features
+    results = []
+    for name in lookup_dict:
+        estimator, param_grid = pick_probe(probe_name="ridge_classifier")
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            feature_sets[
+                :, : int(section_shapes[0][1])
+            ],  # Only use word embedding features
+            lookup_dict[name],
+            test_size=0.2,
+            random_state=42,
+        )
+        grid_search = GridSearchCV(
+            estimator=estimator,
+            param_grid=param_grid,
+            scoring="accuracy",
+            cv=5,
+            n_jobs=-1,
+            verbose=0,
+        )
+
+        grid_search.fit(X_train, y_train)
+        best_model = grid_search.best_estimator_
+
+        accuracy = best_model.score(X_test, y_test)
+
+        _, count = np.unique(y_test, return_counts=1)  # type: ignore
+        majority_baseline = float(max(count) / sum(count))
+
+        results.append(
+            {
+                "feature_name": name,
+                "best_params": grid_search.best_params_,
+                "test_score": accuracy,
+                "baseline": majority_baseline,
+            }
+        )
+    # Save the results to a text file
+    output_file = os.path.join(
+        RESULTS_ROOT, "syntax_feat_removal", "syntax_decoder_probe_baseline_results.txt"
+    )
+    with open(output_file, "w") as f:
+        for result in results:
+            f.write(f"Feature Name: {result['feature_name']}\n")
+            f.write(f"Best Params: {result['best_params']}\n")
+            f.write(f"Test Accuracy: {result['test_score']}\n")
+            f.write(f"Majority Baseline: {result['baseline']}\n")
+            f.write("\n")
+
+
 def main():
     args = parse_args()
     librispeech_split = args.librispeech_split

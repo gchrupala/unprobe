@@ -27,14 +27,17 @@ def plot_helper(
     comparison_results_df: pd.DataFrame,
     facet: str = "modelname",
     color_mapping: Union[dict, None] = None,
+    x_col: str = "normalized_layer",
+    y_col: str = "test_score",
 ) -> p9.ggplot:
+    y_lim = max(results_df[y_col].max(), comparison_results_df[y_col].max()) * 1.1
     p = (
         p9.ggplot()
         + p9.geom_line(
             data=results_df,
             mapping=p9.aes(
-                x="normalized_layer",
-                y="test_score",
+                x=x_col,
+                y=y_col,
                 color="config_name",
                 group="config_name",
             ),
@@ -42,29 +45,36 @@ def plot_helper(
         + p9.geom_point(
             data=results_df,
             mapping=p9.aes(
-                x="normalized_layer",
-                y="test_score",
+                x=x_col,
+                y=y_col,
                 color="config_name",
                 shape="config_name",
             ),
         )
         + p9.geom_line(
             data=comparison_results_df,
-            mapping=p9.aes(x="normalized_layer", y="test_score"),
+            mapping=p9.aes(x=x_col, y=y_col),
             linetype="dashed",
             color="grey",
             size=1,
         )
         + p9.facet_wrap(facet)
         + p9.theme_minimal()
-        # Set the x-axis to be from 0 to 1 with breaks at every 0.25
-        + p9.scale_x_continuous(breaks=(0, 0.25, 0.5, 0.75, 1))
         # Set y-axis to 0 to 0.5
-        + p9.scale_y_continuous(limits=(0, results_df["test_score"].max() * 1.1))
+        + p9.scale_y_continuous(limits=(0, y_lim))
         + p9.theme(figure_size=(8, 6), dpi=300)
     )
     if color_mapping is not None:
         p += p9.scale_color_manual(values=color_mapping)
+    if x_col == "normalized_layer":
+        # Set the x-axis to be from 0 to 1 with breaks at every 0.25
+        p += p9.scale_x_continuous(breaks=(0, 0.25, 0.5, 0.75, 1))
+    else:
+        p += p9.scale_x_continuous(
+            breaks=np.arange(
+                results_df["layer"].min(), results_df["layer"].max() + 1, 3
+            )
+        )
     return p
 
 
@@ -211,6 +221,8 @@ def plot_results_syntax_lexical(all_results_df: pd.DataFrame):
         shape="Feature Group",
     )
 
+    p.save(os.path.join(FIGURES_ROOT, f"{mode}_syntax_lexical_results.png"))
+
     p.show()
 
 
@@ -273,6 +285,7 @@ def plot_results_acoustic_phonetic_speaker(all_results_df: pd.DataFrame):
         color="Feature Group",
         shape="Feature Group",
     )
+    p.save(os.path.join(FIGURES_ROOT, f"{mode}_acoustic_speaker_id_results.png"))
     p.show()
 
     target_configs = [
@@ -306,14 +319,126 @@ def plot_results_acoustic_phonetic_speaker(all_results_df: pd.DataFrame):
         color="Feature Group",
         shape="Feature Group",
     )
+    p.save(os.path.join(FIGURES_ROOT, f"{mode}_phonetic_speaker_id_results.png"))
+
+
+def plot_focus_wav2vec2_base(all_results_df: pd.DataFrame):
+    """Focus on the wav2vec2 results
+
+    Args:
+        all_results_df (pd.DataFrame): _description_
+    """
+
+    plotting_df = all_results_df[
+        (all_results_df["modelname"] == "Audio: wav2vec2-base")
+        & (all_results_df["mode"] == "top-down")
+    ]
+
+    plotting_comparison_df = plotting_df[
+        plotting_df["config_name"].isin(["All Features", "Acoustic Only"])
+    ]
+    plotting_df = plotting_df[
+        ~plotting_df["config_name"].isin(["All Features", "Acoustic Only"])
+    ]
+
+    syntax_focus_configs = [
+        "Lexical",
+        "Syntactic",
+        "Syntactic Head Lexical",
+        "Syntactic + Lexical",
+    ]
+
+    syntax_p = plot_helper(
+        plotting_df[plotting_df["config_name"].isin(syntax_focus_configs)],
+        plotting_comparison_df,
+        color_mapping={
+            "All Features": "#7f7f7f",
+            "Acoustic Only": "#7f7f7f",
+            "Lexical": "#ff7f0e",
+            "Syntactic": "#1f77b4",
+            "Syntactic Head Lexical": "#bcbd22",
+            "Syntactic + Lexical": "#17cf76",
+        },
+        x_col="layer",
+    )
+    syntax_p += p9.labs(
+        x="Layer (From shallow to deep)",
+        y="Test R2 Score",
+        color="Feature Group",
+        shape="Feature Group",
+    )
+    syntax_p += p9.theme(figure_size=(8, 6), dpi=200)
+    syntax_p.show()
+
+    syntax_p.save(
+        os.path.join(FIGURES_ROOT, "wav2vec2-base_top-down_syntax_lexical_results.png")
+    )
+
+    spkid_phonetic_focus_configs = [
+        "Acoustic",
+        "Phonetic",
+        "Speaker ID",
+        "Phonetic + Acoustic",
+        "Phonetic + Speaker ID",
+        "Speaker ID + Acoustic",
+        "Speaker ID + Acoustic + Phonetic",
+    ]
+
+    spkid_df = plotting_df[
+        plotting_df["config_name"].isin(spkid_phonetic_focus_configs)
+    ]
+
+    # Plot three sub-figures for acoustic, speaker ID, phonetic, and their combinations with each panel
+    # containing a line for configs containing acoustic, speaker ID, or phonetic features, and the x-axis is the normalized layer and y-axis is the test score a gray dashed line for the topline and baseline comparison points "All Features" and "Acoustic Only"
+    sub_dfs = []
+
+    for subplot in ["Acoustic", "Speaker ID", "Phonetic"]:
+        subplot_configs = [
+            config for config in spkid_phonetic_focus_configs if subplot in config
+        ]
+        subplot_df = spkid_df[spkid_df["config_name"].isin(subplot_configs)].copy()
+        subplot_df["subplot"] = subplot
+        sub_dfs.append(subplot_df)
+    subplot_df = pd.concat(sub_dfs, ignore_index=True)
+    p = plot_helper(
+        subplot_df,
+        plotting_comparison_df,
+        facet="subplot",
+        color_mapping={
+            "Acoustic": "#2ca02c",
+            "Phonetic": "#e377c2",
+            "Speaker ID": "#9467bd",
+            "Phonetic + Acoustic": "#cc78bc",
+            "Phonetic + Speaker ID": "#b27700",
+            "Speaker ID + Acoustic": "#CC4B4B",
+            "Speaker ID + Acoustic + Phonetic": "#ece133",
+        },
+        x_col="layer",
+    )
+
+    p += p9.theme(figure_size=(12, 4), dpi=300)
+    p += p9.labs(
+        x="Layer (From shallow to deep)",
+        y="Test R2 Score",
+        color="Feature Group",
+        shape="Feature Group",
+    )
     p.show()
+    p.save(
+        os.path.join(
+            FIGURES_ROOT,
+            "wav2vec2-base_top-down_acoustic_phonetic_speaker_id_results.png",
+        )
+    )
 
 
 def main():
     librispeech_split = "dev-clean"
+    librispeech_split = "train-clean-100"
     all_results_df = read_all_results(librispeech_split)
     plot_results_syntax_lexical(all_results_df)
     plot_results_acoustic_phonetic_speaker(all_results_df)
+    plot_focus_wav2vec2_base(all_results_df)
 
 
 if __name__ == "__main__":

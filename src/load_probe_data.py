@@ -559,12 +559,12 @@ def further_process(
             chapterIDS = all_input_features_dict["metadata"][:, 1]
             encoder = OneHotEncoder(sparse_output=False)
             speakerIDS_onehot = encoder.fit_transform(speakerIDS.reshape(-1, 1))
-            chapterIDS_onehot = encoder.fit_transform(chapterIDS.reshape(-1, 1))
+            # chapterIDS_onehot = encoder.fit_transform(chapterIDS.reshape(-1, 1))
             all_input_features_dict["SpeakerID-OH"] = speakerIDS_onehot
-            all_input_features_dict["ChapterID-OH"] = chapterIDS_onehot
+            # all_input_features_dict["ChapterID-OH"] = chapterIDS_onehot
             # Delete the metadata key from the dictionary
             del all_input_features_dict["metadata"]
-            selected_input_components += ["SpeakerID-OH", "ChapterID-OH"]
+            selected_input_components += ["SpeakerID-OH"]  # , "ChapterID-OH"]
             selected_input_components.remove("metadata")
 
         else:
@@ -641,6 +641,7 @@ def load_data(
     overwrite: bool = False,
     normalize_features: bool = True,
     one_hot_encode_syntax: bool = True,
+    add_additional_syntax_features: bool = False,
     one_hot_encode_syntax_separate: bool = False,
     one_hot_encode_metadata: bool = True,
     argmax_ppg: bool = False,
@@ -691,6 +692,7 @@ def load_data(
         selected_input_components=selected_input_components,
         reduce_dnn_word_embedding=reduce_dnn_word_embedding,
         one_hot_encode_syntax=one_hot_encode_syntax,
+        add_additional_syntax_features=add_additional_syntax_features,
         one_hot_encode_syntax_separate=one_hot_encode_syntax_separate,
         one_hot_encode_metadata=one_hot_encode_metadata,
         argmax_ppg=argmax_ppg,

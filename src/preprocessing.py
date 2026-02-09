@@ -647,7 +647,7 @@ def extract_audio_representation(
     feature_extractor = AutoFeatureExtractor.from_pretrained(modelname)
     model = AutoModel.from_pretrained(modelname)
     seq_sampling = kwargs.get("seq_sampling", "random_frames").lower()
-    n_frames = kwargs.get("n_frames", 5)
+    args_n_frames = kwargs.get("n_frames", 10)
 
     model.to(device)  # type: ignore
     logger.info(f"Using device: {device}")
@@ -670,6 +670,7 @@ def extract_audio_representation(
         inputs = feature_extractor(
             waveform, sampling_rate=feature_extractor.sampling_rate, return_tensors="pt"
         )
+        n_frames = args_n_frames
         inputs = {k: v.to(device) for k, v in inputs.items()}
         with torch.no_grad():
             outputs = model(**inputs, output_hidden_states=True)
@@ -687,8 +688,8 @@ def extract_audio_representation(
             frame_indices = np.arange(hidden_states.shape[2])
         elif seq_sampling == "random_frames":
             # We randomly select n_frames from the hidden states
-            if n_frames > len(example["tokens"]):  # type: ignore
-                n_frames = len(example["tokens"])  # type: ignore
+            # if n_frames > len(example["tokens"]):  # type: ignore
+            # n_frames = len(example["tokens"])  # type: ignore
             # Randomly select n_frames from the hidden states along the seq_len dimension
             # We do this to avoid using too much memory and disk space
             frame_indices = np.random.choice(
@@ -790,24 +791,13 @@ def extract_dnn_word_embedding(
         unique_word_ids = set(w for w in word_ids if w is not None)
 
         for w_id in sorted(list(unique_word_ids)):
-            # 1. Find indices of sub-tokens belonging to this word_id
             indices = [i for i, x in enumerate(word_ids) if x == w_id]
-
-            # 2. Select those embeddings
-            # We use torch indexing here as it acts on the GPU/Tensor directly
             selected_embeddings = token_embeddings[indices]
-
-            # 3. Average them
-            # dim=0 averages along the number of tokens, resulting in (hidden_size,)
             avg_embedding = selected_embeddings.mean(dim=0)
-
             word_level_embeddings.append(avg_embedding)
 
-            # Optional: Grab the actual word string for verification
             start_char = offset_mapping[indices[0]][0]
             end_char = offset_mapping[indices[-1]][1]
-
-            # Extract the word from original text
             current_word = text[start_char:end_char]
             word_list.append(current_word)
 
@@ -1226,6 +1216,7 @@ def extract_features(
             modelname=modelname,
             overwrite=overwrite,
             seq_sampling=seq_sampling,
+            n_frames=n_frames,
         )
 
 

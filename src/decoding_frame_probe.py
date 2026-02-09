@@ -1,5 +1,4 @@
 import logging
-import os
 import pickle
 import sys
 
@@ -14,6 +13,7 @@ from tqdm.auto import tqdm, trange
 
 from frame_probe import parse_args, pick_probe
 from load_probe_data import get_section_shapes, load_data
+from plotting_results import FIGURES_ROOT, RESULTS_ROOT
 
 # Set up logger with time, name, level, and message
 logging.basicConfig(
@@ -25,29 +25,6 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-
-
-# Get the hostname of the machine running the code
-hostname = os.uname().nodename
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-
-
-# Setting up environmental variables depending on the cluster this code is running on
-
-if "snellius" in hostname:
-    # If running on Snellius, use the Snellius dataset root
-    DATASET_ROOT = os.path.realpath("/projects/prjs1586/corpora/LibriSpeech")
-    ALIGNMENT_ROOT = DATASET_ROOT.replace("LibriSpeech", "librispeech_textgrids")
-    SAVEPATH = "/projects/prjs1586/experimental_data"
-    RESULTS_ROOT = "/projects/prjs1586/experimental_results"
-
-else:
-    # If running on local machine, use the local dataset root
-    DATASET_ROOT = os.path.realpath("/corpora/LibriSpeech/LibriSpeech")
-    # ALIGNMENT_ROOT = os.path.expanduser(f"~/corpora/librispeech_alignment/")
-    ALIGNMENT_ROOT = os.path.join(PROJECT_ROOT, "data")
-    SAVEPATH = os.path.join(PROJECT_ROOT, "experimental_data")
-    RESULTS_ROOT = os.path.join(PROJECT_ROOT, "results")
 
 
 # Syntax feature indices mapping
@@ -448,19 +425,19 @@ def plot_normal_results(modelname: str, librispeech_split: str):
         )
         + p9.geom_line()
         + p9.geom_point()
-        + p9.ggtitle(
-            f"Decoding Frame Probe Results for {modelname} on {librispeech_split}"
-        )
+        # + p9.ggtitle(
+        #     f"Decoding Frame Probe Results for {modelname} on {librispeech_split}"
+        # )
         + p9.xlab("Layer")
         + p9.ylab("R2 Score")
         + p9.theme(legend_position="right")
         + p9.scale_color_discrete(name="Feature Group")
         + p9.scale_shape_discrete(name="Feature Group")
-        + p9.theme(figure_size=(10, 6), dpi=300)
+        + p9.theme(figure_size=(8, 6), dpi=200)
     )
     # Save the plot
     all_results_plot.save(
-        filename=f"{RESULTS_ROOT}/figures/decoding_frame_probe_results_{modelname}_{librispeech_split}.png",
+        filename=f"{FIGURES_ROOT}/decoding_frame_probe_results_{modelname}_{librispeech_split}.png",
         bbox_inches="tight",
     )
 
@@ -503,15 +480,15 @@ def plot_syntax_results(modelname: str, librispeech_split: str):
         )
         + p9.geom_line()
         + p9.geom_point()
-        + p9.ggtitle(
-            f"Decoding Frame Probe Syntax Deep Dive Results for {modelname} on {librispeech_split}"
-        )
+        # + p9.ggtitle(
+        #     f"Decoding Frame Probe Syntax Deep Dive Results for {modelname} on {librispeech_split}"
+        # )
         + p9.xlab("Layer")
         + p9.ylab("Probing Accuracy")
         + p9.theme(legend_position="right")
         + p9.scale_color_discrete(name="Syntax Feature")
         + p9.scale_shape_discrete(name="Syntax Feature")
-        + p9.theme(figure_size=(10, 6), dpi=300)
+        + p9.theme(figure_size=(8, 6), dpi=200)
         # Set the y-axis limits to 0 to 1
         + p9.ylim(0, 0.8)
         + p9.geom_hline(
@@ -526,7 +503,7 @@ def plot_syntax_results(modelname: str, librispeech_split: str):
     )
     # Save the plot
     syntax_results_plot.save(
-        filename=f"{RESULTS_ROOT}/figures/decoding_frame_probe_syntax_deep_dive_{modelname}_{librispeech_split}.png",
+        filename=f"{FIGURES_ROOT}/decoding_frame_probe_syntax_deep_dive_{modelname}_{librispeech_split}.png",
         bbox_inches="tight",
     )
 

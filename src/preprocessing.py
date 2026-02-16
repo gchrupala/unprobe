@@ -629,6 +629,7 @@ def extract_audio_representation(
     dataset: Dataset,
     modelname: str = "facebook/wav2vec2-base",
     device: torch.device = torch.device("cuda"),
+    random_seed: int = 42,
     **kwargs,
 ) -> dict[str, np.ndarray]:
     """Extracting audio representation from audio file
@@ -652,6 +653,9 @@ def extract_audio_representation(
     model.to(device)  # type: ignore
     logger.info(f"Using device: {device}")
     model.eval()
+
+    # Set the random state of np random generator
+    rng = np.random.default_rng(random_seed)
 
     # Cast the audio column to the right sampling rate
     logger.info(f"Recasting audio sampling rate: {feature_extractor.sampling_rate}")
@@ -692,9 +696,7 @@ def extract_audio_representation(
             # n_frames = len(example["tokens"])  # type: ignore
             # Randomly select n_frames from the hidden states along the seq_len dimension
             # We do this to avoid using too much memory and disk space
-            frame_indices = np.random.choice(
-                hidden_states.shape[2], n_frames, replace=False
-            )
+            frame_indices = rng.choice(hidden_states.shape[2], n_frames, replace=False)
             frame_indices = np.sort(frame_indices)
         else:
             raise ValueError(f"Unknown seq_sampling method: {seq_sampling}")
@@ -822,6 +824,7 @@ def extract_text_representation(
     dataset: Dataset,
     modelname: str = "answerdotai/ModernBERT-base",
     device: torch.device = torch.device("cuda"),
+    random_seed: int = 42,
     **kwargs,
 ) -> dict[str, np.ndarray]:
     """Extracting text representation from text
@@ -846,6 +849,8 @@ def extract_text_representation(
     model.to(device)
     logger.info(f"Using device: {device}")
     model.eval()
+
+    rng = np.random.default_rng(random_seed)
 
     text_representations = {}
 
@@ -881,9 +886,7 @@ def extract_text_representation(
             if n_frames > hidden_states.shape[2]:
                 # Skip examples where there are too limited amount of tokens
                 continue
-            frame_indices = np.random.choice(
-                hidden_states.shape[2], n_frames, replace=False
-            )
+            frame_indices = rng.choice(hidden_states.shape[2], n_frames, replace=False)
             frame_indices = np.sort(frame_indices)
 
         elif seq_sampling == "none":
@@ -1127,6 +1130,7 @@ def extract_transformer_features(
     overwrite: bool = False,
     seq_sampling: str = "random_frames",
     n_frames: int = 5,
+    random_seed: int = 42,
 ):
     """Extracting Transformer based features from the dataset and save them to disk.
 
@@ -1152,7 +1156,15 @@ def extract_transformer_features(
         raise ValueError(f"Unknown modelname: {modelname}")
 
     transformer_feature_savepath = f"{savepath}/librispeech-{librispeech_split}_{modelname.split('/')[-1]}_representation_{seq_sampling}.pickle"
+    if random_seed != 42:
+        # Append random seed to differentiate save file
+        transformer_feature_savepath = transformer_feature_savepath.replace(
+            "_representation_", f"_representation-seed-{random_seed}_"
+        )
     if not os.path.exists(transformer_feature_savepath) or overwrite:
+        logger.info(
+            f"Saving generated transformer features to {transformer_feature_savepath}"
+        )
         transformer_features = extraction_function(
             dataset,
             modelname=modelname,
@@ -1160,6 +1172,7 @@ def extract_transformer_features(
             seq_aggregation="none",
             seq_sampling=seq_sampling,
             n_frames=n_frames,
+            random_seed=random_seed,
         )
         with open(transformer_feature_savepath, "wb") as f:
             pickle.dump(transformer_features, f)
@@ -1175,6 +1188,7 @@ def extract_features(
     overwrite: bool = False,
     seq_sampling: str = "random_frames",
     n_frames: int = 5,
+    random_seed: int = 42,
     do_base: bool = False,
     do_transformer: bool = True,
     overwrite_base: bool = False,
@@ -1217,6 +1231,7 @@ def extract_features(
             overwrite=overwrite,
             seq_sampling=seq_sampling,
             n_frames=n_frames,
+            random_seed=random_seed,
         )
 
 
@@ -1276,6 +1291,12 @@ if __name__ == "__main__":
         action="store_true",
         help="Overwrite transcriptions file if it exists",
     )
+    parser.add_argument(
+        "--random_seed",
+        type=int,
+        default=42,
+        help="Random seed for random frame sampling",
+    )
     args = parser.parse_args()
     librispeech_split = args.librispeech_split
     modelname = args.modelname
@@ -1287,6 +1308,7 @@ if __name__ == "__main__":
     overwrite_textgrid = args.overwrite_textgrid
     overwrite_transcriptions = args.overwrite_transcriptions
     n_frames = args.n_frames
+    random_seed = args.random_seed
 
     logger.info("Overwriting settings are as follows:")
     logger.info(f"  Overwrite transformers: {overwrite}")
@@ -1296,15 +1318,17 @@ if __name__ == "__main__":
     logger.info(f"  Overwrite Base: {overwrite_base}")
     logger.info(f"  Overwrite TextGrid: {overwrite_textgrid}")
     logger.info(f"  Overwrite Transcriptions: {overwrite_transcriptions}")
+    logger.info(f"  Random Seed: {random_seed}")
     extract_features(
-        librispeech_split,
-        modelname,
-        overwrite,
-        seq_sampling,
-        n_frames,
-        do_base,
-        do_transformer,
-        overwrite_base,
-        overwrite_textgrid,
-        overwrite_transcriptions,
+        librispeech_split=librispeech_split,
+        modelname=modelname,
+        overwrite=overwrite,
+        seq_sampling=seq_sampling,
+        n_frames=n_frames,
+        random_seed=random_seed,
+        do_base=do_base,
+        do_transformer=do_transformer,
+        overwrite_base=overwrite_base,
+        overwrite_textgrid=overwrite_textgrid,
+        overwrite_transcriptions=overwrite_transcriptions,
     )

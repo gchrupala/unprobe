@@ -53,6 +53,7 @@ def format_data(
     librispeech_split: str = "dev-clean",
     modelname: str = "facebook/wav2vec2-base",
     seq_sampling: str = "random_frames",
+    random_seed: int = 42,
 ):
     """
     Format the data for probing tasks.
@@ -93,6 +94,12 @@ def format_data(
     )
 
     dnn_hidden_states_path = f"{SAVEPATH}/librispeech-{librispeech_split}_{modelname.split('/')[-1]}_representation_{seq_sampling}.pickle"
+
+    if random_seed != 42:
+        # Load dnn_hidden_states that has separate random seed flag
+        dnn_hidden_states_path = dnn_hidden_states_path.replace(
+            "_representation_", f"_representation-seed-{random_seed}_"
+        )
 
     # Make sure all the required files exist
     for path in [
@@ -646,6 +653,7 @@ def load_data(
     one_hot_encode_metadata: bool = True,
     argmax_ppg: bool = False,
     reduce_dnn_word_embedding: bool = True,
+    random_seed: int = 42,
 ):
     """
     Load the formatted data for probing tasks.
@@ -664,6 +672,11 @@ def load_data(
 
     formatted_data_path = f"{SAVEPATH}/processed_data/librispeech-{librispeech_split}_{modelname.split('/')[-1]}_representation_{seq_sampling}_formatted.pickle"
 
+    if random_seed != 42:
+        formatted_data_path = formatted_data_path.replace(
+            "_representation_", f"_representation-seed-{random_seed}_"
+        )
+
     # Make sure the directory exists
     os.makedirs(os.path.dirname(formatted_data_path), exist_ok=True)
     if os.path.exists(formatted_data_path) and not overwrite:
@@ -681,6 +694,7 @@ def load_data(
             librispeech_split=librispeech_split,
             modelname=modelname,
             seq_sampling=seq_sampling,
+            random_seed=random_seed,
         )
         with open(formatted_data_path, "wb") as f:
             pickle.dump((feature_sets, model_hidden_states, filename_timestamp), f)

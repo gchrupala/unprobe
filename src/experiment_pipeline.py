@@ -398,6 +398,7 @@ def main():
     select_layers = args.select_layers
     normalize_features = args.normalize_features
     overwrite = args.overwrite
+    random_seed = args.random_seed
 
     input_feature_select_components = [
         "eGeMAPSv02",
@@ -419,6 +420,7 @@ def main():
         one_hot_encode_metadata=True,
         argmax_ppg=False,
         normalize_features=normalize_features,
+        random_seed=random_seed,
     )
 
     speaker_ID = [x[0].split("-")[0] for x in filename_timestamp]
@@ -471,6 +473,11 @@ def main():
         "single_feat_removal",
         f"{librispeech_split}_{modelname.replace('/', '-')}_{probe_name}_results.pkl",
     )
+
+    # Rename savepath in case random_seed is not default
+    if random_seed != 42:
+        savepath = savepath.replace("results.pkl", f"results-seed{random_seed}.pkl")
+
     os.makedirs(os.path.dirname(savepath), exist_ok=True)
     with open(savepath, "wb") as f:
         pickle.dump(
@@ -502,6 +509,13 @@ def main():
         "syntax_feat_removal",
         f"{librispeech_split}_{modelname.replace('/', '-')}_{probe_name}_results.pkl",
     )
+
+    # Rename savepath in case random_seed is not default
+    if random_seed != 42:
+        syntax_save_path = syntax_save_path.replace(
+            "results.pkl", f"results-seed{random_seed}.pkl"
+        )
+
     os.makedirs(os.path.dirname(syntax_save_path), exist_ok=True)
     with open(syntax_save_path, "wb") as f:
         pickle.dump(
@@ -534,6 +548,14 @@ def main():
         "speakerid_phonetic_acoustic_removal",
         f"{librispeech_split}_{modelname.replace('/', '-')}_{probe_name}_results.pkl",
     )
+    # Rename savepath in case random_seed is not default
+    if random_seed != 42:
+        speakerid_phonetic_acoustic_save_path = (
+            speakerid_phonetic_acoustic_save_path.replace(
+                "results.pkl", f"results-seed{random_seed}.pkl"
+            )
+        )
+
     os.makedirs(os.path.dirname(speakerid_phonetic_acoustic_save_path), exist_ok=True)
     with open(speakerid_phonetic_acoustic_save_path, "wb") as f:
         pickle.dump(

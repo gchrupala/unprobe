@@ -145,6 +145,12 @@ def parse_args(use_default=False):
         help="The name of the model to use. Choose from 'facebook/wav2vec2-base', 'facebook/wav2vec2-large-960h', 'answerdotai/ModernBERT-base'",
     )
     parser.add_argument(
+        "--random_seed",
+        type=int,
+        default=42,
+        help="Random seed for selecting randomly sampled dnn_hidden_states frames.",
+    )
+    parser.add_argument(
         "--probe_name",
         type=str,
         default="ridge",

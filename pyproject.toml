@@ -44,8 +44,8 @@ cu118 = [
   "torchvision>=0.21.0",
 ]
 cu128 = [
-  "torch>=2.6.0",
-  "torchaudio>=2.6.0",
+  "torch<2.9.0",
+  "torchaudio<2.9.0",
   "torchvision>=0.21.0",
 ]
 

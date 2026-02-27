@@ -54,6 +54,38 @@ MODELNAME_ORDER: list = [
     "ModernBERT-base",
 ]
 
+CONFIG_NAME_ORDER: list = [
+    "All Features",
+    "Acoustic Only",
+    "-Acoustic",
+    "-Lexical",
+    "-Phonetic",
+    "-Syntactic",
+    "Syntactic Head Lexical",
+    "-Speaker ID",
+    "-Syntactic -Lexical",
+    "-Speaker ID -Acoustic",
+    "-Phonetic -Speaker ID",
+    "Combined -Lexical -Syntactic",
+    "Sum of Individual Effects",
+]
+
+PLOT_COLOR_MAPPING: dict = {
+    "All Features": "#7f7f7f",
+    "Acoustic Only": "#7f7f7f",
+    "-Acoustic": "#1f77b4",
+    "-Speaker ID": "#d62728",
+    "-Lexical": "#1f77b4",
+    "-Phonetic": "#1f77b4",
+    "-Syntactic": "#ff7f0e",
+    "Syntactic Head Lexical": "#bcbd22",
+    "-Syntactic -Lexical": "#17cf76",
+    "-Speaker ID -Acoustic": "#17cf76",
+    "-Phonetic -Speaker ID": "#17cf76",
+    "Combined -Lexical -Syntactic": "#8c564b",
+    "Sum of Individual Effects": "#8c564b",
+}
+
 
 def plot_helper(
     results_df: pd.DataFrame,
@@ -70,7 +102,24 @@ def plot_helper(
     comparison_results_df["modelname"] = pd.Categorical(
         comparison_results_df["modelname"], categories=MODELNAME_ORDER, ordered=True
     )
-    y_lim = max(results_df[y_col].max(), comparison_results_df[y_col].max()) * 1.1
+
+    modelname_order = [
+        x for x in CONFIG_NAME_ORDER if x in results_df["config_name"].unique()
+    ]
+
+    results_df["config_name"] = pd.Categorical(
+        results_df["config_name"],
+        categories=modelname_order,
+        ordered=True,
+    )
+    comparison_results_df["config_name"] = pd.Categorical(
+        comparison_results_df["config_name"],
+        categories=modelname_order,
+        ordered=True,
+    )
+
+    y_lim_max = max(results_df[y_col].max(), comparison_results_df[y_col].max()) * 1.05
+    y_lim_min = min(results_df[y_col].min(), comparison_results_df[y_col].min()) * 0.95
     p = (
         p9.ggplot()
         + p9.geom_line(
@@ -90,6 +139,7 @@ def plot_helper(
                 color="config_name",
                 shape="config_name",
             ),
+            size=0.7,
         )
         + p9.geom_line(
             data=comparison_results_df,
@@ -101,7 +151,7 @@ def plot_helper(
         + p9.facet_wrap(facet)
         + p9.theme_minimal()
         # Set y-axis to 0 to 0.5
-        + p9.scale_y_continuous(limits=(0, y_lim))
+        + p9.scale_y_continuous(limits=(y_lim_min, y_lim_max))
     )
     if color_mapping is not None:
         p += p9.scale_color_manual(values=color_mapping)
@@ -177,6 +227,14 @@ def read_all_results(librispeech_split: str = "dev-clean") -> pd.DataFrame:
         "layer"
     ].transform(lambda x: x / x.max())
 
+    # Set the config_name to be a categorical variable with a specific order
+    order_config_name = all_results_df["config_name"].unique().tolist()
+    # Sort the config_name by the number of - in the name, with fewer - first, and if tie, sort alphabetically
+    order_config_name.sort(key=lambda x: (x.count("-"), x))
+    all_results_df["config_name"] = pd.Categorical(
+        all_results_df["config_name"], categories=order_config_name, ordered=True
+    )
+
     return all_results_df
 
 
@@ -245,53 +303,99 @@ def get_combined_single_results(
     new_config_name: Union[str, None],
 ) -> pd.DataFrame:
     # Compute the amount of test_score departure of the different config_names to the topline for all layers
-    mode_results_df["departure_to_topline"] = mode_results_df.apply(
-        lambda row: (
-            row["test_score"]
-            - mode_comparison_results_df[
-                (mode_comparison_results_df["modelname"] == row["modelname"])
-                & (
-                    mode_comparison_results_df["normalized_layer"]
-                    == row["normalized_layer"]
-                )
-            ]["test_score"].values[0]
-        ),
-        axis=1,
-    )
+    if "random_seed" in mode_results_df.columns:
+        mode_results_df["departure_to_topline"] = mode_results_df.apply(
+            lambda row: (
+                row["test_score"]
+                - mode_comparison_results_df[
+                    (mode_comparison_results_df["modelname"] == row["modelname"])
+                    & (
+                        mode_comparison_results_df["normalized_layer"]
+                        == row["normalized_layer"]
+                    )
+                    & (mode_comparison_results_df["random_seed"] == row["random_seed"])
+                ]["test_score"].values[0]
+            ),
+            axis=1,
+        )
+    else:
+        mode_results_df["departure_to_topline"] = mode_results_df.apply(
+            lambda row: (
+                row["test_score"]
+                - mode_comparison_results_df[
+                    (mode_comparison_results_df["modelname"] == row["modelname"])
+                    & (
+                        mode_comparison_results_df["normalized_layer"]
+                        == row["normalized_layer"]
+                    )
+                ]["test_score"].values[0]
+            ),
+            axis=1,
+        )
 
     # Add the departure_to_topline from -Lexical and -Syntactic together and append that to the df under a new config_name
     combined_lex_syntx_departure = mode_results_df[
         mode_results_df["config_name"].isin(target_configs)
     ].copy()
-    combined_lex_syntx_departure = (
-        combined_lex_syntx_departure["departure_to_topline"]
-        .groupby(
-            [
-                combined_lex_syntx_departure["modelname"],
-                combined_lex_syntx_departure["normalized_layer"],
-            ]
+    if "random_seed" in mode_results_df.columns:
+        combined_lex_syntx_departure = (
+            combined_lex_syntx_departure.groupby(
+                [
+                    combined_lex_syntx_departure["modelname"],
+                    combined_lex_syntx_departure["normalized_layer"],
+                    combined_lex_syntx_departure["random_seed"],
+                ]
+            )
+            .agg({"departure_to_topline": "sum"})
+            .reset_index()
         )
-        .sum()
-    ).reset_index()
+    else:
+        combined_lex_syntx_departure = (
+            combined_lex_syntx_departure.groupby(
+                [
+                    combined_lex_syntx_departure["modelname"],
+                    combined_lex_syntx_departure["normalized_layer"],
+                    combined_lex_syntx_departure["layer"],
+                ]
+            )
+            .agg({"departure_to_topline": "sum"})
+            .reset_index()
+        )
     combined_lex_syntx_departure["config_name"] = (
         new_config_name
         if new_config_name is not None
         else "Combined " + " + ".join(target_configs)
     )
     # Use the departure to calculate the theoretical test_score from the topline
-    combined_lex_syntx_departure["test_score"] = combined_lex_syntx_departure.apply(
-        lambda row: (
-            row["departure_to_topline"]
-            + mode_comparison_results_df[
-                (mode_comparison_results_df["modelname"] == row["modelname"])
-                & (
-                    mode_comparison_results_df["normalized_layer"]
-                    == row["normalized_layer"]
-                )
-            ]["test_score"].values[0]
-        ),
-        axis=1,
-    )
+    if "random_seed" in mode_results_df.columns:
+        combined_lex_syntx_departure["test_score"] = combined_lex_syntx_departure.apply(
+            lambda row: (
+                row["departure_to_topline"]
+                + mode_comparison_results_df[
+                    (mode_comparison_results_df["modelname"] == row["modelname"])
+                    & (
+                        mode_comparison_results_df["normalized_layer"]
+                        == row["normalized_layer"]
+                    )
+                    & (mode_comparison_results_df["random_seed"] == row["random_seed"])
+                ]["test_score"].values[0]
+            ),
+            axis=1,
+        )
+    else:
+        combined_lex_syntx_departure["test_score"] = combined_lex_syntx_departure.apply(
+            lambda row: (
+                row["departure_to_topline"]
+                + mode_comparison_results_df[
+                    (mode_comparison_results_df["modelname"] == row["modelname"])
+                    & (
+                        mode_comparison_results_df["normalized_layer"]
+                        == row["normalized_layer"]
+                    )
+                ]["test_score"].values[0]
+            ),
+            axis=1,
+        )
 
     mode_results_df = pd.concat(
         [mode_results_df, combined_lex_syntx_departure], ignore_index=True
@@ -301,20 +405,6 @@ def get_combined_single_results(
 
 
 def plot_results_syntax_lexical(all_results_df: pd.DataFrame):
-    plot_color_mapping: dict = {
-        "All Features": "#7f7f7f",
-        "Acoustic Only": "#7f7f7f",
-        "-Acoustic": "#2ca02c",
-        "Chapter ID": "#d62728",
-        "-Speaker ID": "#9467bd",
-        "-Lexical": "#ff7f0e",
-        "-Phonetic": "#e377c2",
-        "-Syntactic": "#1f77b4",
-        "Syntactic Head Lexical": "#bcbd22",
-        "-Syntactic -Lexical": "#17cf76",
-        "Combined -Lexical -Syntactic": "#8c564b",
-    }
-
     # For each mode, we plot the test score with the topline
     # Topline and baseline comparison points are "All Features" and "Acoustic Only"
     mode = "top-down"
@@ -341,8 +431,8 @@ def plot_results_syntax_lexical(all_results_df: pd.DataFrame):
         # "ModernBERT-base",
         "wav2vec2-base",
         # "wav2vec2-base-960h",
-        "wav2vec2-large",
-        # "hubert-base-ls960",
+        # "wav2vec2-large",
+        "hubert-base-ls960",
         # "hubert-large-ll60k",
     ]
 
@@ -358,23 +448,29 @@ def plot_results_syntax_lexical(all_results_df: pd.DataFrame):
         plotting_df,
         plotting_compare_df,
         target_configs=["-Lexical", "-Syntactic"],
-        new_config_name="Combined -Lexical -Syntactic",
+        new_config_name="Sum of Individual Effects",
     )
 
     # Plot the results in plotting_df and use plotting_compare_df as the baseline with dashed gray line
-    p = plot_helper(plotting_df, plotting_compare_df, color_mapping=plot_color_mapping)
+    p = plot_helper(
+        plotting_df,
+        plotting_compare_df,
+        color_mapping=PLOT_COLOR_MAPPING,
+        x_col="layer",
+    )
     p += p9.labs(
-        x="Normalized Layer (From shallow to deep)",
+        x="Layer (From shallow to deep)",
         y="Test R2 Score",
         color="Feature Group",
         shape="Feature Group",
     )
     p += p9.theme(
-        legend_position="bottom",
         legend_justification="center",
         dpi=300,
-        figure_size=(6, 3),
-        legend_title=p9.element_blank(),
+        legend_position="none",
+        figure_size=(6, 2.5),
+        axis_text_x=p9.element_blank(),
+        axis_title_x=p9.element_blank(),
     )
 
     p.save(os.path.join(FIGURES_ROOT, f"{mode}_syntax_lexical_results.png"))
@@ -404,13 +500,18 @@ def plot_results_syntax_lexical(all_results_df: pd.DataFrame):
         plotting_df,
         plotting_compare_df,
         target_configs=["-Lexical", "-Syntactic"],
-        new_config_name="Combined -Lexical -Syntactic",
+        new_config_name="Sum of Individual Effects",
     )
 
     # Plot the results in plotting_df and use plotting_compare_df as the baseline with dashed gray line
-    p = plot_helper(plotting_df, plotting_compare_df, color_mapping=plot_color_mapping)
+    p = plot_helper(
+        plotting_df,
+        plotting_compare_df,
+        color_mapping=PLOT_COLOR_MAPPING,
+        x_col="layer",
+    )
     p += p9.labs(
-        x="Normalized Layer (From shallow to deep)",
+        x="Layer (From shallow to deep)",
         y="Test R2 Score",
         color="Feature Group",
         shape="Feature Group",
@@ -422,28 +523,12 @@ def plot_results_syntax_lexical(all_results_df: pd.DataFrame):
         figure_size=(6, 3),
         legend_title=p9.element_blank(),
     )
-    p += p9.scale_y_continuous(
-        limits=(0.1, plotting_compare_df["test_score"].max() * 1.1)
-    )
-
     p.save(os.path.join(FIGURES_ROOT, f"{mode}_syntax_lexical_results_2.png"))
 
     p.show()
 
 
 def plot_results_acoustic_phonetic_speaker(all_results_df: pd.DataFrame):
-    plot_color_mapping: dict = {
-        "All Features": "#7f7f7f",
-        "-Speaker ID": "#0173b2",
-        "-Phonetic": "#de8f05",
-        "-Acoustic": "#029e73",
-        "-Phonetic -Acoustic": "#cc78bc",
-        "-Phonetic -Speaker ID": "#b27700",
-        "-Speaker ID -Acoustic": "#CC4B4B",
-        "-Speaker ID -Acoustic -Phonetic": "#ece133",
-        "Combined -Phonetic -Speaker ID": "#8c564b",
-    }
-
     # For each mode, we plot the test score with the topline
     # Topline and baseline comparison points are "All Features" and "Acoustic Only"
     mode = "top-down"
@@ -483,14 +568,16 @@ def plot_results_acoustic_phonetic_speaker(all_results_df: pd.DataFrame):
         plot_df,
         plot_compare_df,
         target_configs=["-Acoustic", "-Speaker ID"],
-        new_config_name="Combined -Acoustic -Speaker ID",
+        new_config_name="Sum of Individual Effects",
     )
 
     # Plot the results in mode_results_df and use mode_comparison_results_df as the baseline with dashed gray line
-    p = plot_helper(plot_df, plot_compare_df, color_mapping=plot_color_mapping)
+    p = plot_helper(
+        plot_df, plot_compare_df, color_mapping=PLOT_COLOR_MAPPING, x_col="layer"
+    )
 
     p += p9.labs(
-        x="Normalized Layer (From shallow to deep)",
+        x="Layer (From shallow to deep)",
         y="Test R2 Score",
         color="Feature Group",
         shape="Feature Group",
@@ -530,13 +617,15 @@ def plot_results_acoustic_phonetic_speaker(all_results_df: pd.DataFrame):
         plot_df,
         plot_compare_df,
         target_configs=["-Phonetic", "-Speaker ID"],
-        new_config_name="Combined -Phonetic -Speaker ID",
+        new_config_name="Sum of Individual Effects",
     )
     # Plot the results in mode_results_df and use mode_comparison_results_df as the baseline with dashed gray line
-    p = plot_helper(plot_df, plot_compare_df, color_mapping=plot_color_mapping)
+    p = plot_helper(
+        plot_df, plot_compare_df, color_mapping=PLOT_COLOR_MAPPING, x_col="layer"
+    )
 
     p += p9.labs(
-        x="Normalized Layer (From shallow to deep)",
+        x="Layer (From shallow to deep)",
         y="Test R2 Score",
         color="Feature Group",
         shape="Feature Group",
@@ -585,12 +674,8 @@ def plot_focus_wav2vec2_base(all_results_df: pd.DataFrame):
         syntax_df,
         plotting_comparison_df,
         target_configs=["-Lexical", "-Syntactic"],
-        new_config_name="Combined -Lexical -Syntactic",
+        new_config_name="Sum of Individual Effects",
     )
-
-    syntax_df["layer"] = (
-        syntax_df["normalized_layer"] * 12
-    )  # Assuming wav2vec2-base has 12 layers
 
     syntax_p = plot_helper(
         syntax_df,
@@ -603,6 +688,7 @@ def plot_focus_wav2vec2_base(all_results_df: pd.DataFrame):
             "-Syntactic Head Lexical": "#bcbd22",
             "-Syntactic -Lexical": "#17cf76",
             "Combined -Lexical -Syntactic": "#8c564b",
+            "Sum of Individual Effects": "#8c564b",
         },
         x_col="layer",
     )
@@ -646,7 +732,7 @@ def plot_focus_wav2vec2_base(all_results_df: pd.DataFrame):
         acoustic_df,
         plotting_comparison_df,
         target_configs=["-Acoustic", "-Speaker ID"],
-        new_config_name="Combined -Acoustic -Speaker ID",
+        new_config_name="Sum of Individual Effects",
     )
     acoustic_df["layer"] = (
         acoustic_df["normalized_layer"] * 12
@@ -661,6 +747,7 @@ def plot_focus_wav2vec2_base(all_results_df: pd.DataFrame):
             "-Speaker ID": "#0173b2",
             "-Speaker ID -Acoustic": "#CC4B4B",
             "Combined -Acoustic -Speaker ID": "#8c564b",
+            "Sum of Individual Effects": "#8c564b",
         },
         x_col="layer",
     )
@@ -684,6 +771,9 @@ def plot_focus_wav2vec2_base(all_results_df: pd.DataFrame):
     acoustic_p += p9.scale_y_continuous(
         limits=(0.1, plotting_comparison_df["test_score"].max() * 1.1)
     )
+    acoustic_p += p9.scale_x_continuous(
+        breaks=np.arange(acoustic_df["layer"].min(), acoustic_df["layer"].max() + 1, 3)
+    )
     acoustic_p.show()
     acoustic_p.save(
         os.path.join(
@@ -692,43 +782,115 @@ def plot_focus_wav2vec2_base(all_results_df: pd.DataFrame):
     )
 
 
-def plot_focus_random_seed(random_seed_results_df: pd.DataFrame):
+def plot_focus_random_seed(
+    random_seed_results_df: pd.DataFrame, focus: str = "syntax_lexical"
+):
     # Plot the syntax and lexical removal results,
     # to see if the random seed has an impact on the results
-    syntax_lexical_df = random_seed_results_df[
-        random_seed_results_df["config_name"].isin(
-            [
-                "-Lexical",
-                "-Syntactic",
-                "Combined -Lexical -Syntactic",
-            ]
-        )
+
+    focus_lookup = {
+        "syntax_lexical": ["-Lexical", "-Syntactic", "-Syntactic -Lexical"],
+        "phonetic_speaker": ["-Phonetic", "-Speaker ID", "-Phonetic -Speaker ID"],
+        "acoustic_speaker": ["-Acoustic", "-Speaker ID", "-Speaker ID -Acoustic"],
+    }
+
+    subset_results_df = random_seed_results_df[
+        random_seed_results_df["config_name"].isin(focus_lookup[focus])
     ].copy()
-    syntax_lexical_comparison_df = random_seed_results_df[
+    subset_results_comparison_df = random_seed_results_df[
         random_seed_results_df["config_name"].isin(["All Features", "Acoustic Only"])
     ].copy()
 
+    subset_results_df = get_combined_single_results(
+        subset_results_df,
+        subset_results_comparison_df,
+        target_configs=focus_lookup[focus][:-1],  # Exclude the combined config
+        new_config_name="Sum of Individual Effects",
+    )
+
+    subset_results_df["layer"] = subset_results_df["normalized_layer"] * 12
+    subset_results_comparison_df["layer"] = (
+        subset_results_comparison_df["normalized_layer"] * 12
+    )  # Assuming wav2vec2-base has 12 layers
+
     # Compute the mean and std of the test_score for each config_name and layer across different random seeds
-    syntax_lexical_df = (
-        syntax_lexical_df.groupby(["config_name", "modelname", "layer"])
+    subset_results_df_mean = (
+        subset_results_df.groupby(["config_name", "modelname", "layer"])
         .agg(
             test_score_mean=("test_score", "mean"), test_score_std=("test_score", "std")
         )
         .reset_index()
     )
-    syntax_lexical_comparison_df = (
-        syntax_lexical_comparison_df.groupby(["config_name", "modelname", "layer"])
+    subset_results_comparison_df_mean = (
+        subset_results_comparison_df.groupby(["config_name", "modelname", "layer"])
         .agg(
             test_score_mean=("test_score", "mean"), test_score_std=("test_score", "std")
         )
         .reset_index()
     )
+
+    # Print the mean std of the test_score for each config_name and layer across different random seeds
+    print(f"Subset Results with Random Seeds for focus '{focus}':")
+    print(
+        subset_results_df_mean.groupby(["config_name"])[
+            ["test_score_mean", "test_score_std"]
+        ].mean()
+    )
+
+    # Calculate the confidence interval for the test_score_mean using the test_score_std and the number of random seeds
+    num_random_seeds = random_seed_results_df["random_seed"].nunique()
+    print(f"Number of random seeds: {num_random_seeds}")
+    subset_results_df_mean["ci_lower"] = subset_results_df_mean[
+        "test_score_mean"
+    ] - 1.96 * subset_results_df_mean["test_score_std"] / np.sqrt(num_random_seeds)
+    subset_results_df_mean["ci_upper"] = subset_results_df_mean[
+        "test_score_mean"
+    ] + 1.96 * subset_results_df_mean["test_score_std"] / np.sqrt(num_random_seeds)
+
+    subset_results_comparison_df_mean["ci_lower"] = subset_results_comparison_df_mean[
+        "test_score_mean"
+    ] - 1.96 * subset_results_comparison_df_mean["test_score_std"] / np.sqrt(
+        num_random_seeds
+    )
+    subset_results_comparison_df_mean["ci_upper"] = subset_results_comparison_df_mean[
+        "test_score_mean"
+    ] + 1.96 * subset_results_comparison_df_mean["test_score_std"] / np.sqrt(
+        num_random_seeds
+    )
+
+    mean_ci_per_config = subset_results_df_mean.groupby("config_name").apply(
+        lambda x: np.mean(x["ci_upper"] - x["ci_lower"])
+    )
+    mean_ci_width = np.mean(mean_ci_per_config)
+    print(f"Mean confidence interval width: {mean_ci_width:.4f}")
+
+    # Calculate the pairwise t-test between the different config_names for each layer to see if the difference is statistically significant
+    from scipy.stats import ttest_ind
+
+    config_names = subset_results_df["config_name"].unique()
+    for i in range(len(config_names)):
+        for j in range(i + 1, len(config_names)):
+            config_name_i = config_names[i]
+            config_name_j = config_names[j]
+            for layer in subset_results_df["layer"].unique():
+                scores_i = subset_results_df[
+                    (subset_results_df["config_name"] == config_name_i)
+                    & (subset_results_df["layer"] == layer)
+                ]["test_score"]
+                scores_j = subset_results_df[
+                    (subset_results_df["config_name"] == config_name_j)
+                    & (subset_results_df["layer"] == layer)
+                ]["test_score"]
+                t_stat, p_value = ttest_ind(scores_i, scores_j)
+                print(
+                    f"T-test between {config_name_i} and {config_name_j} at layer {layer}: t-statistic={t_stat:.4f}, p-value={p_value:.4f}"
+                )
 
     # Plot the random seed results with error bars using plotnine
     p = (
         p9.ggplot()
         + p9.geom_line(
-            data=syntax_lexical_df,
+            data=subset_results_df_mean,
             mapping=p9.aes(
                 x="layer",
                 y="test_score_mean",
@@ -737,41 +899,38 @@ def plot_focus_random_seed(random_seed_results_df: pd.DataFrame):
             ),
         )
         + p9.geom_point(
-            data=syntax_lexical_df,
+            data=subset_results_df_mean,
             mapping=p9.aes(
                 x="layer",
                 y="test_score_mean",
                 color="config_name",
                 shape="config_name",
             ),
+            size=0.7,
         )
         + p9.geom_errorbar(
-            data=syntax_lexical_df,
+            data=subset_results_df_mean,
             mapping=p9.aes(
                 x="layer",
-                ymin=syntax_lexical_df["test_score_mean"]
-                - syntax_lexical_df["test_score_std"],
-                ymax=syntax_lexical_df["test_score_mean"]
-                + syntax_lexical_df["test_score_std"],
+                ymin=subset_results_df_mean["ci_lower"],
+                ymax=subset_results_df_mean["ci_upper"],
                 color="config_name",
             ),
             width=0.02,
         )
         + p9.geom_line(
-            data=syntax_lexical_comparison_df,
+            data=subset_results_comparison_df_mean,
             mapping=p9.aes(x="layer", y="test_score_mean"),
             linetype="dashed",
             color="grey",
             size=1,
         )
         + p9.geom_errorbar(
-            data=syntax_lexical_comparison_df,
+            data=subset_results_comparison_df_mean,
             mapping=p9.aes(
                 x="layer",
-                ymin=syntax_lexical_comparison_df["test_score_mean"]
-                - syntax_lexical_comparison_df["test_score_std"],
-                ymax=syntax_lexical_comparison_df["test_score_mean"]
-                + syntax_lexical_comparison_df["test_score_std"],
+                ymin=subset_results_comparison_df_mean["ci_lower"],
+                ymax=subset_results_comparison_df_mean["ci_upper"],
             ),
             width=0.02,
             linetype="dashed",
@@ -786,12 +945,20 @@ def plot_focus_random_seed(random_seed_results_df: pd.DataFrame):
             legend_justification="center",
             legend_title=p9.element_blank(),
         )
+        + p9.scale_x_continuous(
+            breaks=np.arange(
+                subset_results_df["layer"].min(),
+                subset_results_df["layer"].max() + 1,
+                3,
+            )
+        )
         + p9.labs(
             x="Layer (From shallow to deep)",
             y="Test R2 Score",
             color="Feature",
             shape="Feature",
         )
+        + p9.guides(color=p9.guide_legend(nrow=2, byrow=True))
     )
     p.show()
     modelname = random_seed_results_df["modelname"].iloc[0]
@@ -799,7 +966,7 @@ def plot_focus_random_seed(random_seed_results_df: pd.DataFrame):
     p.save(
         os.path.join(
             FIGURES_ROOT,
-            f"{modelname}_random_seed_syntax_lexical_results.png",
+            f"{modelname}_random_seed_{focus}_results.png",
         )
     )
 
@@ -817,7 +984,9 @@ def main():
     random_seed_results_df = read_random_seed_results(
         librispeech_split=librispeech_split, modelname=modelname
     )
-    plot_focus_random_seed(random_seed_results_df)
+    plot_focus_random_seed(random_seed_results_df, focus="syntax_lexical")
+    plot_focus_random_seed(random_seed_results_df, focus="acoustic_speaker")
+    plot_focus_random_seed(random_seed_results_df, focus="phonetic_speaker")
 
     modelname = "google-bert/bert-base-uncased"
     random_seed_results_df = read_random_seed_results(

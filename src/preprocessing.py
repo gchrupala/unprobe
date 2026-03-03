@@ -1310,7 +1310,9 @@ if __name__ == "__main__":
     n_frames = args.n_frames
     random_seed = args.random_seed
 
-    logger.info("Overwriting settings are as follows:")
+    logger.info("Preprocessing settings are as follows:")
+    logger.info(f"  Librispeech Split: {librispeech_split}")
+    logger.info(f"  Modelname: {modelname}")
     logger.info(f"  Overwrite transformers: {overwrite}")
     logger.info(f"  Sequence Sampling: {seq_sampling}")
     logger.info(f"  Do Base: {do_base}")

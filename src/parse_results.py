@@ -8,6 +8,10 @@ from typing import Union
 import numpy as np
 import pandas as pd
 import plotnine as p9
+from matplotlib import legend
+from pandas import plotting
+from plotnine.options import figure_size
+from pyparsing import line
 
 from utils import FIGURES_ROOT, RESULTS_ROOT
 
@@ -25,20 +29,20 @@ logger = logging.getLogger(__name__)
 # Rename config_name
 CONFIG_NAME_RENAME: dict = {
     "AllFeatures": "All Features",
-    "AcousticOnly": "Acoustic Only",
-    "eGeMAPSv02": "-Acoustic",
+    "AcousticOnly": "Acoustics Only",
+    "eGeMAPSv02": "-Acoustics",
     "ChapterID-OH": "-Chapter ID",
-    "SpeakerID-OH": "-Speaker ID",
-    "dnn_word_embedding": "-Lexical",
-    "word_embedding": "-Lexical",
-    "ppg_feature": "-Phonetic",
-    "syntax_feature": "-Syntactic",
-    "syntax_head_word_embedding": "Syntactic Head Lexical",
-    "syntax_feature+word_embedding": "-Syntactic -Lexical",
-    "ppg_feature+eGeMAPSv02": "-Phonetic + Acoustic",
-    "ppg_feature+SpeakerID-OH": "-Phonetic -Speaker ID",
-    "SpeakerID-OH+eGeMAPSv02": "-Speaker ID -Acoustic",
-    "SpeakerID-OH+eGeMAPSv02+ppg_feature": "-Speaker ID -Acoustic -Phonetic",
+    "SpeakerID-OH": "-Speaker",
+    "dnn_word_embedding": "-Lexicon",
+    "word_embedding": "-Lexicon",
+    "ppg_feature": "-Phonetics",
+    "syntax_feature": "-Syntax",
+    "syntax_head_word_embedding": "Syntactic Head Lexicon",
+    "syntax_feature+word_embedding": "-Syntax -Lexicon",
+    "ppg_feature+eGeMAPSv02": "-Phonetics - Acoustics",
+    "ppg_feature+SpeakerID-OH": "-Phonetics -Speaker",
+    "SpeakerID-OH+eGeMAPSv02": "-Acoustics -Speaker",
+    "SpeakerID-OH+eGeMAPSv02+ppg_feature": "-Acoustics -Phonetics -Speaker",
 }
 
 
@@ -48,7 +52,9 @@ MODELNAME_ORDER: list = [
     "wav2vec2-large",
     "hubert-base-ls960",
     "hubert-large-ll60k",
+    "wavlm-base",
     "wav2vec2-base-superb-sid",
+    "wav2vec2-ls100-sid",
     "bert-base-uncased",
     "roberta-base",
     "ModernBERT-base",
@@ -57,32 +63,32 @@ MODELNAME_ORDER: list = [
 CONFIG_NAME_ORDER: list = [
     "All Features",
     "Acoustic Only",
-    "-Acoustic",
-    "-Lexical",
-    "-Phonetic",
-    "-Syntactic",
+    "-Acoustics",
+    "-Lexicon",
+    "-Phonetics",
+    "-Syntax",
     "Syntactic Head Lexical",
-    "-Speaker ID",
-    "-Syntactic -Lexical",
-    "-Speaker ID -Acoustic",
-    "-Phonetic -Speaker ID",
-    "Combined -Lexical -Syntactic",
+    "-Speaker",
+    "-Syntax -Lexicon",
+    "-Acoustics -Speaker",
+    "-Phonetics -Speaker",
+    "Combined -Lexicon -Syntax",
     "Sum of Individual Effects",
 ]
 
 PLOT_COLOR_MAPPING: dict = {
     "All Features": "#7f7f7f",
-    "Acoustic Only": "#7f7f7f",
-    "-Acoustic": "#1f77b4",
-    "-Speaker ID": "#d62728",
-    "-Lexical": "#1f77b4",
-    "-Phonetic": "#1f77b4",
-    "-Syntactic": "#ff7f0e",
+    "Acoustics Only": "#7f7f7f",
+    "-Acoustics": "#1f77b4",
+    "-Speaker": "#d62728",
+    "-Lexicon": "#1f77b4",
+    "-Phonetics": "#1f77b4",
+    "-Syntax": "#ff7f0e",
     "Syntactic Head Lexical": "#bcbd22",
-    "-Syntactic -Lexical": "#17cf76",
-    "-Speaker ID -Acoustic": "#17cf76",
-    "-Phonetic -Speaker ID": "#17cf76",
-    "Combined -Lexical -Syntactic": "#8c564b",
+    "-Syntax -Lexicon": "#17cf76",
+    "-Acoustics -Speaker": "#17cf76",
+    "-Phonetics -Speaker": "#17cf76",
+    "Combined -Lexicon -Syntax": "#8c564b",
     "Sum of Individual Effects": "#8c564b",
 }
 
@@ -94,18 +100,30 @@ def plot_helper(
     color_mapping: Union[dict, None] = None,
     x_col: str = "normalized_layer",
     y_col: str = "test_score",
+    legend_n_row: Union[int, None] = 2,
+    include_sum_of_individual: bool = True,
 ) -> p9.ggplot:
+    if not include_sum_of_individual:
+        col_name = "Sum of Individual Effects"
+        results_df = results_df[results_df["config_name"] != col_name].copy()
+        comparison_results_df = comparison_results_df[
+            comparison_results_df["config_name"] != col_name
+        ].copy()
+
     # Order the modelname by a set list
     results_df["modelname"] = pd.Categorical(
         results_df["modelname"], categories=MODELNAME_ORDER, ordered=True
     )
+
     comparison_results_df["modelname"] = pd.Categorical(
         comparison_results_df["modelname"], categories=MODELNAME_ORDER, ordered=True
     )
 
-    modelname_order = [
-        x for x in CONFIG_NAME_ORDER if x in results_df["config_name"].unique()
-    ]
+    all_config_names = list(results_df["config_name"].unique()) + list(
+        comparison_results_df["config_name"].unique()
+    )
+
+    modelname_order = [x for x in CONFIG_NAME_ORDER if x in all_config_names]
 
     results_df["config_name"] = pd.Categorical(
         results_df["config_name"],
@@ -117,18 +135,32 @@ def plot_helper(
         categories=modelname_order,
         ordered=True,
     )
+    linetype_mapping = {
+        "All Features": "dashed",
+        "Acoustics Only": "dashed",
+    }
+    linetype_mapping = {
+        config: linetype_mapping.get(config, "solid") for config in all_config_names
+    }
+
+    # Drop all nan columns
+    results_df = results_df.dropna(axis=1, how="any")
+    comparison_results_df = comparison_results_df.dropna(axis=1, how="any")
 
     y_lim_max = max(results_df[y_col].max(), comparison_results_df[y_col].max()) * 1.05
     y_lim_min = min(results_df[y_col].min(), comparison_results_df[y_col].min()) * 0.95
+    combi_df = pd.concat([results_df, comparison_results_df], ignore_index=True)
+
     p = (
         p9.ggplot()
         + p9.geom_line(
-            data=results_df,
+            data=combi_df,
             mapping=p9.aes(
                 x=x_col,
                 y=y_col,
                 color="config_name",
                 group="config_name",
+                linetype="config_name",
             ),
         )
         + p9.geom_point(
@@ -141,18 +173,17 @@ def plot_helper(
             ),
             size=0.7,
         )
-        + p9.geom_line(
-            data=comparison_results_df,
-            mapping=p9.aes(x=x_col, y=y_col),
-            linetype="dashed",
-            color="grey",
-            size=1,
-        )
         + p9.facet_wrap(facet)
         + p9.theme_minimal()
-        # Set y-axis to 0 to 0.5
         + p9.scale_y_continuous(limits=(y_lim_min, y_lim_max))
+        + p9.scale_linetype_manual(values=linetype_mapping)
     )
+    if legend_n_row is not None:
+        p += p9.guides(
+            color=p9.guide_legend(nrow=legend_n_row, byrow=True),
+            linetype=p9.guide_legend(nrow=legend_n_row, byrow=True),
+            shape=p9.guide_legend(nrow=legend_n_row, byrow=True),
+        )
     if color_mapping is not None:
         p += p9.scale_color_manual(values=color_mapping)
     if x_col == "normalized_layer":
@@ -179,6 +210,7 @@ def read_all_results(librispeech_split: str = "dev-clean") -> pd.DataFrame:
         "FacebookAI/roberta-base",
         "google-bert/bert-base-uncased",
         "answerdotai/ModernBERT-base",
+        "techsword/wav2vec2-ls100-sid",
     )
 
     all_results = []
@@ -404,382 +436,192 @@ def get_combined_single_results(
     return mode_results_df
 
 
-def plot_results_syntax_lexical(all_results_df: pd.DataFrame):
+def plot_main_figures(all_results_df: pd.DataFrame):
     # For each mode, we plot the test score with the topline
-    # Topline and baseline comparison points are "All Features" and "Acoustic Only"
+    # Topline and baseline comparison points are "All Features" and "Acoustics Only"
     mode = "top-down"
-    comparison_configs = ["All Features", "Acoustic Only"]
+    comparison_configs = ["All Features", "Acoustics Only"]
     mode_results_df = all_results_df[all_results_df["mode"] == mode]
     mode_comparison_results_df = mode_results_df[
         mode_results_df["config_name"].isin(comparison_configs)
-    ]
+    ].copy()
     mode_results_df = mode_results_df[
         ~mode_results_df["config_name"].isin(comparison_configs)
-    ]
-
-    # Filter out relevant config_name for the plot
-
-    target_configs = [
-        "-Lexical",
-        "-Syntactic",
-        "-Syntactic Head Lexical",
-        "-Syntactic -Lexical",
-    ]
-    target_models = [
-        "bert-base-uncased",
-        # "roberta-base",
-        # "ModernBERT-base",
-        "wav2vec2-base",
-        # "wav2vec2-base-960h",
-        # "wav2vec2-large",
-        "hubert-base-ls960",
-        # "hubert-large-ll60k",
-    ]
-
-    plotting_df = mode_results_df[
-        (mode_results_df["config_name"].isin(target_configs))
-        & (mode_results_df["modelname"].isin(target_models))
-    ]
-    plotting_compare_df = mode_comparison_results_df[
-        (mode_comparison_results_df["modelname"].isin(target_models))
-    ]
-
-    plotting_df = get_combined_single_results(
-        plotting_df,
-        plotting_compare_df,
-        target_configs=["-Lexical", "-Syntactic"],
-        new_config_name="Sum of Individual Effects",
-    )
-
-    # Plot the results in plotting_df and use plotting_compare_df as the baseline with dashed gray line
-    p = plot_helper(
-        plotting_df,
-        plotting_compare_df,
-        color_mapping=PLOT_COLOR_MAPPING,
-        x_col="layer",
-    )
-    p += p9.labs(
-        x="Layer (From shallow to deep)",
-        y="Test R2 Score",
-        color="Feature Group",
-        shape="Feature Group",
-    )
-    p += p9.theme(
-        legend_justification="center",
-        dpi=300,
-        legend_position="none",
-        figure_size=(6, 2.5),
-        axis_text_x=p9.element_blank(),
-        axis_title_x=p9.element_blank(),
-    )
-
-    p.save(os.path.join(FIGURES_ROOT, f"{mode}_syntax_lexical_results.png"))
-
-    p.show()
-
-    target_models = [
-        # "bert-base-uncased",
-        # "roberta-base",
-        # "ModernBERT-base",
-        "wav2vec2-base",
-        "wav2vec2-base-960h",
-        # "wav2vec2-large",
-        "hubert-base-ls960",
-        # "hubert-large-ll60k",
-    ]
-
-    plotting_df = mode_results_df[
-        (mode_results_df["config_name"].isin(target_configs))
-        & (mode_results_df["modelname"].isin(target_models))
-    ]
-    plotting_compare_df = mode_comparison_results_df[
-        (mode_comparison_results_df["modelname"].isin(target_models))
-    ]
-
-    plotting_df = get_combined_single_results(
-        plotting_df,
-        plotting_compare_df,
-        target_configs=["-Lexical", "-Syntactic"],
-        new_config_name="Sum of Individual Effects",
-    )
-
-    # Plot the results in plotting_df and use plotting_compare_df as the baseline with dashed gray line
-    p = plot_helper(
-        plotting_df,
-        plotting_compare_df,
-        color_mapping=PLOT_COLOR_MAPPING,
-        x_col="layer",
-    )
-    p += p9.labs(
-        x="Layer (From shallow to deep)",
-        y="Test R2 Score",
-        color="Feature Group",
-        shape="Feature Group",
-    )
-    p += p9.theme(
-        legend_position="bottom",
-        legend_justification="center",
-        dpi=300,
-        figure_size=(6, 3),
-        legend_title=p9.element_blank(),
-    )
-    p.save(os.path.join(FIGURES_ROOT, f"{mode}_syntax_lexical_results_2.png"))
-
-    p.show()
-
-
-def plot_results_acoustic_phonetic_speaker(all_results_df: pd.DataFrame):
-    # For each mode, we plot the test score with the topline
-    # Topline and baseline comparison points are "All Features" and "Acoustic Only"
-    mode = "top-down"
-    comparison_configs = ["All Features", "Acoustic Only"]
-    mode_results_df = all_results_df[all_results_df["mode"] == mode]
-    mode_comparison_results_df = mode_results_df[
-        mode_results_df["config_name"].isin(comparison_configs)
-    ]
-    mode_results_df = mode_results_df[
-        ~mode_results_df["config_name"].isin(comparison_configs)
-    ]
-
-    # Filter out relevant config_name for the plot
-
-    target_configs = [
-        "-Acoustic",
-        "-Speaker ID",
-        "-Speaker ID -Acoustic",
-    ]
-    target_models = [
-        "wav2vec2-base",
-        # "hubert-base-ls960",
-        "wav2vec2-base-960h",
-        # "hubert-large-ll60k",
-        "wav2vec2-base-superb-sid",
-    ]
-
-    plot_df = mode_results_df[
-        (mode_results_df["config_name"].isin(target_configs))
-        & (mode_results_df["modelname"].isin(target_models))
-    ]
-    plot_compare_df = mode_comparison_results_df[
-        (mode_comparison_results_df["modelname"].isin(target_models))
-    ]
-
-    plot_df = get_combined_single_results(
-        plot_df,
-        plot_compare_df,
-        target_configs=["-Acoustic", "-Speaker ID"],
-        new_config_name="Sum of Individual Effects",
-    )
-
-    # Plot the results in mode_results_df and use mode_comparison_results_df as the baseline with dashed gray line
-    p = plot_helper(
-        plot_df, plot_compare_df, color_mapping=PLOT_COLOR_MAPPING, x_col="layer"
-    )
-
-    p += p9.labs(
-        x="Layer (From shallow to deep)",
-        y="Test R2 Score",
-        color="Feature Group",
-        shape="Feature Group",
-    )
-    p += p9.theme(
-        legend_position="bottom",
-        legend_justification="center",
-        figure_size=(6, 3),
-        dpi=300,
-        legend_title=p9.element_blank(),
-    )
-    p.save(os.path.join(FIGURES_ROOT, f"{mode}_acoustic_speaker_id_results.png"))
-    p.show()
-
-    target_configs = [
-        "-Phonetic",
-        "-Speaker ID",
-        "-Phonetic -Speaker ID",
-    ]
-    target_models = [
-        "wav2vec2-base",
-        # "hubert-base-ls960",
-        "wav2vec2-base-960h",
-        # "hubert-large-ll60k",
-        "wav2vec2-base-superb-sid",
-    ]
-
-    plot_df = mode_results_df[
-        (mode_results_df["config_name"].isin(target_configs))
-        & (mode_results_df["modelname"].isin(target_models))
-    ]
-    plot_compare_df = mode_comparison_results_df[
-        (mode_comparison_results_df["modelname"].isin(target_models))
-    ]
-
-    plot_df = get_combined_single_results(
-        plot_df,
-        plot_compare_df,
-        target_configs=["-Phonetic", "-Speaker ID"],
-        new_config_name="Sum of Individual Effects",
-    )
-    # Plot the results in mode_results_df and use mode_comparison_results_df as the baseline with dashed gray line
-    p = plot_helper(
-        plot_df, plot_compare_df, color_mapping=PLOT_COLOR_MAPPING, x_col="layer"
-    )
-
-    p += p9.labs(
-        x="Layer (From shallow to deep)",
-        y="Test R2 Score",
-        color="Feature Group",
-        shape="Feature Group",
-    )
-    p += p9.theme(
-        legend_position="bottom",
-        legend_justification="center",
-        figure_size=(6, 3),
-        dpi=300,
-        legend_title=p9.element_blank(),
-    )
-    p.save(os.path.join(FIGURES_ROOT, f"{mode}_phonetic_speaker_id_results.png"))
-
-
-def plot_focus_wav2vec2_base(all_results_df: pd.DataFrame):
-    """Focus on the wav2vec2 results
-
-    Args:
-        all_results_df (pd.DataFrame): _description_
-    """
-
-    plotting_df = all_results_df[
-        (all_results_df["modelname"] == "wav2vec2-base")
-        & (all_results_df["mode"] == "top-down")
-    ]
-
-    plotting_comparison_df = plotting_df[
-        plotting_df["config_name"].isin(["All Features", "Acoustic Only"])
-    ]
-    plotting_df = plotting_df[
-        ~plotting_df["config_name"].isin(["All Features", "Acoustic Only"])
-    ]
-
-    syntax_focus_configs = [
-        "-Lexical",
-        "-Syntactic",
-        "-Syntactic Head Lexical",
-        "-Syntactic -Lexical",
-    ]
-
-    syntax_df = plotting_df[
-        plotting_df["config_name"].isin(syntax_focus_configs)
     ].copy()
 
-    syntax_df = get_combined_single_results(
-        syntax_df,
-        plotting_comparison_df,
-        target_configs=["-Lexical", "-Syntactic"],
-        new_config_name="Sum of Individual Effects",
-    )
-
-    syntax_p = plot_helper(
-        syntax_df,
-        plotting_comparison_df,
-        color_mapping={
-            "All Features": "#7f7f7f",
-            "Acoustic Only": "#7f7f7f",
-            "-Lexical": "#ff7f0e",
-            "-Syntactic": "#1f77b4",
-            "-Syntactic Head Lexical": "#bcbd22",
-            "-Syntactic -Lexical": "#17cf76",
-            "Combined -Lexical -Syntactic": "#8c564b",
-            "Sum of Individual Effects": "#8c564b",
+    # Set up plotting configs
+    plotting_configs = {
+        "syntax_lexical": {
+            "target_configs": [
+                "-Lexicon",
+                "-Syntax",
+                "-Syntax Head Lexicon",
+                "-Syntax -Lexicon",
+            ],
+            "target_models": [
+                "bert-base-uncased",
+                "wav2vec2-base",
+            ],
         },
-        x_col="layer",
-    )
-    syntax_p += p9.labs(
-        x="Layer (From shallow to deep)",
-        y="Test R2 Score",
-        color="Feature",
-        shape="Feature",
-    )
-    syntax_p += p9.theme(
-        figure_size=(5, 4),
-        dpi=300,
-        legend_position="bottom",
-        legend_justification="center",
-        legend_title=p9.element_blank(),
-        # Remove the facet label since we only have one facet
-        strip_background=p9.element_blank(),
-        strip_text=p9.element_blank(),
-    )
-    syntax_p += p9.guides(color=p9.guide_legend(nrow=2, byrow=True))
-    syntax_p += p9.scale_y_continuous(
-        limits=(0.15, plotting_comparison_df["test_score"].max() * 1.1)
-    )
-
-    syntax_p.show()
-
-    syntax_p.save(
-        os.path.join(FIGURES_ROOT, "wav2vec2-base_top-down_syntax_lexical_results.png")
-    )
-
-    acoustic_focus_configs = [
-        "-Acoustic",
-        "-Speaker ID",
-        "-Speaker ID -Acoustic",
-    ]
-
-    acoustic_df = plotting_df[
-        plotting_df["config_name"].isin(acoustic_focus_configs)
-    ].copy()
-    acoustic_df = get_combined_single_results(
-        acoustic_df,
-        plotting_comparison_df,
-        target_configs=["-Acoustic", "-Speaker ID"],
-        new_config_name="Sum of Individual Effects",
-    )
-    acoustic_df["layer"] = (
-        acoustic_df["normalized_layer"] * 12
-    )  # Assuming wav2vec2-base has 12 layers
-    acoustic_p = plot_helper(
-        acoustic_df,
-        plotting_comparison_df,
-        color_mapping={
-            "All Features": "#7f7f7f",
-            "Acoustic Only": "#7f7f7f",
-            "-Acoustic": "#029e73",
-            "-Speaker ID": "#0173b2",
-            "-Speaker ID -Acoustic": "#CC4B4B",
-            "Combined -Acoustic -Speaker ID": "#8c564b",
-            "Sum of Individual Effects": "#8c564b",
+        "syntax_lexical_2": {
+            "target_configs": [
+                "-Lexicon",
+                "-Syntax",
+                "-Syntax Head Lexicon",
+                "-Syntax -Lexicon",
+            ],
+            "target_models": [
+                "wav2vec2-base-960h",
+                "hubert-base-ls960",
+            ],
         },
-        x_col="layer",
-    )
-    acoustic_p += p9.labs(
-        x="Layer (From shallow to deep)",
-        y="Test R2 Score",
-        color="Feature",
-        shape="Feature",
-    )
-    acoustic_p += p9.theme(
-        figure_size=(5, 4),
-        dpi=300,
-        legend_position="bottom",
-        legend_justification="center",
-        legend_title=p9.element_blank(),
-        # Remove the facet label since we only have one facet
-        strip_background=p9.element_blank(),
-        strip_text=p9.element_blank(),
-    )
-    acoustic_p += p9.guides(color=p9.guide_legend(nrow=2, byrow=True))
-    acoustic_p += p9.scale_y_continuous(
-        limits=(0.1, plotting_comparison_df["test_score"].max() * 1.1)
-    )
-    acoustic_p += p9.scale_x_continuous(
-        breaks=np.arange(acoustic_df["layer"].min(), acoustic_df["layer"].max() + 1, 3)
-    )
-    acoustic_p.show()
-    acoustic_p.save(
-        os.path.join(
-            FIGURES_ROOT, "wav2vec2-base_top-down_acoustic_speaker_id_results.png"
+        "acoustics_speaker_id": {
+            "target_configs": [
+                "-Acoustics",
+                "-Speaker",
+                "-Acoustics -Speaker",
+            ],
+            "target_models": [
+                "wav2vec2-base",
+                "wav2vec2-base-960h",
+                "wav2vec2-ls100-sid",
+            ],
+        },
+        "phonetic_speaker_id": {
+            "target_configs": [
+                "-Phonetics",
+                "-Speaker",
+                "-Phonetics -Speaker",
+            ],
+            "target_models": [
+                "wav2vec2-base",
+                "wav2vec2-base-960h",
+                "wav2vec2-ls100-sid",
+            ],
+        },
+        "all_models_syntax_lexical": {
+            "target_configs": [
+                "-Lexicon",
+                "-Syntax",
+                "-Syntax Head Lexicon",
+                "-Syntax -Lexicon",
+            ],
+            "target_models": list(mode_results_df["modelname"].unique()),
+            "x_col": "normalized_layer",
+            "figure_size": (8, 8),
+        },
+        "all_models_acoustic_speaker": {
+            "target_configs": [
+                "-Acoustics",
+                "-Speaker",
+                "-Acoustics -Speaker",
+            ],
+            "target_models": list(mode_results_df["modelname"].unique()),
+            "x_col": "normalized_layer",
+            "figure_size": (8, 8),
+        },
+        "all_models_phonetic_speaker": {
+            "target_configs": [
+                "-Phonetics",
+                "-Speaker",
+                "-Phonetics -Speaker",
+            ],
+            "target_models": list(mode_results_df["modelname"].unique()),
+            "x_col": "normalized_layer",
+            "figure_size": (8, 8),
+        },
+        "syntax_lexical_wav2vec2": {
+            "target_configs": [
+                "-Lexicon",
+                "-Syntax",
+                "-Syntactic Head Lexical",
+                "-Syntax -Lexicon",
+            ],
+            "target_models": ["wav2vec2-base"],
+            "x_col": "layer",
+            "y_col": "test_score",
+            "figure_size": (4, 4),
+            "legend_n_row": 2,
+        },
+        "acoustics_speaker_id_wav2vec2": {
+            "target_configs": [
+                "-Acoustics",
+                "-Speaker",
+                "-Acoustics -Speaker",
+            ],
+            "target_models": ["wav2vec2-base"],
+            "x_col": "layer",
+            "y_col": "test_score",
+            "figure_size": (4, 4),
+            "legend_n_row": 2,
+        },
+        "phonetic_speaker_id_wav2vec2": {
+            "target_configs": [
+                "-Phonetics",
+                "-Speaker",
+                "-Phonetics -Speaker",
+            ],
+            "target_models": ["wav2vec2-base"],
+            "x_col": "layer",
+            "y_col": "test_score",
+            "figure_size": (4, 4),
+            "legend_n_row": 2,
+        },
+    }
+
+    for featname, plotting_config in plotting_configs.items():
+        target_configs = plotting_config["target_configs"]
+        target_models = plotting_config["target_models"]
+        x_col = plotting_config.get("x_col", "layer")
+        y_col = plotting_config.get("y_col", "test_score")
+        legend_n_row = plotting_config.get("legend_n_row", None)
+        figure_size = plotting_config.get("figure_size", (6, 3))
+
+        plot_df = mode_results_df[
+            (mode_results_df["config_name"].isin(target_configs))
+            & (mode_results_df["modelname"].isin(target_models))
+        ]
+        plot_compare_df = mode_comparison_results_df[
+            mode_comparison_results_df["modelname"].isin(target_models)
+        ]
+
+        plot_df = get_combined_single_results(
+            plot_df,
+            plot_compare_df,
+            target_configs=[
+                x for x in target_configs if x.count("-") == 1
+            ],  # Only include the configs with single feature removal for calculating the sum of individual effects
+            new_config_name="Sum of Individual Effects",
         )
-    )
+
+        # Plot the results in mode_results_df and use mode_comparison_results_df as the baseline with dashed gray line
+        p = plot_helper(
+            plot_df,
+            plot_compare_df,
+            color_mapping=PLOT_COLOR_MAPPING,
+            x_col=x_col,
+            y_col=y_col,
+            legend_n_row=legend_n_row,
+            include_sum_of_individual=False,
+        )
+
+        p += p9.labs(
+            x="Layer (From shallow to deep)",
+            y=r"$R^2$ Score",
+            color="Feature Group",
+            shape="Feature Group",
+            linetype="Feature Group",
+        )
+        p += p9.theme(
+            legend_position="bottom",
+            legend_justification="center",
+            figure_size=figure_size,
+            dpi=300,
+            legend_title=p9.element_blank(),
+        )
+        p.show()
+
+        p.save(os.path.join(FIGURES_ROOT, f"{mode}_{featname.lower()}_results.png"))
 
 
 def plot_focus_random_seed(
@@ -789,16 +631,16 @@ def plot_focus_random_seed(
     # to see if the random seed has an impact on the results
 
     focus_lookup = {
-        "syntax_lexical": ["-Lexical", "-Syntactic", "-Syntactic -Lexical"],
-        "phonetic_speaker": ["-Phonetic", "-Speaker ID", "-Phonetic -Speaker ID"],
-        "acoustic_speaker": ["-Acoustic", "-Speaker ID", "-Speaker ID -Acoustic"],
+        "syntax_lexical": ["-Lexicon", "-Syntax", "-Syntax -Lexicon"],
+        "phonetic_speaker": ["-Phonetics", "-Speaker", "-Phonetic -Speaker"],
+        "acoustic_speaker": ["-Acoustics", "-Speaker", "-Speaker -Acoustics"],
     }
 
     subset_results_df = random_seed_results_df[
         random_seed_results_df["config_name"].isin(focus_lookup[focus])
     ].copy()
     subset_results_comparison_df = random_seed_results_df[
-        random_seed_results_df["config_name"].isin(["All Features", "Acoustic Only"])
+        random_seed_results_df["config_name"].isin(["All Features", "Acoustics Only"])
     ].copy()
 
     subset_results_df = get_combined_single_results(
@@ -954,11 +796,12 @@ def plot_focus_random_seed(
         )
         + p9.labs(
             x="Layer (From shallow to deep)",
-            y="Test R2 Score",
+            y=r"$R^2$ Score",
             color="Feature",
             shape="Feature",
         )
         + p9.guides(color=p9.guide_legend(nrow=2, byrow=True))
+        + p9.scale_color_manual(values=PLOT_COLOR_MAPPING)
     )
     p.show()
     modelname = random_seed_results_df["modelname"].iloc[0]
@@ -975,9 +818,7 @@ def main():
     librispeech_split = "dev-clean"
     librispeech_split = "train-clean-100"
     all_results_df = read_all_results(librispeech_split)
-    plot_results_syntax_lexical(all_results_df)
-    plot_results_acoustic_phonetic_speaker(all_results_df)
-    plot_focus_wav2vec2_base(all_results_df)
+    plot_main_figures(all_results_df)
 
     librispeech_split = "train-clean-100"
     modelname = "facebook/wav2vec2-base"

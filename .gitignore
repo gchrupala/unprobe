@@ -184,3 +184,4 @@ results/*
 *.bin 
 *.gz
 uv.lock
+figures/*

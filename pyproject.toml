@@ -174,4 +174,5 @@ docstring-code-line-length = "dynamic"
 dev = [
     "ipython>=9.0.2",
     "jupyter>=1.1.1",
+    "pytest>=9.0.2",
 ]

@@ -8,10 +8,6 @@ from typing import Union
 import numpy as np
 import pandas as pd
 import plotnine as p9
-from matplotlib import legend
-from pandas import plotting
-from plotnine.options import figure_size
-from pyparsing import line
 
 from utils import FIGURES_ROOT, RESULTS_ROOT
 

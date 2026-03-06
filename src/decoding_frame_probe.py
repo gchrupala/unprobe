@@ -11,9 +11,8 @@ from sklearn.metrics import r2_score
 from sklearn.model_selection import GridSearchCV, train_test_split
 from tqdm.auto import tqdm, trange
 
-from frame_probe import parse_args, pick_probe
 from load_probe_data import get_section_shapes, load_data
-from plotting_results import FIGURES_ROOT, RESULTS_ROOT
+from utils import FIGURES_ROOT, RESULTS_ROOT, parse_args, pick_probe
 
 # Set up logger with time, name, level, and message
 logging.basicConfig(

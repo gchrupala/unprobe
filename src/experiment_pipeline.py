@@ -1,6 +1,3 @@
-# Use Acoustic features as the baseline for EncoderProbe
-# Add additional features on top of acoustic features to show how much extra information each feature contributes on top of
-
 import logging
 import os
 import pickle
@@ -12,7 +9,13 @@ from sklearn.model_selection import GridSearchCV, train_test_split
 from tqdm.auto import tqdm, trange
 
 from load_probe_data import get_section_shapes, load_data
-from utils import RESULTS_ROOT, SAVEPATH, parse_args, pick_probe, r2_score
+from probe_runner import (
+    build_feature_lookup,
+    drop_feature_groups,
+    run_standard_probe,
+    select_feature_groups,
+)
+from utils import RESULTS_ROOT, SAVEPATH, parse_args, pick_probe
 
 # Set up logger with time, name, level, and message
 logging.basicConfig(
@@ -30,25 +33,16 @@ def run_acoustic_base_probe(
     feature_sets: np.ndarray,
     model_hidden_states: np.ndarray,
     section_shapes: np.ndarray,
-    speaker_ID: list[str],
+    speaker_ids: list[str],
     feature_group_config: list[list[str]],
-    librispeech_split,
-    modelname,
+    librispeech_split: str,
+    modelname: str,
     estimator,
     param_grid,
 ):
-    results = []
-
-    acoustic_feature_name = "eGeMAPSv02"
-    acoustic_start = int(section_shapes[0][0])
-    acoustic_end = int(section_shapes[0][1])
-
-    # Turn section_shapes into a dict for easy access
-    start_end_idx = {}
-    for start, end, name in section_shapes:
-        start_end_idx[str(name)] = (int(start), int(end))
-
-    acoustic_features = feature_sets[:, acoustic_start:acoustic_end]
+    lookup = build_feature_lookup(section_shapes)
+    acoustic_features = select_feature_groups(feature_sets, lookup, ["eGeMAPSv02"])
+    results: list[dict] = []
 
     logger.info(
         "Running experiments with acoustic features as baseline. Adding additional features on top of acoustic features."
@@ -56,118 +50,56 @@ def run_acoustic_base_probe(
     for feature_group in tqdm(
         feature_group_config, desc="Feature Groups", position=0, leave=True
     ):
-        tqdm.write(f"Running feature group: {feature_group}")
+        config_name = "+".join(feature_group)
+        extra_features = select_feature_groups(feature_sets, lookup, feature_group)
+        selected_features = np.concatenate((acoustic_features, extra_features), axis=1)
 
-        # Determine the indices for the current feature group
-        selected_feature_indices = []
-        for feature_name in feature_group:
-            start, end = start_end_idx[feature_name]
-            selected_feature_indices.extend(list(range(start, end)))
-        # Combine acoustic features with the selected feature group
-        selected_features = np.concatenate(
-            (acoustic_features, feature_sets[:, selected_feature_indices]), axis=1
-        )
         for layer in trange(
             model_hidden_states.shape[1], desc="Layers", position=1, leave=False
         ):
-            config_name = "+".join(feature_group)
-            tqdm.write(f"Running layer {layer} with feature group {config_name}")
-
-            # Proceed with training and evaluation using selected_features
-            x_train, x_test, y_train, y_test, _, _ = train_test_split(
+            probe_result = run_standard_probe(
+                estimator,
+                param_grid,
                 selected_features,
                 model_hidden_states[:, layer, :],
-                speaker_ID,
-                test_size=0.2,
-                random_state=42,
-                stratify=speaker_ID,
+                stratify_labels=speaker_ids,
             )
-            grid_search = GridSearchCV(
-                estimator=estimator,
-                param_grid=param_grid,
-                scoring="r2",
-                cv=5,
-                n_jobs=-1,
-                verbose=0,
-            )
-            grid_search.fit(x_train, y_train)
-            best_model = grid_search.best_estimator_
-
-            y_test_pred = best_model.predict(x_test)
-            test_score = r2_score(
-                y_test,
-                y_test_pred,
-                multioutput="variance_weighted",
-                train_data=y_train,
-            )
-            train_score = r2_score(
-                y_train,
-                best_model.predict(x_train),
-                multioutput="variance_weighted",
-                train_data=y_train,
+            results.append(
+                {
+                    "librispeech_split": librispeech_split,
+                    "modelname": modelname,
+                    "layer": layer,
+                    "config_name": config_name,
+                    "train_score": probe_result["train_score"],
+                    "test_score": probe_result["test_score"],
+                    "best_params": probe_result["best_params"],
+                    "mode": "acoustic-baseline-addition",
+                }
             )
 
-            result = {
-                "librispeech_split": librispeech_split,
-                "modelname": modelname,
-                "layer": layer,
-                "config_name": config_name,
-                "train_score": train_score,
-                "test_score": test_score,
-                "best_params": grid_search.best_params_,
-                "mode": "acoustic-baseline-addition",
-            }
-            results.append(result)
-
-    # Do a baseline with only acoustic features
     logger.info("Running baseline with only acoustic features")
     for layer in trange(
         model_hidden_states.shape[1], desc="Layers", position=1, leave=False
     ):
-        config_name = "AcousticOnly"
-        # Proceed with training and evaluation using selected_features
-        x_train, x_test, y_train, y_test = train_test_split(
+        probe_result = run_standard_probe(
+            estimator,
+            param_grid,
             acoustic_features,
             model_hidden_states[:, layer, :],
-            test_size=0.2,
-            random_state=42,
+            stratify_labels=speaker_ids,
         )
-        grid_search = GridSearchCV(
-            estimator=estimator,
-            param_grid=param_grid,
-            scoring="r2",
-            cv=5,
-            n_jobs=-1,
-            verbose=0,
+        results.append(
+            {
+                "librispeech_split": librispeech_split,
+                "modelname": modelname,
+                "layer": layer,
+                "config_name": "AcousticOnly",
+                "train_score": probe_result["train_score"],
+                "test_score": probe_result["test_score"],
+                "best_params": probe_result["best_params"],
+                "mode": "acoustic-baseline-addition",
+            }
         )
-        grid_search.fit(x_train, y_train)
-        best_model = grid_search.best_estimator_
-
-        y_test_pred = best_model.predict(x_test)
-        test_score = r2_score(
-            y_test,
-            y_test_pred,
-            multioutput="variance_weighted",
-            train_data=y_train,
-        )
-        train_score = r2_score(
-            y_train,
-            best_model.predict(x_train),
-            multioutput="variance_weighted",
-            train_data=y_train,
-        )
-
-        result = {
-            "librispeech_split": librispeech_split,
-            "modelname": modelname,
-            "layer": layer,
-            "config_name": config_name,
-            "train_score": train_score,
-            "test_score": test_score,
-            "best_params": grid_search.best_params_,
-            "mode": "acoustic-baseline-addition",
-        }
-        results.append(result)
     return results
 
 
@@ -175,141 +107,72 @@ def run_topdown_probe(
     feature_sets: np.ndarray,
     model_hidden_states: np.ndarray,
     section_shapes: np.ndarray,
-    speaker_ID: list[str],
+    speaker_ids: list[str],
     feature_group_config: list[list[str]],
-    librispeech_split,
-    modelname,
+    librispeech_split: str,
+    modelname: str,
     estimator,
     param_grid,
     do_topline: bool = True,
 ):
-    results = []
+    lookup = build_feature_lookup(section_shapes)
+    results: list[dict] = []
 
-    # Turn section_shapes into a dict for easy access
-    start_end_idx = {}
-    for start, end, name in section_shapes:
-        start_end_idx[str(name)] = (int(start), int(end))
     logger.info(
         "Running experiments with top-down approach. Removing features from the full feature set to see how much information is lost by removing each feature group."
     )
     for feature_group in tqdm(
         feature_group_config, desc="Feature Groups", position=0, leave=True
     ):
-        tqdm.write(f"Running feature group: {feature_group}")
-
-        # Determine the indices for the current feature group
-        selected_feature_indices = []
-        for feature_name in feature_group:
-            start, end = start_end_idx[feature_name]
-            selected_feature_indices.extend(list(range(start, end)))
-        # We use a mask that marks selected_features as 0 so these features are not used
-        selection_mask = np.ones(feature_sets.shape[1], dtype=bool)
-        selection_mask[selected_feature_indices] = False
-        # Select features that are NOT in selected_feature_indices
-        selected_features = feature_sets[:, selection_mask]
+        config_name = "+".join(feature_group)
+        reduced_features = drop_feature_groups(feature_sets, lookup, feature_group)
         for layer in trange(
             model_hidden_states.shape[1], desc="Layers", position=1, leave=False
         ):
-            config_name = "+".join(feature_group)
-            tqdm.write(f"Running layer {layer} with feature group {config_name}")
-
-            # Proceed with training and evaluation using selected_features
-            x_train, x_test, y_train, y_test, _, _ = train_test_split(
-                selected_features,
+            probe_result = run_standard_probe(
+                estimator,
+                param_grid,
+                reduced_features,
                 model_hidden_states[:, layer, :],
-                speaker_ID,
-                test_size=0.2,
-                random_state=42,
-                stratify=speaker_ID,
+                stratify_labels=speaker_ids,
             )
-            grid_search = GridSearchCV(
-                estimator=estimator,
-                param_grid=param_grid,
-                scoring="r2",
-                cv=5,
-                n_jobs=-1,
-                verbose=0,
-            )
-            grid_search.fit(x_train, y_train)
-            best_model = grid_search.best_estimator_
-
-            y_test_pred = best_model.predict(x_test)
-            test_score = r2_score(
-                y_test,
-                y_test_pred,
-                multioutput="variance_weighted",
-                train_data=y_train,
-            )
-            train_score = r2_score(
-                y_train,
-                best_model.predict(x_train),
-                multioutput="variance_weighted",
-                train_data=y_train,
+            results.append(
+                {
+                    "librispeech_split": librispeech_split,
+                    "modelname": modelname,
+                    "layer": layer,
+                    "config_name": config_name,
+                    "train_score": probe_result["train_score"],
+                    "test_score": probe_result["test_score"],
+                    "best_params": probe_result["best_params"],
+                    "mode": "top-down",
+                }
             )
 
-            result = {
-                "librispeech_split": librispeech_split,
-                "modelname": modelname,
-                "layer": layer,
-                "config_name": config_name,
-                "train_score": train_score,
-                "test_score": test_score,
-                "best_params": grid_search.best_params_,
-                "mode": "top-down",
-            }
-            results.append(result)
-
-    # Do a topline with All features if do_topline is True
     if do_topline:
         logger.info("Running topline with all features")
         for layer in trange(
             model_hidden_states.shape[1], desc="Layers", position=1, leave=False
         ):
-            config_name = "AllFeatures"
-
-            # Proceed with training and evaluation using all availale features
-            x_train, x_test, y_train, y_test = train_test_split(
+            probe_result = run_standard_probe(
+                estimator,
+                param_grid,
                 feature_sets,
                 model_hidden_states[:, layer, :],
-                test_size=0.2,
-                random_state=42,
+                stratify_labels=speaker_ids,
             )
-            grid_search = GridSearchCV(
-                estimator=estimator,
-                param_grid=param_grid,
-                scoring="r2",
-                cv=5,
-                n_jobs=-1,
-                verbose=0,
+            results.append(
+                {
+                    "librispeech_split": librispeech_split,
+                    "modelname": modelname,
+                    "layer": layer,
+                    "config_name": "AllFeatures",
+                    "train_score": probe_result["train_score"],
+                    "test_score": probe_result["test_score"],
+                    "best_params": probe_result["best_params"],
+                    "mode": "top-down",
+                }
             )
-            grid_search.fit(x_train, y_train)
-            best_model = grid_search.best_estimator_
-
-            y_test_pred = best_model.predict(x_test)
-            test_score = r2_score(
-                y_test,
-                y_test_pred,
-                multioutput="variance_weighted",
-                train_data=y_train,
-            )
-            train_score = r2_score(
-                y_train,
-                best_model.predict(x_train),
-                multioutput="variance_weighted",
-                train_data=y_train,
-            )
-
-            result = {
-                "librispeech_split": librispeech_split,
-                "modelname": modelname,
-                "layer": layer,
-                "config_name": config_name,
-                "train_score": train_score,
-                "test_score": test_score,
-                "best_params": grid_search.best_params_,
-                "mode": "top-down",
-            }
-            results.append(result)
     return results
 
 
@@ -455,7 +318,7 @@ def main():
         model_hidden_states=model_hidden_states,
         section_shapes=section_shapes,
         do_topline=True,
-        speaker_ID=speaker_ID,
+        speaker_ids=speaker_ID,
         feature_group_config=feature_group_config
         + [
             [
@@ -496,7 +359,7 @@ def main():
         model_hidden_states=model_hidden_states,
         section_shapes=section_shapes,
         do_topline=False,
-        speaker_ID=speaker_ID,
+        speaker_ids=speaker_ID,
         feature_group_config=syntax_feature_removal_config,
         librispeech_split=librispeech_split,
         modelname=modelname,
@@ -536,7 +399,7 @@ def main():
         model_hidden_states=model_hidden_states,
         section_shapes=section_shapes,
         do_topline=False,
-        speaker_ID=speaker_ID,
+        speaker_ids=speaker_ID,
         feature_group_config=speakerid_phonetic_acoustic_removal_config,
         librispeech_split=librispeech_split,
         modelname=modelname,

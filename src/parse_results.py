@@ -1,3 +1,4 @@
+import argparse
 import glob
 import logging
 import os
@@ -432,7 +433,7 @@ def get_combined_single_results(
     return mode_results_df
 
 
-def plot_main_figures(all_results_df: pd.DataFrame):
+def plot_main_figures(all_results_df: pd.DataFrame, show_plots: bool = False):
     # For each mode, we plot the test score with the topline
     # Topline and baseline comparison points are "All Features" and "Acoustics Only"
     mode = "top-down"
@@ -615,21 +616,25 @@ def plot_main_figures(all_results_df: pd.DataFrame):
             dpi=300,
             legend_title=p9.element_blank(),
         )
-        p.show()
+        if show_plots:
+            p.show()
 
         p.save(os.path.join(FIGURES_ROOT, f"{mode}_{featname.lower()}_results.png"))
 
 
 def plot_focus_random_seed(
-    random_seed_results_df: pd.DataFrame, focus: str = "syntax_lexical"
+    random_seed_results_df: pd.DataFrame,
+    focus: str = "syntax_lexical",
+    show_plot: bool = False,
+    print_ttest: bool = False,
 ):
     # Plot the syntax and lexical removal results,
     # to see if the random seed has an impact on the results
 
     focus_lookup = {
         "syntax_lexical": ["-Lexicon", "-Syntax", "-Syntax -Lexicon"],
-        "phonetic_speaker": ["-Phonetics", "-Speaker", "-Phonetic -Speaker"],
-        "acoustic_speaker": ["-Acoustics", "-Speaker", "-Speaker -Acoustics"],
+        "phonetic_speaker": ["-Phonetics", "-Speaker", "-Phonetics -Speaker"],
+        "acoustic_speaker": ["-Acoustics", "-Speaker", "-Acoustics -Speaker"],
     }
 
     subset_results_df = random_seed_results_df[
@@ -667,17 +672,25 @@ def plot_focus_random_seed(
         .reset_index()
     )
 
+    # Order subset_results_comparison_df_mean based on how many - is in the config_name, with fewer - first, and if tie, sort alphabetically
+    subset_results_comparison_df_mean["config_name"] = pd.Categorical(
+        subset_results_comparison_df_mean["config_name"],
+        categories=CONFIG_NAME_ORDER,
+        ordered=True,
+    )
+
     # Print the mean std of the test_score for each config_name and layer across different random seeds
-    print(f"Subset Results with Random Seeds for focus '{focus}':")
-    print(
+    logger.info("Subset Results with Random Seeds for focus '%s':", focus)
+    logger.info(
+        "\n%s",
         subset_results_df_mean.groupby(["config_name"])[
             ["test_score_mean", "test_score_std"]
-        ].mean()
+        ].mean(),
     )
 
     # Calculate the confidence interval for the test_score_mean using the test_score_std and the number of random seeds
     num_random_seeds = random_seed_results_df["random_seed"].nunique()
-    print(f"Number of random seeds: {num_random_seeds}")
+    logger.info("Number of random seeds: %s", num_random_seeds)
     subset_results_df_mean["ci_lower"] = subset_results_df_mean[
         "test_score_mean"
     ] - 1.96 * subset_results_df_mean["test_score_std"] / np.sqrt(num_random_seeds)
@@ -700,29 +713,35 @@ def plot_focus_random_seed(
         lambda x: np.mean(x["ci_upper"] - x["ci_lower"])
     )
     mean_ci_width = np.mean(mean_ci_per_config)
-    print(f"Mean confidence interval width: {mean_ci_width:.4f}")
+    logger.info("Mean confidence interval width: %.4f", mean_ci_width)
 
-    # Calculate the pairwise t-test between the different config_names for each layer to see if the difference is statistically significant
-    from scipy.stats import ttest_ind
+    if print_ttest:
+        # Calculate the pairwise t-test between the different config_names for each layer to see if the difference is statistically significant
+        from scipy.stats import ttest_ind
 
-    config_names = subset_results_df["config_name"].unique()
-    for i in range(len(config_names)):
-        for j in range(i + 1, len(config_names)):
-            config_name_i = config_names[i]
-            config_name_j = config_names[j]
-            for layer in subset_results_df["layer"].unique():
-                scores_i = subset_results_df[
-                    (subset_results_df["config_name"] == config_name_i)
-                    & (subset_results_df["layer"] == layer)
-                ]["test_score"]
-                scores_j = subset_results_df[
-                    (subset_results_df["config_name"] == config_name_j)
-                    & (subset_results_df["layer"] == layer)
-                ]["test_score"]
-                t_stat, p_value = ttest_ind(scores_i, scores_j)
-                print(
-                    f"T-test between {config_name_i} and {config_name_j} at layer {layer}: t-statistic={t_stat:.4f}, p-value={p_value:.4f}"
-                )
+        config_names = subset_results_df["config_name"].unique()
+        for i in range(len(config_names)):
+            for j in range(i + 1, len(config_names)):
+                config_name_i = config_names[i]
+                config_name_j = config_names[j]
+                for layer in subset_results_df["layer"].unique():
+                    scores_i = subset_results_df[
+                        (subset_results_df["config_name"] == config_name_i)
+                        & (subset_results_df["layer"] == layer)
+                    ]["test_score"]
+                    scores_j = subset_results_df[
+                        (subset_results_df["config_name"] == config_name_j)
+                        & (subset_results_df["layer"] == layer)
+                    ]["test_score"]
+                    t_stat, p_value = ttest_ind(scores_i, scores_j)
+                    logger.info(
+                        "T-test between %s and %s at layer %s: t-statistic=%.4f, p-value=%.4f",
+                        config_name_i,
+                        config_name_j,
+                        layer,
+                        t_stat,
+                        p_value,
+                    )
 
     # Plot the random seed results with error bars using plotnine
     p = (
@@ -799,7 +818,8 @@ def plot_focus_random_seed(
         + p9.guides(color=p9.guide_legend(nrow=2, byrow=True))
         + p9.scale_color_manual(values=PLOT_COLOR_MAPPING)
     )
-    p.show()
+    if show_plot:
+        p.show()
     modelname = random_seed_results_df["modelname"].iloc[0]
     modelname = modelname.split(": ")[-1]
     p.save(
@@ -810,26 +830,355 @@ def plot_focus_random_seed(
     )
 
 
+def summarize_random_seed_line_differences(
+    random_seed_results_df: pd.DataFrame,
+    focus_lookup: dict[str, Union[list[str], dict[str, list[str] | str]]],
+    output_dir: str = RESULTS_ROOT,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Summarize pairwise line differences across random seeds and layers.
+
+    Args:
+        random_seed_results_df: DataFrame containing random-seed runs.
+        focus_lookup: Mapping of focus names to either:
+            - ordered config list (single removals + joint removal), or
+            - dict with keys `single_configs`, `joint_config`, and optional
+              `comparison_configs` / `line_configs`.
+        output_dir: Directory to save CSV summaries.
+
+    Returns:
+        Tuple of (summary_df, layerwise_df).
+    """
+
+    os.makedirs(output_dir, exist_ok=True)
+    summary_rows: list[dict] = []
+    layerwise_rows: list[dict] = []
+
+    for focus, focus_spec in focus_lookup.items():
+
+        def _norm_key(value: float) -> float:
+            return round(float(value), 8)
+
+        if isinstance(focus_spec, dict):
+            single_configs = list(focus_spec.get("single_configs", []))
+            joint_config = focus_spec.get("joint_config")
+            if isinstance(joint_config, str):
+                line_configs = list(
+                    focus_spec.get("line_configs", [*single_configs, joint_config])
+                )
+            else:
+                line_configs = list(focus_spec.get("line_configs", single_configs))
+            comparison_configs = list(
+                focus_spec.get("comparison_configs", ["All Features", "Acoustics Only"])
+            )
+        else:
+            line_configs = list(focus_spec)
+            single_configs = (
+                line_configs[:-1] if len(line_configs) > 1 else line_configs
+            )
+            joint_config = line_configs[-1] if line_configs else None
+            comparison_configs = ["All Features", "Acoustics Only"]
+
+        subset = random_seed_results_df[
+            random_seed_results_df["config_name"].isin(line_configs)
+        ].copy()
+        if subset.empty:
+            logger.warning("No rows found for focus '%s'; skipping summary.", focus)
+            continue
+
+        subset_comparison = random_seed_results_df[
+            random_seed_results_df["config_name"].isin(comparison_configs)
+        ].copy()
+
+        layer_lookup: dict[float, int] = {}
+        if "layer" in subset.columns:
+            layer_rows = subset[["normalized_layer", "layer"]].dropna()
+            if not layer_rows.empty:
+                layer_lookup = (
+                    layer_rows.groupby("normalized_layer")["layer"]
+                    .agg(lambda x: int(round(float(np.median(x)))))
+                    .rename(index=lambda x: _norm_key(x))
+                    .to_dict()
+                )
+
+        if (
+            len(single_configs) >= 2
+            and isinstance(joint_config, str)
+            and joint_config in subset["config_name"].unique()
+            and not subset_comparison.empty
+        ):
+            subset = get_combined_single_results(
+                subset,
+                subset_comparison,
+                target_configs=single_configs,
+                new_config_name="Sum of Individual Effects",
+            )
+
+        pivot_df = subset.pivot_table(
+            index=["random_seed", "normalized_layer"],
+            columns="config_name",
+            values="test_score",
+            aggfunc="mean",
+        )
+
+        compare_order = [*line_configs, "Sum of Individual Effects"]
+        present_configs = [cfg for cfg in compare_order if cfg in pivot_df.columns]
+        if len(present_configs) < 2:
+            logger.warning(
+                "Focus '%s' has fewer than 2 present config lines (%s); skipping.",
+                focus,
+                present_configs,
+            )
+            continue
+
+        for i in range(len(present_configs)):
+            for j in range(i + 1, len(present_configs)):
+                cfg_a = present_configs[i]
+                cfg_b = present_configs[j]
+                pair_name = f"{cfg_a} - {cfg_b}"
+
+                delta_series = (pivot_df[cfg_a] - pivot_df[cfg_b]).dropna()
+                if delta_series.empty:
+                    continue
+
+                n_points = int(delta_series.shape[0])
+                mean_delta = float(delta_series.mean())
+                std_delta = float(delta_series.std(ddof=1)) if n_points > 1 else 0.0
+                sem_delta = std_delta / np.sqrt(n_points) if n_points > 1 else 0.0
+                ci_low = mean_delta - 1.96 * sem_delta
+                ci_high = mean_delta + 1.96 * sem_delta
+                mean_abs_delta = float(np.abs(delta_series).mean())
+                pct_positive = float((delta_series > 0).mean())
+
+                # Seed-level aggregation to avoid overweighting layers
+                seed_level_delta = (
+                    delta_series.reset_index().groupby("random_seed")[0].mean().dropna()
+                )
+                n_seed = int(seed_level_delta.shape[0])
+                seed_mean_delta = float(seed_level_delta.mean())
+                seed_std_delta = (
+                    float(seed_level_delta.std(ddof=1)) if n_seed > 1 else 0.0
+                )
+                seed_sem_delta = seed_std_delta / np.sqrt(n_seed) if n_seed > 1 else 0.0
+                seed_ci_low = seed_mean_delta - 1.96 * seed_sem_delta
+                seed_ci_high = seed_mean_delta + 1.96 * seed_sem_delta
+
+                from scipy.stats import ttest_1samp
+
+                t_stat, p_value = (
+                    ttest_1samp(seed_level_delta, popmean=0.0)
+                    if n_seed > 1
+                    else (np.nan, np.nan)
+                )
+
+                summary_rows.append(
+                    {
+                        "focus": focus,
+                        "pair": pair_name,
+                        "config_a": cfg_a,
+                        "config_b": cfg_b,
+                        "joint_config": joint_config,
+                        "single_configs": "+".join(single_configs),
+                        "is_joint_vs_sum": int(
+                            {
+                                cfg_a,
+                                cfg_b,
+                            }
+                            == {joint_config, "Sum of Individual Effects"}
+                        )
+                        if isinstance(joint_config, str)
+                        else 0,
+                        "n_points": n_points,
+                        "mean_delta": mean_delta,
+                        "std_delta": std_delta,
+                        "ci_low": ci_low,
+                        "ci_high": ci_high,
+                        "mean_abs_delta": mean_abs_delta,
+                        "pct_positive": pct_positive,
+                        "n_seed": n_seed,
+                        "seed_mean_delta": seed_mean_delta,
+                        "seed_std_delta": seed_std_delta,
+                        "seed_ci_low": seed_ci_low,
+                        "seed_ci_high": seed_ci_high,
+                        "t_stat_seed_mean_delta": float(t_stat)
+                        if not np.isnan(t_stat)
+                        else np.nan,
+                        "p_value_seed_mean_delta": float(p_value)
+                        if not np.isnan(p_value)
+                        else np.nan,
+                    }
+                )
+
+                for (seed, normalized_layer), delta_val in delta_series.items():
+                    norm_key = _norm_key(normalized_layer)
+                    layerwise_rows.append(
+                        {
+                            "focus": focus,
+                            "pair": pair_name,
+                            "config_a": cfg_a,
+                            "config_b": cfg_b,
+                            "joint_config": joint_config,
+                            "single_configs": "+".join(single_configs),
+                            "is_joint_vs_sum": int(
+                                {
+                                    cfg_a,
+                                    cfg_b,
+                                }
+                                == {joint_config, "Sum of Individual Effects"}
+                            )
+                            if isinstance(joint_config, str)
+                            else 0,
+                            "random_seed": int(seed),
+                            "normalized_layer": float(normalized_layer),
+                            "layer": layer_lookup.get(norm_key, np.nan),
+                            "delta": float(delta_val),
+                        }
+                    )
+
+    summary_df = pd.DataFrame(summary_rows)
+    layerwise_df = pd.DataFrame(layerwise_rows)
+
+    if summary_df.empty:
+        logger.warning("No random-seed difference summaries were generated.")
+        return summary_df, layerwise_df
+
+    modelname = random_seed_results_df["modelname"].iloc[0].split(": ")[-1]
+    split_name = random_seed_results_df["librispeech_split"].iloc[0]
+    summary_path = os.path.join(
+        output_dir,
+        f"{modelname}_{split_name}_random_seed_line_diff_summary.csv",
+    )
+    layerwise_path = os.path.join(
+        output_dir,
+        f"{modelname}_{split_name}_random_seed_line_diff_layerwise.csv",
+    )
+    summary_df.to_csv(summary_path, index=False)
+    layerwise_df.to_csv(layerwise_path, index=False)
+
+    logger.info("Saved random-seed difference summary to %s", summary_path)
+    logger.info("Saved random-seed layerwise deltas to %s", layerwise_path)
+
+    for focus in focus_lookup:
+        focus_rows = summary_df[summary_df["focus"] == focus]
+        if focus_rows.empty:
+            continue
+        interaction_rows = focus_rows[focus_rows["is_joint_vs_sum"] == 1]
+        if not interaction_rows.empty:
+            logger.info(
+                "Joint vs Sum-of-individuals for focus '%s':\n%s",
+                focus,
+                interaction_rows[
+                    [
+                        "pair",
+                        "mean_delta",
+                        "ci_low",
+                        "ci_high",
+                        "seed_mean_delta",
+                        "seed_ci_low",
+                        "seed_ci_high",
+                        "p_value_seed_mean_delta",
+                    ]
+                ].to_string(index=False),
+            )
+        logger.info(
+            "Top pairwise differences for focus '%s':\n%s",
+            focus,
+            focus_rows.sort_values("mean_abs_delta", ascending=False)
+            .head(3)[
+                [
+                    "pair",
+                    "mean_delta",
+                    "ci_low",
+                    "ci_high",
+                    "mean_abs_delta",
+                    "pct_positive",
+                    "p_value_seed_mean_delta",
+                ]
+            ]
+            .to_string(index=False),
+        )
+
+    return summary_df, layerwise_df
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--show_plots",
+        action="store_true",
+        help="Display generated plots interactively. If unset, plots are only saved.",
+    )
+    parser.add_argument(
+        "--print_ttest",
+        action="store_true",
+        help="Print per-layer pairwise t-test results to the console.",
+    )
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
     librispeech_split = "dev-clean"
     librispeech_split = "train-clean-100"
     all_results_df = read_all_results(librispeech_split)
-    plot_main_figures(all_results_df)
+    plot_main_figures(all_results_df, show_plots=args.show_plots)
 
     librispeech_split = "train-clean-100"
     modelname = "facebook/wav2vec2-base"
     random_seed_results_df = read_random_seed_results(
         librispeech_split=librispeech_split, modelname=modelname
     )
-    plot_focus_random_seed(random_seed_results_df, focus="syntax_lexical")
-    plot_focus_random_seed(random_seed_results_df, focus="acoustic_speaker")
-    plot_focus_random_seed(random_seed_results_df, focus="phonetic_speaker")
+
+    all_focus_lookup = {
+        "syntax_lexical": {
+            "single_configs": ["-Lexicon", "-Syntax"],
+            "joint_config": "-Syntax -Lexicon",
+        },
+        "acoustic_speaker": {
+            "single_configs": ["-Acoustics", "-Speaker"],
+            "joint_config": "-Acoustics -Speaker",
+        },
+        "phonetic_speaker": {
+            "single_configs": ["-Phonetics", "-Speaker"],
+            "joint_config": "-Phonetics -Speaker",
+        },
+    }
+    summarize_random_seed_line_differences(
+        random_seed_results_df=random_seed_results_df,
+        focus_lookup=all_focus_lookup,
+    )
+
+    plot_focus_random_seed(
+        random_seed_results_df,
+        focus="syntax_lexical",
+        show_plot=args.show_plots,
+        print_ttest=args.print_ttest,
+    )
+    plot_focus_random_seed(
+        random_seed_results_df,
+        focus="acoustic_speaker",
+        show_plot=args.show_plots,
+        print_ttest=args.print_ttest,
+    )
+    plot_focus_random_seed(
+        random_seed_results_df,
+        focus="phonetic_speaker",
+        show_plot=args.show_plots,
+        print_ttest=args.print_ttest,
+    )
 
     modelname = "google-bert/bert-base-uncased"
     random_seed_results_df = read_random_seed_results(
         librispeech_split=librispeech_split, modelname=modelname
     )
-    plot_focus_random_seed(random_seed_results_df)
+    summarize_random_seed_line_differences(
+        random_seed_results_df=random_seed_results_df,
+        focus_lookup=all_focus_lookup,
+    )
+    plot_focus_random_seed(
+        random_seed_results_df,
+        show_plot=args.show_plots,
+        print_ttest=args.print_ttest,
+    )
 
 
 if __name__ == "__main__":

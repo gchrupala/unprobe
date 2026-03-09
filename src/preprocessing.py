@@ -4,6 +4,7 @@ import logging
 import os
 import pickle
 import sys
+from typing import Any
 
 import benepar
 import fasttext
@@ -19,6 +20,8 @@ import yaml
 from datasets import Dataset
 from tqdm.auto import tqdm
 
+from utils import ALIGNMENT_ROOT, DATASET_ROOT, PROJECT_ROOT, SAVEPATH
+
 # Set up logger with time, name, level, and message
 logging.basicConfig(
     level=logging.INFO,
@@ -30,28 +33,57 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# Get the hostname of the machine running the code
-hostname = os.uname().nodename
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+_SPACY_NLP = None
+_BENEPAR_LABELS_DICT: dict[str, int] | None = None
+_FASTTEXT_MODEL = None
 
 device = (
-    torch.accelerator.current_accelerator()
-    if torch.accelerator.is_available()
+    torch.device("cuda")
+    if torch.cuda.is_available()
+    else torch.device("mps")
+    if getattr(torch.backends, "mps", None) is not None
+    and torch.backends.mps.is_available()
     else torch.device("cpu")
 )
 
-if "snellius" in hostname:
-    # If running on Snellius, use the Snellius dataset root
-    DATASETPATH = os.path.realpath("/projects/prjs1586/corpora/LibriSpeech")
-    ALIGNMENTPATH = DATASETPATH.replace("LibriSpeech", "librispeech_textgrids")
-    SAVEPATH = "/projects/prjs1586/experimental_data"
+DATASETPATH = DATASET_ROOT
+ALIGNMENTPATH = ALIGNMENT_ROOT
 
-else:
-    # If running on local machine, use the local dataset root
-    DATASETPATH = os.path.realpath("/corpora/LibriSpeech/LibriSpeech")
-    # ALIGNMENTPATH = os.path.expanduser(f"~/corpora/librispeech_alignment/")
-    ALIGNMENTPATH = os.path.join(PROJECT_ROOT, "data")
-    SAVEPATH = os.path.join(PROJECT_ROOT, "experimental_data")
+
+def _get_spacy_benepar_nlp():
+    global _SPACY_NLP
+    if _SPACY_NLP is not None:
+        return _SPACY_NLP
+
+    nlp = spacy.load("en_core_web_sm")
+    if spacy.__version__.startswith("2"):
+        nlp.add_pipe(benepar.BeneparComponent("benepar_en3"))
+    else:
+        nlp.add_pipe("benepar", config={"model": "benepar_en3"})
+    _SPACY_NLP = nlp
+    return _SPACY_NLP
+
+
+def _get_benepar_labels_dict() -> dict[str, int]:
+    global _BENEPAR_LABELS_DICT
+    if _BENEPAR_LABELS_DICT is not None:
+        return _BENEPAR_LABELS_DICT
+
+    with open(f"{PROJECT_ROOT}/src/penn_treebank_labels.yml", "r") as f:
+        benepar_labels: dict[str, Any] = yaml.safe_load(f)
+    benepar_labels["<unk>"] = "UNK"
+    benepar_labels["<pad>"] = "PAD"
+    _BENEPAR_LABELS_DICT = {label: i for i, label in enumerate(benepar_labels.keys())}
+    return _BENEPAR_LABELS_DICT
+
+
+def _get_fasttext_model(target_dim: int = 100):
+    global _FASTTEXT_MODEL
+    if _FASTTEXT_MODEL is None:
+        fasttext.util.download_model("en", if_exists="ignore")
+        _FASTTEXT_MODEL = fasttext.load_model("cc.en.300.bin")
+        fasttext.util.reduce_model(_FASTTEXT_MODEL, target_dim)
+    return _FASTTEXT_MODEL
 
 
 def save_librispeech_tg_to_single_file(
@@ -154,20 +186,13 @@ def efficient_syntax_parsing(transcriptions: list[dict]) -> list[np.ndarray]:
     list_of_all_sents = [" ".join(x["words"]) for x in transcriptions]
 
     # Load syntax parsing models
-    nlp = spacy.load("en_core_web_sm")
-    nlp.add_pipe("benepar", config={"model": "benepar_en3"})
-    tagger_labels = nlp.get_pipe("tagger").labels  # type: ignore
-    tagger_label_dict = {label: i for i, label in enumerate(tagger_labels)}
-    parser_labels = nlp.get_pipe("parser").labels  # type: ignore
-    parser_label_dict = {label: i for i, label in enumerate(parser_labels)}
+    nlp = _get_spacy_benepar_nlp()
+    # tagger_labels = nlp.get_pipe("tagger").labels  # type: ignore
+    # tagger_label_dict = {label: i for i, label in enumerate(tagger_labels)}
+    # parser_labels = nlp.get_pipe("parser").labels  # type: ignore
+    # parser_label_dict = {label: i for i, label in enumerate(parser_labels)}
     # Similarly also get all the benepar labels
-    with open(f"{PROJECT_ROOT}/src/penn_treebank_labels.yml", "r") as f:
-        benepar_labels = yaml.safe_load(f)
-        benepar_labels["<unk>"] = "UNK"  # Add an unknown label
-        benepar_labels["<pad>"] = "PAD"  # Add a padding label
-        benepar_labels_dict = {
-            label: i for i, label in enumerate(benepar_labels.keys())
-        }
+    benepar_labels_dict = _get_benepar_labels_dict()
 
     all_syntax_feats = []
     for doc in tqdm(
@@ -188,7 +213,9 @@ def efficient_syntax_parsing(transcriptions: list[dict]) -> list[np.ndarray]:
             node_location_in_tree = nltk_tree.leaf_treeposition(i)
 
             constituent_label = nltk_tree[node_location_in_tree[:-1]]._label
-            constituent_label = benepar_labels_dict.get(constituent_label, 67)
+            constituent_label = benepar_labels_dict.get(
+                constituent_label, benepar_labels_dict["<unk>"]
+            )
 
             # Word location (depth) in tree
             node_depth_in_tree = len(node_location_in_tree)
@@ -201,7 +228,6 @@ def efficient_syntax_parsing(transcriptions: list[dict]) -> list[np.ndarray]:
             for j, node in enumerate(node_location_in_tree):
                 path_from_root[j] = node
 
-            word_length = len(word.text)
             word_location_in_sentence = i + 1
             word_location_in_sentence_norm = word_location_in_sentence / len(sent)
             # Print the features
@@ -352,18 +378,9 @@ def extract_syntax_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]
         dict[str, np.ndarray]: syntax features extracted from the dataset with fileIDs as keys
     """
 
-    import spacy
-
     logger.info("Extracting syntax features from text")
-    nlp = spacy.load("en_core_web_sm")
-    nlp.add_pipe("benepar", config={"model": "benepar_en3"})
-    with open(f"{PROJECT_ROOT}/src/penn_treebank_labels.yml", "r") as f:
-        benepar_labels = yaml.safe_load(f)
-        benepar_labels["<unk>"] = "UNK"  # Add an unknown label
-        benepar_labels["<pad>"] = "PAD"  # Add a padding label
-        benepar_labels_dict = {
-            label: i for i, label in enumerate(benepar_labels.keys())
-        }
+    nlp = _get_spacy_benepar_nlp()
+    benepar_labels_dict = _get_benepar_labels_dict()
 
     all_syntax_feats = {}
 
@@ -380,14 +397,15 @@ def extract_syntax_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]
             # Use the text to get the constituency label from the nltk tree
             node_location_in_tree = nltk_tree.leaf_treeposition(i)
             constituent_label = nltk_tree[node_location_in_tree[:-1]]._label
-            constituent_label = benepar_labels_dict.get(constituent_label, 67)
+            constituent_label = benepar_labels_dict.get(
+                constituent_label, benepar_labels_dict["<unk>"]
+            )
 
             # Word location (depth) in tree
             node_depth_in_tree = len(node_location_in_tree)
             total_tree_depth = nltk_tree.height() - 1
             node_depth_in_tree_norm = node_depth_in_tree / total_tree_depth
 
-            word_length = len(word.text)
             word_location_in_sentence = i + 1
             word_location_in_sentence_norm = word_location_in_sentence / len(sent)
 
@@ -437,9 +455,12 @@ def extract_syntax_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]
             "word_head_dep",
             "word_head_idx",
         ]
-        assert len(feature_names) == len(syntax_feats[0]), (
-            "Feature names length does not match syntax features length"
-        )
+        if len(feature_names) != len(syntax_feats[0]):
+            raise ValueError(
+                "Feature names length does not match syntax features length "
+                f"for fileID={fileID}: names={len(feature_names)}, "
+                f"features={len(syntax_feats[0])}"
+            )
 
         all_syntax_feats[fileID] = {
             "features": np.array(syntax_feats),
@@ -536,13 +557,7 @@ def extract_phonetic_posteriorgram(dataset: Dataset, **kwargs) -> dict[str, np.n
 
 
 def extract_fasttext_embeddings(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]:
-    import fasttext
-    import fasttext.util
-
-    # Load fasttext model for word embeddings
-    fasttext.util.download_model("en", if_exists="ignore")  # English
-    ft = fasttext.load_model("cc.en.300.bin")
-    fasttext.util.reduce_model(ft, 100)  # Reduce to 100 dimensions
+    ft = _get_fasttext_model(target_dim=100)
 
     logger.info("Extracting fasttext word embeddings from text")
     fasttext_embeddings = {}
@@ -557,10 +572,20 @@ def extract_fasttext_embeddings(dataset: Dataset, **kwargs) -> dict[str, np.ndar
 
 
 def extract_special_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]:
+    """Experimental combined extractor (legacy).
+
+    This path is kept for backward compatibility and is not used by the
+    default preprocessing workflow.
+    """
+
     import ppgs
     import umap.umap_ as umap
     from datasets import Audio
     from pyannote.audio import Model
+
+    logger.warning(
+        "extract_special_features is a legacy experimental path and may be slow."
+    )
 
     spk_embd_model = Model.from_pretrained("pyannote/embedding")
     spk_embd_model.to(device)
@@ -569,10 +594,7 @@ def extract_special_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray
     dataset = dataset.cast_column("audio", Audio(sampling_rate=ppgs.SAMPLE_RATE))
     logger.info("Audio column recasted to correct sampling rate.")
 
-    # Load fasttext model for word embeddings
-    fasttext.util.download_model("en", if_exists="ignore")  # English
-    ft = fasttext.load_model("cc.en.300.bin")
-    fasttext.util.reduce_model(ft, 100)  # Reduce to 100 dimensions
+    ft = _get_fasttext_model(target_dim=100)
 
     logger.info("""Extracting ppgs features, speaker embedding from audio file""")
     special_features = {}
@@ -665,6 +687,7 @@ def extract_audio_representation(
     logger.info("Audio column recasted to correct sampling rate.")
 
     audio_representations = {}
+    num_skipped_short_sequences = 0
     for example in tqdm(
         dataset, desc=f"Extracting audio representations with {modelname}"
     ):
@@ -692,8 +715,9 @@ def extract_audio_representation(
             frame_indices = np.arange(hidden_states.shape[2])
         elif seq_sampling == "random_frames":
             # We randomly select n_frames from the hidden states
-            # if n_frames > len(example["tokens"]):  # type: ignore
-            # n_frames = len(example["tokens"])  # type: ignore
+            if n_frames > hidden_states.shape[2]:
+                num_skipped_short_sequences += 1
+                continue
             # Randomly select n_frames from the hidden states along the seq_len dimension
             # We do this to avoid using too much memory and disk space
             frame_indices = rng.choice(hidden_states.shape[2], n_frames, replace=False)
@@ -730,6 +754,13 @@ def extract_audio_representation(
                 "frame_indices_in_ms": frame_indices_in_ms,
             },
         }
+
+    if num_skipped_short_sequences > 0:
+        logger.info(
+            "Skipped %s examples with fewer frames than n_frames=%s",
+            num_skipped_short_sequences,
+            kwargs.get("n_frames", 10),
+        )
 
     return audio_representations
 
@@ -930,13 +961,14 @@ def transcription_to_string_embeddings(
     # Sort unique strings by alphabetical order
     unique_strings.sort()
     unique_strings = ["<pad>"] + unique_strings
+    token_to_idx = {token: i for i, token in enumerate(unique_strings)}
     embedding = torch.nn.Embedding(len(unique_strings), embedding_size)
     embedding_bag = torch.nn.EmbeddingBag.from_pretrained(embedding.weight, mode="mean")
     # Turn flattened_all_strings into embeddings
     utterance_embeddings = []
     for utterance in tqdm(strings, desc=f"Extracting {level} embeddings"):
         # First indexize the strings
-        indices = [unique_strings.index(y) for y in utterance]
+        indices = [token_to_idx[y] for y in utterance]
         indices = torch.tensor(indices).unsqueeze(0)
         # Finally turn the indices into embeddings
         utterance_embeddings.append(embedding_bag(indices).detach().numpy().squeeze())
@@ -1006,7 +1038,6 @@ def process_dataset(
     savepath: str = SAVEPATH,
     overwrite: bool = False,
 ):
-    savepath = SAVEPATH
     if not os.path.exists(savepath):
         os.makedirs(savepath)
 
@@ -1036,7 +1067,12 @@ def process_dataset(
         example["ort_alignment"]["text"].fillna("<pad>").tolist()
         for example in tqdm(transcriptions)
     ]
-    assert transcription_ID == dataset["fileID"], "FileIDs do not match!"
+    dataset_file_ids = dataset["fileID"]
+    if transcription_ID != dataset_file_ids:
+        raise ValueError(
+            "FileIDs do not match after alignment filtering. "
+            f"transcriptions={len(transcription_ID)}, dataset={len(dataset_file_ids)}"
+        )
     # Add tokens for each utt to the dataset
     dataset = dataset.add_column("tokens", tokens_for_each_utt)  # type: ignore
 
@@ -1208,7 +1244,7 @@ def extract_features(
 
     if overwrite_textgrid:
         logger.info("Rewriting or saving textgrids into single file")
-        print("-" * 30)
+        logger.info("%s", "-" * 30)
         save_librispeech_tg_to_single_file(librispeech_split=librispeech_split)
 
     dataset, transcriptions = process_dataset(

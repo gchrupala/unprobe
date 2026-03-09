@@ -1,57 +1,42 @@
-import glob
+import argparse
 import os
-from typing import Union
+import pickle
 
-import evaluate
 import numpy as np
-import torch
-import torchaudio
-from datasets import Audio, ClassLabel, Dataset, load_dataset
-from torchaudio.models import Wav2Vec2Model
+import pandas as pd
+from sklearn.linear_model import RidgeClassifier
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from tqdm.auto import tqdm
-from transformers import (
-    AutoModelForAudioClassification,
-    AutoProcessor,
-    DataCollatorWithPadding,
-    EarlyStoppingCallback,
-    Trainer,
-    TrainingArguments,
-    Wav2Vec2ForSequenceClassification,
-    Wav2Vec2Model,
-    Wav2Vec2Processor,
-)
-from transformers.trainer_utils import get_last_checkpoint
-
-from preprocessing import process_dataset
 from utils import PROJECT_ROOT
 
 
 def compute_metrics(eval_pred):
-    # All metrics are already predefined in the HF `evaluate` package
-    precision_metric = evaluate.load("precision")
-    recall_metric = evaluate.load("recall")
-    f1_metric = evaluate.load("f1")
-    accuracy_metric = evaluate.load("accuracy")
-
-    logits, labels = (
-        eval_pred  # eval_pred is the tuple of predictions and labels returned by the model
-    )
+    logits, labels = eval_pred
     predictions = np.argmax(logits, axis=-1)
 
-    precision = precision_metric.compute(
-        predictions=predictions, references=labels, average="weighted"
-    )["precision"]
-    recall = recall_metric.compute(
-        predictions=predictions, references=labels, average="weighted"
-    )["recall"]
-    f1 = f1_metric.compute(
-        predictions=predictions, references=labels, average="weighted"
-    )["f1"]
-    accuracy = accuracy_metric.compute(predictions=predictions, references=labels)[
-        "accuracy"
-    ]
+    precision = precision_score(
+        y_true=labels,
+        y_pred=predictions,
+        average="weighted",
+        zero_division=0,
+    )
+    recall = recall_score(
+        y_true=labels,
+        y_pred=predictions,
+        average="weighted",
+        zero_division=0,
+    )
+    f1 = f1_score(
+        y_true=labels,
+        y_pred=predictions,
+        average="weighted",
+        zero_division=0,
+    )
+    accuracy = accuracy_score(labels, predictions)
 
-    # The trainer is expecting a dictionary where the keys are the metrics names and the values are the scores.
     return {
         "accuracy": accuracy,
         "f1": f1,
@@ -60,126 +45,216 @@ def compute_metrics(eval_pred):
     }
 
 
-def inference_(
-    modelname="superb/wav2vec2-base-superb-sid",
-    dataset: Union[Dataset, None] = None,
-    num_samples: int = 1000,
+def sanitize_modelname(modelname: str) -> str:
+    return modelname.replace("/", "-")
+
+
+def resolve_model_list(modelnames: list[str] | None = None) -> list[str]:
+    defaults = [
+        "superb/wav2vec2-base-superb-sid",
+        "facebook/wav2vec2-base",
+        os.path.join(
+            PROJECT_ROOT, "finetuned_models/wav2vec2-sid-finetuned/checkpoint-1300"
+        ),
+    ]
+    if modelnames is None or len(modelnames) == 0:
+        return defaults
+    resolved = []
+    for modelname in modelnames:
+        if modelname == "finetuned":
+            resolved.append(defaults[-1])
+        else:
+            resolved.append(modelname)
+    return resolved
+
+
+def build_speaker_dataset(librispeech_split: str):
+    from datasets import Audio, ClassLabel
+
+    from preprocessing import process_dataset
+
+    dataset, _ = process_dataset(librispeech_split)
+    dataset = dataset.cast_column("audio", Audio(sampling_rate=16000))
+    dataset = dataset.cast_column(
+        "speakerid", ClassLabel(names=sorted(set(dataset["speakerid"])))
+    )
+    dataset = dataset.rename_column("speakerid", "label")
+    return dataset
+
+
+def extract_hidden_states_cache(
+    modelname: str,
+    librispeech_split: str,
+    num_samples: int | None = None,
+    overwrite: bool = False,
+    random_seed: int = 42,
+    cache_dir: str | None = None,
 ) -> dict:
-    try:
-        processor = AutoProcessor.from_pretrained(modelname)
-    except OSError:
-        processor = AutoProcessor.from_pretrained("facebook/wav2vec2-base")
+    import torch
+    from transformers import AutoProcessor, Wav2Vec2Model
 
+    cache_dir = cache_dir or os.path.join(
+        PROJECT_ROOT, "results", "sid_hiddenstate_cache"
+    )
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_file = os.path.join(
+        cache_dir,
+        f"{librispeech_split}_{sanitize_modelname(modelname)}_hiddenstates.pkl",
+    )
+
+    if os.path.isfile(cache_file) and not overwrite:
+        with open(cache_file, "rb") as f:
+            return pickle.load(f)
+
+    dataset = build_speaker_dataset(librispeech_split)
+    if num_samples is not None:
+        num_samples = min(num_samples, len(dataset))
+        dataset = dataset.shuffle(seed=random_seed).select(range(num_samples))
+
+    processor = AutoProcessor.from_pretrained(modelname)
     model = Wav2Vec2Model.from_pretrained(modelname)
-    model.to("cuda" if torch.cuda.is_available() else "cpu")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
+    model.eval()
 
-    if dataset is None:
-        dataset, transcriptions = process_dataset("train-clean-100")
-        dataset = dataset.cast_column("audio", Audio(sampling_rate=16000))
-        dataset = dataset.cast_column(
-            "speakerid", ClassLabel(names=sorted(set(dataset["speakerid"])))
-        )
-        dataset = dataset.rename_column("speakerid", "label")
+    pooled_hidden_states = []
+    labels = []
+    file_ids = []
 
-    preds, actuals = [], []
-    for example in tqdm(dataset.shuffle(seed=42).select(range(num_samples))):
+    for example in tqdm(dataset, desc=f"Extracting hidden states: {modelname}"):
         audio = example["audio"]["array"]
         inputs = processor(
             audio, sampling_rate=16000, return_tensors="pt", padding=True
         )
-        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
         with torch.no_grad():
-            outputs = model(**inputs, return_hidden_states=True)
-        hidden_states = outputs.hidden_states
-        # stack the hidd
+            outputs = model(**inputs, output_hidden_states=True)
 
-    # Calculate the accuracy
-    accuracy = np.mean(np.array(preds) == np.array(actuals))
+        layer_states = torch.stack(outputs.hidden_states, dim=0)
+        pooled = layer_states.mean(dim=2).squeeze(1).cpu().numpy()
 
-    return {"modelname": modelname, "accuracy": accuracy}
+        pooled_hidden_states.append(pooled)
+        labels.append(int(example["label"]))
+        file_ids.append(example["fileID"])
+
+    payload = {
+        "modelname": modelname,
+        "librispeech_split": librispeech_split,
+        "hidden_states": np.asarray(pooled_hidden_states),
+        "labels": np.asarray(labels),
+        "file_ids": file_ids,
+        "label_names": dataset.features["label"].names,
+    }
+
+    with open(cache_file, "wb") as f:
+        pickle.dump(payload, f)
+
+    return payload
+
+
+def layerwise_speaker_decoding(
+    hidden_states: np.ndarray,
+    labels: np.ndarray,
+    modelname: str,
+    librispeech_split: str,
+    random_seed: int = 42,
+) -> pd.DataFrame:
+    if hidden_states.ndim != 3:
+        raise ValueError(
+            "hidden_states must have shape (num_samples, num_layers, hidden_size)"
+        )
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        hidden_states,
+        labels,
+        test_size=0.2,
+        random_state=random_seed,
+        stratify=labels,
+    )
+
+    results = []
+
+    for layer_idx in range(hidden_states.shape[1]):
+        pipeline = Pipeline(
+            [
+                ("scaler", StandardScaler()),
+                ("clf", RidgeClassifier()),
+            ]
+        )
+        pipeline.fit(X_train[:, layer_idx, :], y_train)
+        y_pred = pipeline.predict(X_test[:, layer_idx, :])
+
+        results.append(
+            {
+                "modelname": modelname,
+                "librispeech_split": librispeech_split,
+                "layer": layer_idx,
+                "accuracy": float(accuracy_score(y_test, y_pred)),
+                "f1_weighted": float(
+                    f1_score(y_test, y_pred, average="weighted", zero_division=0)
+                ),
+                "f1_macro": float(
+                    f1_score(y_test, y_pred, average="macro", zero_division=0)
+                ),
+                "n_samples": int(len(labels)),
+                "n_train": int(len(y_train)),
+                "n_test": int(len(y_test)),
+                "n_speakers": int(np.unique(labels).shape[0]),
+            }
+        )
+
+    return pd.DataFrame(results)
 
 
 def test_decodability_speakerid(
-    librispeech_split: str = "train-clean-100", num_samples: int = 1000
-):
-    dataset, transcriptions = process_dataset(librispeech_split)
-    dataset = dataset.cast_column("audio", Audio(sampling_rate=16000))
-    dataset = dataset.cast_column(
-        "speakerid", ClassLabel(names=sorted(set(dataset["speakerid"])))
-    )
-    dataset = dataset.rename_column("speakerid", "label")
+    librispeech_split: str = "train-clean-100",
+    num_samples: int = 1000,
+    modelnames: list[str] | None = None,
+    overwrite_cache: bool = False,
+    random_seed: int = 42,
+    cache_dir: str | None = None,
+) -> pd.DataFrame:
+    modelnames = resolve_model_list(modelnames)
+    all_results = []
 
-    modelnames = [
-        "superb/wav2vec2-base-superb-sid",
-        "facebook/wav2vec2-base",
-        "finetuned_models/wav2vec2-sid-finetuned",
-    ]
-    results = []
     for modelname in modelnames:
-        if "finetuned_models" in modelname:
-            modelname = os.path.join(
-                PROJECT_ROOT, "finetuned_models/wav2vec2-sid-finetuned/checkpoint-1300"
-            )
-        result = inference_(
-            modelname=modelname, dataset=dataset, num_samples=num_samples
+        cache = extract_hidden_states_cache(
+            modelname=modelname,
+            librispeech_split=librispeech_split,
+            num_samples=num_samples,
+            overwrite=overwrite_cache,
+            random_seed=random_seed,
+            cache_dir=cache_dir,
         )
-        results.append(result)
-
-    # Write the results to a file in the `results` directory
-    results_dir = os.path.join(PROJECT_ROOT, "results")
-    os.makedirs(results_dir, exist_ok=True)
-    results_file = os.path.join(results_dir, "speakerid_decodability_results.txt")
-    with open(results_file, "w") as f:
-        for result in results:
-            f.write(f"{result['modelname']}: {result['accuracy']:.4f}\n")
-
-
-def test_superb_model():
-    dataset, transcriptions = process_dataset("train-clean-100")
-    dataset = dataset.cast_column("audio", Audio(sampling_rate=16000))
-    dataset = dataset.cast_column(
-        "speakerid", ClassLabel(names=sorted(set(dataset["speakerid"])))
-    )
-    dataset = dataset.rename_column("speakerid", "label")
-
-    # Split the dataset into train and test sets at 80:20 ratio and stratify by speaker ID
-    train_test_split = dataset.train_test_split(
-        test_size=0.2, stratify_by_column="label"
-    )
-    train_dataset = train_test_split["train"]
-    test_dataset = train_test_split["test"]
-
-    modelname = "superb/wav2vec2-base-superb-sid"
-    modelname = os.path.join(
-        PROJECT_ROOT, "finetuned_models/wav2vec2-sid-finetuned/checkpoint-1300"
-    )
-    processor = AutoProcessor.from_pretrained(modelname)
-    model = AutoModelForAudioClassification.from_pretrained(modelname)
-    model.to("cuda" if torch.cuda.is_available() else "cpu")
-
-    preds, actuals = [], []
-
-    for example in tqdm(test_dataset.shuffle(seed=42)):
-        audio = example["audio"]["array"]
-        inputs = processor(
-            audio, sampling_rate=16000, return_tensors="pt", padding=True
+        result_df = layerwise_speaker_decoding(
+            hidden_states=cache["hidden_states"],
+            labels=cache["labels"],
+            modelname=modelname,
+            librispeech_split=librispeech_split,
+            random_seed=random_seed,
         )
-        inputs = {k: v.to(model.device) for k, v in inputs.items()}
-        with torch.no_grad():
-            outputs = model(**inputs)
-        logits = outputs.logits
-        predicted_label = torch.argmax(logits, dim=-1).item()
-        # print(f"Predicted label: {predicted_label}, Actual label: {example['label']}")
-        preds.append(predicted_label)
-        actuals.append(example["label"])
+        all_results.append(result_df)
 
-    # Calculate the accuracy
-    accuracy = np.mean(np.array(preds) == np.array(actuals))
-    print(f"Accuracy: {accuracy:.4f}")
+    combined = pd.concat(all_results, ignore_index=True)
+    save_file = os.path.join(
+        PROJECT_ROOT,
+        "results",
+        f"speakerid_hiddenstate_decoding_{librispeech_split}.csv",
+    )
+    os.makedirs(os.path.dirname(save_file), exist_ok=True)
+    combined.to_csv(save_file, index=False)
+    return combined
 
 
 def finetuning():
-    """Use the dataset we're loading to fine-tune the wav2vec2 model for speaker ID"""
+    from transformers import (
+        AutoProcessor,
+        Trainer,
+        TrainingArguments,
+        Wav2Vec2ForSequenceClassification,
+    )
+    from transformers.trainer_utils import get_last_checkpoint
 
     output_dir = os.path.join(PROJECT_ROOT, "finetuned_models/wav2vec2-sid-finetuned")
     batch_size = 64
@@ -188,43 +263,34 @@ def finetuning():
     overwrite_output_dir = False
     no_cuda = False
 
-    # Make sure output directory exists
     os.makedirs(output_dir, exist_ok=True)
 
-    dataset, transcriptions = process_dataset("train-clean-100")
-    dataset = dataset.cast_column("audio", Audio(sampling_rate=16000))
-    dataset = dataset.cast_column(
-        "speakerid", ClassLabel(names=sorted(set(dataset["speakerid"])))
-    )
-    dataset = dataset.rename_column("speakerid", "label")
+    dataset = build_speaker_dataset("train-clean-100")
 
-    # Split the dataset into train and test sets at 80:20 ratio and stratify by speaker ID
-    train_test_split = dataset.train_test_split(
+    train_test_split_ = dataset.train_test_split(
         test_size=0.2, stratify_by_column="label"
     )
-    train_dataset = train_test_split["train"]
-    test_dataset = train_test_split["test"]
+    train_dataset = train_test_split_["train"]
+    test_dataset = train_test_split_["test"]
 
     label2id = {label: i for i, label in enumerate(dataset.features["label"].names)}
     id2label = {i: label for label, i in label2id.items()}
 
     modelname = "facebook/wav2vec2-base"
     processor = AutoProcessor.from_pretrained(modelname)
-    hardcoded_sampling_rate = processor.feature_extractor.sampling_rate
+    sampling_rate = processor.feature_extractor.sampling_rate
 
     model = Wav2Vec2ForSequenceClassification.from_pretrained(
         modelname, num_labels=len(label2id), label2id=label2id, id2label=id2label
     )
-
-    # Freeze the feature extractor layers to prevent them from being updated during training
     model.freeze_feature_encoder()
 
     def preprocess_function(examples):
         audio_arrays = [x["array"] for x in examples["audio"]]
         inputs = processor(
             audio_arrays,
-            sampling_rate=hardcoded_sampling_rate,
-            max_length=hardcoded_sampling_rate * 15,
+            sampling_rate=sampling_rate,
+            max_length=sampling_rate * 15,
             truncation=True,
         )
         inputs["labels"] = examples["label"]
@@ -247,15 +313,12 @@ def finetuning():
 
     training_args = TrainingArguments(
         output_dir=output_dir,
-        # evaluation_strategy="epoch",
-        # save_strategy="epoch",
         save_strategy="steps",
         save_steps=100,
         eval_steps=100,
         eval_strategy="steps",
         learning_rate=3e-5,
         per_device_train_batch_size=batch_size,
-        # gradient_accumulation_steps=4,
         per_device_eval_batch_size=batch_size,
         num_train_epochs=num_epochs,
         warmup_ratio=0.1,
@@ -272,8 +335,6 @@ def finetuning():
         use_cpu=no_cuda,
     )
 
-    # Detecting last checkpoint.
-    last_checkpoint = None
     if (
         os.path.isdir(training_args.output_dir)
         and not training_args.overwrite_output_dir
@@ -284,15 +345,6 @@ def finetuning():
                 f"Output directory ({training_args.output_dir}) already exists and is not empty. "
                 "Use --overwrite_output_dir to overcome."
             )
-        elif (
-            last_checkpoint is not None and training_args.resume_from_checkpoint is None
-        ):
-            print(
-                f"Checkpoint detected, resuming training at {last_checkpoint}. To avoid this behavior, change "
-                "the `--output_dir` or add `--overwrite_output_dir` to train from scratch."
-            )
-
-    data_collator = DataCollatorWithPadding(processor, padding=True)
 
     trainer = Trainer(
         model=model,
@@ -301,12 +353,36 @@ def finetuning():
         eval_dataset=test_dataset,
         processing_class=processor,
         compute_metrics=compute_metrics,
-        data_collator=data_collator,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=5)],
     )
-
     trainer.train()
 
 
+def parse_cli_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mode",
+        choices=["hiddenstate_decode", "finetune"],
+        default="hiddenstate_decode",
+    )
+    parser.add_argument("--librispeech_split", type=str, default="train-clean-100")
+    parser.add_argument("--num_samples", type=int, default=1000)
+    parser.add_argument("--random_seed", type=int, default=42)
+    parser.add_argument("--overwrite_cache", action="store_true")
+    parser.add_argument("--cache_dir", type=str, default=None)
+    parser.add_argument("--modelnames", nargs="*", default=None)
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    test_decodability_speakerid()
+    args = parse_cli_args()
+    if args.mode == "finetune":
+        finetuning()
+    else:
+        test_decodability_speakerid(
+            librispeech_split=args.librispeech_split,
+            num_samples=args.num_samples,
+            modelnames=args.modelnames,
+            overwrite_cache=args.overwrite_cache,
+            random_seed=args.random_seed,
+            cache_dir=args.cache_dir,
+        )

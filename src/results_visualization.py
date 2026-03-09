@@ -13,7 +13,7 @@ import glob
 import logging
 import os
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Sequence
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -185,6 +185,106 @@ def load_dim_reduction_results(
         ordered=True,
     )
     return combined
+
+
+def _friendly_model_label(modelname: str) -> str:
+    if "checkpoint-" in modelname:
+        return f"finetuned ({Path(modelname).name})"
+    return modelname
+
+
+def load_sid_decodability_results(
+    librispeech_split: str = "train-clean-100",
+    results_dir: str = RESULTS_ROOT,
+) -> pd.DataFrame:
+    """Load layerwise SID decodability metrics produced by `finetune-sid.py`."""
+
+    csv_path = os.path.join(
+        results_dir,
+        f"speakerid_hiddenstate_decoding_{librispeech_split}.csv",
+    )
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"SID decodability CSV not found: {csv_path}")
+
+    df = pd.read_csv(csv_path)
+    required_cols = {
+        "modelname",
+        "librispeech_split",
+        "layer",
+        "accuracy",
+        "f1_weighted",
+        "f1_macro",
+    }
+    missing = required_cols.difference(df.columns)
+    if missing:
+        raise ValueError(f"SID decodability CSV is missing columns: {sorted(missing)}")
+
+    df["model_display"] = df["modelname"].map(_friendly_model_label)
+    return df
+
+
+def plot_sid_decodability(
+    sid_results_df: pd.DataFrame,
+    metric: str = "accuracy",
+    save: bool = False,
+) -> None:
+    """Plot layerwise speaker-ID decodability across models."""
+
+    metric_choices = {"accuracy", "f1_weighted", "f1_macro"}
+    if metric not in metric_choices:
+        raise ValueError(f"metric must be one of {sorted(metric_choices)}")
+
+    plot_df = (
+        sid_results_df.groupby(["model_display", "layer"], as_index=False)[metric]
+        .mean()
+        .copy()
+    )
+    if plot_df.empty:
+        raise ValueError("No SID decodability rows to plot")
+
+    pretty_metric = {
+        "accuracy": "Accuracy",
+        "f1_weighted": "Weighted F1",
+        "f1_macro": "Macro F1",
+    }[metric]
+
+    figure = (
+        p9.ggplot(plot_df)
+        + p9.geom_line(
+            p9.aes(
+                x="layer",
+                y=metric,
+                color="model_display",
+                shape="model_display",
+                group="model_display",
+            ),
+            alpha=0.8,
+        )
+        + p9.geom_point(
+            p9.aes(
+                x="layer",
+                y=metric,
+                color="model_display",
+                shape="model_display",
+            ),
+            alpha=0.8,
+        )
+        + p9.scale_x_continuous(breaks=range(0, int(plot_df["layer"].max()) + 1, 3))
+        + p9.theme(figure_size=(10, 6), dpi=300)
+        + p9.labs(
+            x="Layer (from shallow to deep)",
+            y=pretty_metric,
+            color="Model",
+            shape="Model",
+            title="Speaker ID Decodability from Hidden States",
+        )
+    )
+
+    figure.show()
+    if save:
+        split = sid_results_df["librispeech_split"].iloc[0]
+        filename = f"sid_decodability_{split}_{metric}.png"
+        figure.save(os.path.join(FIGURES_ROOT, filename))
 
 
 def _baseline_split(
@@ -672,6 +772,18 @@ def build_parser() -> argparse.ArgumentParser:
     permutation_parser.add_argument("--split", default="train-clean-100")
     permutation_parser.add_argument("--save", action="store_true")
 
+    sid_parser = subparsers.add_parser(
+        "sid-decodability",
+        help="Plot layerwise speaker-ID decodability from hidden states",
+    )
+    sid_parser.add_argument("--split", default="train-clean-100")
+    sid_parser.add_argument(
+        "--metric",
+        default="accuracy",
+        choices=["accuracy", "f1_weighted", "f1_macro"],
+    )
+    sid_parser.add_argument("--save", action="store_true")
+
     return parser
 
 
@@ -703,6 +815,9 @@ def main() -> None:
         plot_permutation_results(
             probe=args.probe, librispeech_split=args.split, save=args.save
         )
+    elif args.command == "sid-decodability":
+        sid_df = load_sid_decodability_results(librispeech_split=args.split)
+        plot_sid_decodability(sid_df, metric=args.metric, save=args.save)
     else:
         raise ValueError(f"Unknown command: {args.command}")
 

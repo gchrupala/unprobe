@@ -10,6 +10,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from tqdm.auto import tqdm
+
 from utils import PROJECT_ROOT
 
 
@@ -109,7 +110,19 @@ def extract_hidden_states_cache(
     dataset = build_speaker_dataset(librispeech_split)
     if num_samples is not None:
         num_samples = min(num_samples, len(dataset))
-        dataset = dataset.shuffle(seed=random_seed).select(range(num_samples))
+        dataset = dataset.shuffle(seed=random_seed)
+        num_samples_per_speaker = num_samples // len(dataset.features["label"].names)
+        # This is a bit hacky but the datasets library doesn't support stratified sampling, so we shuffle and then take a balanced number of samples per speaker
+        speaker_counts = {label: 0 for label in dataset.features["label"].names}
+        selected_indices = []
+        for idx, example in enumerate(dataset):
+            label = dataset.features["label"].int2str(example["label"])
+            if speaker_counts[label] < num_samples_per_speaker:
+                selected_indices.append(idx)
+                speaker_counts[label] += 1
+            if len(selected_indices) >= num_samples:
+                break
+        dataset = dataset.select(selected_indices)
 
     processor = AutoProcessor.from_pretrained(modelname)
     model = Wav2Vec2Model.from_pretrained(modelname)

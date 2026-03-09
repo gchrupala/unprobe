@@ -174,7 +174,10 @@ def extract_hidden_states_cache(
         with open(cache_file, "rb") as f:
             return pickle.load(f)
 
-    processor = AutoProcessor.from_pretrained(modelname)
+    try:
+        processor = AutoProcessor.from_pretrained(modelname)
+    except OSError:
+        processor = AutoProcessor.from_pretrained("facebook/wav2vec2-base")
     model = Wav2Vec2Model.from_pretrained(modelname)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)

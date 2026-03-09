@@ -185,3 +185,4 @@ results/*
 *.gz
 uv.lock
 figures/*
+finetuned_models/*

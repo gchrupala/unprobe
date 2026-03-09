@@ -24,9 +24,8 @@ from tqdm.auto import tqdm
 from probe_runner import evaluate_probe, fit_probe, split_train_test
 from utils import FIGURES_ROOT, RESULTS_ROOT, pick_probe
 
-
 REPRESENTATION_DISPLAY = {
-    "ppg_feature": "Original Phonetic Posteriorgrams",
+    "ppg_feature": "Original PPGs",
     "ppg_ID": "Phone ID from PPGs",
     "ppg_feature_onehot": "One-hot Encoded PPGs",
 }
@@ -265,6 +264,14 @@ def _decorate_representation_names(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _decorate_metric_names(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["metric_display"] = out["metric_name"].map(
+        {"r2": r"$R^2$", "accuracy": "Accuracy"}
+    )
+    return out
+
+
 def plot_encoding_legacy_style(
     encoding_df: pd.DataFrame,
     modelname: str,
@@ -295,14 +302,17 @@ def plot_encoding_legacy_style(
             alpha=0.7,
         )
         + p9.scale_x_continuous(breaks=range(0, int(plot_df["layer"].max()) + 1, 3))
-        + p9.theme(figure_size=(8, 6), dpi=300)
+        + p9.theme(
+            figure_size=(6, 4),
+            dpi=300,
+            legend_position="bottom",
+            legend_title=p9.element_blank(),
+        )
         + p9.labs(
             x="Layer (from shallow to deep)",
             y="Test Score (R²)",
-            title=(
-                "Encoding Probe Performance on PPG Representations\n"
-                f"Across {_slug_modelname(modelname)} ({librispeech_split})"
-            ),
+            color="PPG Representation",
+            shape="PPG Representation",
         )
     )
     filename = f"ppg_feature_representation_{_slug_modelname(modelname)}_{librispeech_split}.png"
@@ -317,9 +327,7 @@ def plot_decoding_representation(
     outdir: str,
 ) -> None:
     plot_df = _decorate_representation_names(decoding_df)
-    plot_df["metric_label"] = plot_df["metric_name"].map(
-        {"r2": "R²", "accuracy": "Accuracy"}
-    )
+    plot_df = _decorate_metric_names(plot_df)
     plot = (
         p9.ggplot(plot_df)
         + p9.geom_line(
@@ -342,16 +350,19 @@ def plot_decoding_representation(
             ),
             alpha=0.7,
         )
-        + p9.facet_wrap("~ metric_label", scales="free_y")
+        + p9.facet_wrap("~ metric_display", scales="free_y")
         + p9.scale_x_continuous(breaks=range(0, int(plot_df["layer"].max()) + 1, 3))
-        + p9.theme(figure_size=(10, 6), dpi=300)
+        + p9.theme(
+            figure_size=(7, 4),
+            dpi=300,
+            legend_position="bottom",
+            legend_title=p9.element_blank(),
+        )
         + p9.labs(
             x="Layer (from shallow to deep)",
-            y="Test Score",
-            title=(
-                "Decoding Probe Performance for PPG Representations\n"
-                f"Across {_slug_modelname(modelname)} ({librispeech_split})"
-            ),
+            y="Metric",
+            color="PPG Representation",
+            shape="PPG Representation",
         )
     )
     filename = f"ppg_decoding_representation_{_slug_modelname(modelname)}_{librispeech_split}.png"
@@ -365,8 +376,9 @@ def plot_encode_decode_comparison(
     outdir: str,
 ) -> None:
     plot_df = _decorate_representation_names(combined_df)
+    plot_df = _decorate_metric_names(plot_df)
     plot_df["direction_metric"] = (
-        plot_df["direction"].str.capitalize() + " (" + plot_df["metric_name"] + ")"
+        plot_df["direction"].str.capitalize() + " (" + plot_df["metric_display"] + ")"
     )
     plot = (
         p9.ggplot(plot_df)
@@ -392,18 +404,22 @@ def plot_encode_decode_comparison(
         )
         + p9.facet_wrap("~ direction_metric", scales="free_y")
         + p9.scale_x_continuous(breaks=range(0, int(plot_df["layer"].max()) + 1, 3))
-        + p9.theme(figure_size=(12, 7), dpi=300)
+        + p9.theme(
+            figure_size=(9, 4),
+            dpi=300,
+            legend_position="bottom",
+            legend_title=p9.element_blank(),
+        )
         + p9.labs(
             x="Layer (from shallow to deep)",
-            y="Test Score",
-            title=(
-                "PPG Representation Comparison: Encoding vs Decoding\n"
-                f"{_slug_modelname(modelname)} ({librispeech_split})"
-            ),
+            y="Metric",
+            color="PPG Representation",
+            shape="PPG Representation",
         )
     )
     filename = f"ppg_encode_decode_comparison_{_slug_modelname(modelname)}_{librispeech_split}.png"
     plot.save(os.path.join(outdir, filename))
+    plot.save(os.path.join(FIGURES_ROOT, filename))
 
 
 def parse_args() -> argparse.Namespace:

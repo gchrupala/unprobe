@@ -103,37 +103,16 @@ def build_speaker_dataset(librispeech_split: str):
     return dataset
 
 
-def extract_hidden_states_cache(
-    modelname: str,
-    librispeech_split: str,
-    num_samples: int | None = None,
-    overwrite: bool = False,
-    random_seed: int = 42,
-    cache_dir: str | None = None,
-) -> dict:
-    import torch
-    from transformers import AutoProcessor, Wav2Vec2Model
-
-    cache_dir = cache_dir or os.path.join(
-        PROJECT_ROOT, "results", "sid_hiddenstate_cache"
-    )
-    os.makedirs(cache_dir, exist_ok=True)
-    cache_file = os.path.join(
-        cache_dir,
-        f"{librispeech_split}_{sanitize_modelname(modelname)}_hiddenstates.pkl",
-    )
-
-    if os.path.isfile(cache_file) and not overwrite:
-        with open(cache_file, "rb") as f:
-            return pickle.load(f)
-
+def build_decoding_dataset(
+    librispeech_split: str, num_samples: int | None = None, random_seed: int = 42
+):
     dataset = build_speaker_dataset(librispeech_split)
     dataset, dropped_initial = _filter_dataset_min_samples_per_label(
         dataset, min_count=2
     )
     if dropped_initial > 0:
         print(
-            f"[{modelname}] Dropped {dropped_initial} samples from low-frequency speakers before sampling."
+            f"[Dropped {dropped_initial} samples from low-frequency speakers before sampling."
         )
 
     if num_samples is not None:
@@ -154,7 +133,7 @@ def extract_hidden_states_cache(
     )
     if dropped_after_sampling > 0:
         print(
-            f"[{modelname}] Dropped {dropped_after_sampling} additional samples after sampling to keep >=2 per speaker."
+            f"[Dropped {dropped_after_sampling} additional samples after sampling to keep >=2 per speaker."
         )
 
     final_labels = np.asarray(dataset["label"])
@@ -165,9 +144,35 @@ def extract_hidden_states_cache(
             f"n_speakers={n_speakers}, n_samples={n_samples_final}, min_per_speaker={min_count_final}."
         )
     print(
-        f"[{modelname}] Decoding run uses {n_samples_final} samples across {n_speakers} speaker labels "
+        f"[Decoding run uses {n_samples_final} samples across {n_speakers} speaker labels "
         f"(min samples per speaker: {min_count_final})."
     )
+
+    return dataset
+
+
+def extract_hidden_states_cache(
+    modelname: str,
+    librispeech_split: str,
+    dataset,
+    overwrite: bool = False,
+    cache_dir: str | None = None,
+) -> dict:
+    import torch
+    from transformers import AutoProcessor, Wav2Vec2Model
+
+    cache_dir = cache_dir or os.path.join(
+        PROJECT_ROOT, "results", "sid_hiddenstate_cache"
+    )
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_file = os.path.join(
+        cache_dir,
+        f"{librispeech_split}_{sanitize_modelname(modelname)}_hiddenstates.pkl",
+    )
+
+    if os.path.isfile(cache_file) and not overwrite:
+        with open(cache_file, "rb") as f:
+            return pickle.load(f)
 
     processor = AutoProcessor.from_pretrained(modelname)
     model = Wav2Vec2Model.from_pretrained(modelname)
@@ -276,13 +281,16 @@ def test_decodability_speakerid(
     modelnames = resolve_model_list(modelnames)
     all_results = []
 
+    dataset = build_decoding_dataset(
+        librispeech_split, num_samples=num_samples, random_seed=random_seed
+    )
+
     for modelname in modelnames:
         cache = extract_hidden_states_cache(
             modelname=modelname,
             librispeech_split=librispeech_split,
-            num_samples=num_samples,
+            dataset=dataset,
             overwrite=overwrite_cache,
-            random_seed=random_seed,
             cache_dir=cache_dir,
         )
         cache_n_speakers, cache_n_samples, _ = _label_count_summary(cache["labels"])

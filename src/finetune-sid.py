@@ -14,6 +14,26 @@ from tqdm.auto import tqdm
 from utils import PROJECT_ROOT
 
 
+def _label_count_summary(labels: np.ndarray) -> tuple[int, int, int]:
+    unique, counts = np.unique(labels, return_counts=True)
+    n_speakers = int(unique.shape[0])
+    n_samples = int(labels.shape[0])
+    min_count = int(counts.min()) if counts.size > 0 else 0
+    return n_speakers, n_samples, min_count
+
+
+def _filter_dataset_min_samples_per_label(dataset, min_count: int = 2):
+    labels = np.asarray(dataset["label"])
+    unique, counts = np.unique(labels, return_counts=True)
+    keep_labels = set(unique[counts >= min_count].tolist())
+    keep_indices = [
+        idx for idx, label in enumerate(labels) if int(label) in keep_labels
+    ]
+    filtered = dataset.select(keep_indices)
+    dropped = int(labels.shape[0] - len(keep_indices))
+    return filtered, dropped
+
+
 def compute_metrics(eval_pred):
     logits, labels = eval_pred
     predictions = np.argmax(logits, axis=-1)
@@ -108,21 +128,46 @@ def extract_hidden_states_cache(
             return pickle.load(f)
 
     dataset = build_speaker_dataset(librispeech_split)
+    dataset, dropped_initial = _filter_dataset_min_samples_per_label(
+        dataset, min_count=2
+    )
+    if dropped_initial > 0:
+        print(
+            f"[{modelname}] Dropped {dropped_initial} samples from low-frequency speakers before sampling."
+        )
+
     if num_samples is not None:
         num_samples = min(num_samples, len(dataset))
-        dataset = dataset.shuffle(seed=random_seed)
-        num_samples_per_speaker = num_samples // len(dataset.features["label"].names)
-        # This is a bit hacky but the datasets library doesn't support stratified sampling, so we shuffle and then take a balanced number of samples per speaker
-        speaker_counts = {label: 0 for label in dataset.features["label"].names}
-        selected_indices = []
-        for idx, example in enumerate(dataset):
-            label = dataset.features["label"].int2str(example["label"])
-            if speaker_counts[label] < num_samples_per_speaker:
-                selected_indices.append(idx)
-                speaker_counts[label] += 1
-            if len(selected_indices) >= num_samples:
-                break
-        dataset = dataset.select(selected_indices)
+        labels = np.asarray(dataset["label"])
+        indices = np.arange(len(dataset))
+        if num_samples < len(dataset):
+            chosen_indices, _ = train_test_split(
+                indices,
+                train_size=num_samples,
+                random_state=random_seed,
+                stratify=labels,
+            )
+            dataset = dataset.select(chosen_indices.tolist())
+
+    dataset, dropped_after_sampling = _filter_dataset_min_samples_per_label(
+        dataset, min_count=2
+    )
+    if dropped_after_sampling > 0:
+        print(
+            f"[{modelname}] Dropped {dropped_after_sampling} additional samples after sampling to keep >=2 per speaker."
+        )
+
+    final_labels = np.asarray(dataset["label"])
+    n_speakers, n_samples_final, min_count_final = _label_count_summary(final_labels)
+    if n_speakers < 2 or min_count_final < 2:
+        raise ValueError(
+            "Not enough speaker coverage after filtering/sampling. "
+            f"n_speakers={n_speakers}, n_samples={n_samples_final}, min_per_speaker={min_count_final}."
+        )
+    print(
+        f"[{modelname}] Decoding run uses {n_samples_final} samples across {n_speakers} speaker labels "
+        f"(min samples per speaker: {min_count_final})."
+    )
 
     processor = AutoProcessor.from_pretrained(modelname)
     model = Wav2Vec2Model.from_pretrained(modelname)
@@ -239,6 +284,10 @@ def test_decodability_speakerid(
             overwrite=overwrite_cache,
             random_seed=random_seed,
             cache_dir=cache_dir,
+        )
+        cache_n_speakers, cache_n_samples, _ = _label_count_summary(cache["labels"])
+        print(
+            f"[{modelname}] Cached decoding payload: {cache_n_samples} samples, {cache_n_speakers} speaker labels."
         )
         result_df = layerwise_speaker_decoding(
             hidden_states=cache["hidden_states"],

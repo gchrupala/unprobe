@@ -22,6 +22,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _make_onehot_encoder():
+    from sklearn.preprocessing import OneHotEncoder
+
+    try:
+        return OneHotEncoder(sparse_output=False)
+    except TypeError:
+        return OneHotEncoder(sparse=False)
+
+
 INPUT_FEATURE_SELECT_COMPONENTS = [
     # "OtherAcoustic",
     # "SpectralInfo",
@@ -37,6 +46,7 @@ INPUT_FEATURE_SELECT_COMPONENTS = [
 ]
 
 
+os.makedirs(SAVEPATH, exist_ok=True)
 opensmile_feature_names_json = f"{SAVEPATH}/opensmile_feature_names.json"
 if os.path.exists(opensmile_feature_names_json):
     with open(opensmile_feature_names_json, "r") as f:
@@ -54,7 +64,7 @@ def format_data(
     modelname: str = "facebook/wav2vec2-base",
     seq_sampling: str = "random_frames",
     random_seed: int = 42,
-):
+) -> tuple[dict, list, list]:
     """
     Format the data for probing tasks.
     Args:
@@ -193,6 +203,11 @@ def format_data(
     filename_timestamp = []
     all_input_features = []
     num_skip_cls_sep = 0
+    num_skip_word_idx_oob = 0
+    num_skip_no_word_found = 0
+    num_skip_lld_mismatch = 0
+    num_skip_syntax_not_found = 0
+    num_skip_ppg_oob = 0
 
     for fileID in tqdm(valid_fileIDs):
         spk_embedding = np.array(all_speaker_embeddings[fileID])
@@ -288,6 +303,7 @@ def format_data(
 
                 if word_idx > ort_alignment.index.max():
                     # Skip if word_idx is out of bounds, this is probably due to punctuations
+                    num_skip_word_idx_oob += 1
                     continue
 
                 token_start_time = int(
@@ -310,6 +326,7 @@ def format_data(
                 ].index
                 if word_idx.empty:
                     # skip if no word found
+                    num_skip_no_word_found += 1
                     continue
                 word_idx = word_idx.values[0]
 
@@ -333,6 +350,7 @@ def format_data(
             start_char_idx = ort_alignment.loc[word_idx, "char_idx_start"]
 
             if utt_lld_frames.shape[0] != no_frames:  # Check if no_frames match
+                num_skip_lld_mismatch += 1
                 continue
             # utt_lld_names = utt_lld.columns.tolist()
 
@@ -353,13 +371,18 @@ def format_data(
                 #     "Char start index not found in syntax features: Skipped",
                 # )
                 # This is mainly due to the sentencizer in spacy splitting the sentences up
+                num_skip_syntax_not_found += 1
                 continue
 
             syntax_feature = np.array(syntax_feats)[syntax_word_idx].flatten()
             syntax_token = all_syntax_features[fileID]["words"][syntax_word_idx[0][0]]
 
             # Get the corresponding PPG features for current frame index
-            ppg_feature = ppg_features[int(token_time // 10)].flatten()
+            ppg_idx = int(token_time // 10)
+            if ppg_idx < 0 or ppg_idx >= ppg_features.shape[0]:
+                num_skip_ppg_oob += 1
+                continue
+            ppg_feature = ppg_features[ppg_idx].flatten()
 
             acoustic_features = {}
             for acoustic_group in list(ACOUSTIC_FEATURE_NAMES.keys()):
@@ -396,6 +419,23 @@ def format_data(
     # for word_pair in word_pairs:
     #     assert word_pair[0] in word_pair[1].lower()
     logger.info(f"Skipping [CLS] or [SEP] token count: {num_skip_cls_sep}")
+    logger.info(
+        "Skipped samples summary: word_idx_oob=%s, no_word_found=%s, "
+        "lld_mismatch=%s, syntax_not_found=%s, ppg_oob=%s",
+        num_skip_word_idx_oob,
+        num_skip_no_word_found,
+        num_skip_lld_mismatch,
+        num_skip_syntax_not_found,
+        num_skip_ppg_oob,
+    )
+    logger.info("Kept %s frame-level samples after filtering", len(all_input_features))
+
+    if not all_input_features:
+        raise ValueError(
+            "No valid frame-level samples were extracted after filtering. "
+            f"split={librispeech_split}, modelname={modelname}, seq_sampling={seq_sampling}."
+        )
+
     # We restructure all_input_features to be a dictionary of numpy arrays for each feature component
     logger.info("Processing input features...")
     # We turn the list of dictionaries into a dictionary of lists
@@ -487,8 +527,6 @@ def further_process(
 
     if one_hot_encode_syntax and "syntax_feature" in all_input_features_dict.keys():
         # One hot encode the individual columns within syntax_feature
-        from sklearn.preprocessing import OneHotEncoder
-
         # mask out the normed features for one-hot encoding
         syntax_feature_array = np.array(all_input_features_dict["syntax_feature"])
         syntax_feature_names = all_input_features_dict["syntax_feature_names"]
@@ -504,7 +542,7 @@ def further_process(
         # Floating point features to be excluded from one-hot encoding
         syntax_feature_mask[syntax_to_onehot_idx] = False
         syntax_feature_array = syntax_feature_array[:, syntax_feature_mask]
-        encoder = OneHotEncoder(sparse_output=False)
+        encoder = _make_onehot_encoder()
         onehot_encoded_columns = []
         for original_syntax_feat in syntax_feature_array.T:
             original_syntax_feat = original_syntax_feat.reshape(-1, 1)
@@ -543,10 +581,8 @@ def further_process(
             "Word_Position": 5,
             # "Word_Position_Normed": 6,
         }
-        from sklearn.preprocessing import OneHotEncoder
-
         syntax_feature_array = np.array(all_input_features_dict["syntax_feature"])
-        encoder = OneHotEncoder(sparse_output=False)
+        encoder = _make_onehot_encoder()
         for feature_name, idx in syntax_feature_idx.items():
             original_syntax_feat = syntax_feature_array[:, idx].reshape(-1, 1)
             onehot_encoded_col = encoder.fit_transform(original_syntax_feat)
@@ -559,12 +595,9 @@ def further_process(
     if one_hot_encode_metadata and "metadata" in all_input_features_dict.keys():
         # First check if metadata is in the dictionary
         if "metadata" in all_input_features_dict.keys():
-            from sklearn.preprocessing import OneHotEncoder
-
             # Onehot encode the first column "SpeakerID-OH" and second column "ChapterID-OH"
             speakerIDS = all_input_features_dict["metadata"][:, 0]
-            chapterIDS = all_input_features_dict["metadata"][:, 1]
-            encoder = OneHotEncoder(sparse_output=False)
+            encoder = _make_onehot_encoder()
             speakerIDS_onehot = encoder.fit_transform(speakerIDS.reshape(-1, 1))
             # chapterIDS_onehot = encoder.fit_transform(chapterIDS.reshape(-1, 1))
             all_input_features_dict["SpeakerID-OH"] = speakerIDS_onehot
@@ -642,7 +675,7 @@ def further_process(
 def load_data(
     librispeech_split: str = "dev-clean",
     modelname: str = "facebook/wav2vec2-base",
-    selected_input_components: list = INPUT_FEATURE_SELECT_COMPONENTS,
+    selected_input_components: list | None = None,
     seq_sampling: str = "random_frames",
     select_layers: list | None = None,
     overwrite: bool = False,
@@ -654,7 +687,7 @@ def load_data(
     argmax_ppg: bool = False,
     reduce_dnn_word_embedding: bool = True,
     random_seed: int = 42,
-):
+) -> tuple[np.ndarray, np.ndarray, list, dict]:
     """
     Load the formatted data for probing tasks.
     Args:
@@ -669,6 +702,10 @@ def load_data(
 
     """
     # Check if the data has already been formatted and saved
+    if selected_input_components is None:
+        selected_input_components = INPUT_FEATURE_SELECT_COMPONENTS.copy()
+    else:
+        selected_input_components = selected_input_components.copy()
 
     formatted_data_path = f"{SAVEPATH}/processed_data/librispeech-{librispeech_split}_{modelname.split('/')[-1]}_representation_{seq_sampling}_formatted.pickle"
 
@@ -722,92 +759,6 @@ def load_data(
     )
 
 
-def sanity_check_pca():
-    from sklearn.compose import TransformedTargetRegressor
-    from sklearn.decomposition import PCA
-    from sklearn.linear_model import Ridge
-    from sklearn.metrics import r2_score
-    from sklearn.model_selection import (
-        GridSearchCV,
-        train_test_split,
-    )
-    from sklearn.pipeline import Pipeline
-    from sklearn.preprocessing import StandardScaler
-
-    X, Y, _, _ = load_data(
-        librispeech_split="dev-clean",
-        modelname="facebook/wav2vec2-base",
-        seq_sampling="random_frames",
-        # select_layers=[12],
-        overwrite=False,
-        normalize_features=True,
-    )
-
-    results = {}
-
-    for layer in range(Y.shape[1]):
-        logger.info(f"Layer {layer} hidden state shape: {Y[:, layer, :].shape}")
-        y_layer = Y[:, layer, :]
-        # This pipeline will scale the Y data, then apply PCA
-        y_transformer = Pipeline(steps=[("scaler", StandardScaler()), ("pca", PCA())])
-        # The regressor will be a simple Ridge model
-        ridge = Ridge()
-
-        # The full model applies the transformer to Y before fitting Ridge
-        # and inverse_transforms the predictions.
-        model = TransformedTargetRegressor(regressor=ridge, transformer=y_transformer)
-        param_grid = {
-            "regressor__alpha": np.logspace(-2, 2, 5),  # e.g., [0.01, 0.1, 1, 10, 100]
-            "transformer__pca__n_components": [0.90, 0.95, 0.99, None],
-            # + list(range(50, 301, 50)),
-            # A good search space:
-            # - Floats: Capture a certain % of variance. 'None' is the original (problematic) case.
-            # - Integers: Test specific numbers of components.
-        }
-
-        X_train, X_test, Y_train, Y_test = train_test_split(
-            X, y_layer, test_size=0.2, random_state=42
-        )
-
-        grid_search = GridSearchCV(
-            model,
-            param_grid=param_grid,
-            cv=3,
-            n_jobs=-1,
-            verbose=1,
-            return_train_score=True,
-        )
-
-        grid_search.fit(X_train, Y_train)
-
-        print("\nBest parameters found from grid search:")
-        print(grid_search.best_params_)
-
-        best_model = grid_search.best_estimator_
-        y_pred = best_model.predict(X_test)
-        test_r2 = r2_score(Y_test, y_pred)
-        print(f"\nR-squared score on the test set: {test_r2:.4f}")
-
-        results[layer] = {
-            "test_r2": test_r2,
-            "best_train_score": grid_search.best_score_,
-        } | grid_search.best_params_
-
-    print(results)
-
-
-def load_sample_data():
-    bert_pickle = "../experimental_data/librispeech-dev-clean_bert-base-uncased_representation_random_frames.pickle"
-
-    with open(bert_pickle, "rb") as f:
-        transformer_representation = pickle.load(f)
-
-    hidden_states = [
-        transformer_representation[x]["hidden_states"]
-        for x in list(transformer_representation.keys())
-    ]
-
-
 def dimension_reduction(hidden_states: np.ndarray, n_components: int | None = None):
     """Reduce the dimension of the hidden_states
 
@@ -846,8 +797,16 @@ def dimension_reduction(hidden_states: np.ndarray, n_components: int | None = No
     logger.info(f"Reduced hidden_states shape: {reduced_hidden_states.shape}")
 
     # Make sure the first two dimensions are the same as the original hidden_states
-    assert reduced_hidden_states.shape[0] == hidden_states.shape[0]
-    assert reduced_hidden_states.shape[1] == hidden_states.shape[1]
+    if reduced_hidden_states.shape[0] != hidden_states.shape[0]:
+        raise ValueError(
+            "Dimension reduction changed sample axis unexpectedly: "
+            f"expected {hidden_states.shape[0]}, got {reduced_hidden_states.shape[0]}"
+        )
+    if reduced_hidden_states.shape[1] != hidden_states.shape[1]:
+        raise ValueError(
+            "Dimension reduction changed layer axis unexpectedly: "
+            f"expected {hidden_states.shape[1]}, got {reduced_hidden_states.shape[1]}"
+        )
     return reduced_hidden_states
 
 

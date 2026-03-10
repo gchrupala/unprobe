@@ -4,7 +4,6 @@ import logging
 import os
 import pickle
 import sys
-from typing import Any
 
 import benepar
 import fasttext
@@ -16,7 +15,6 @@ import pandas as pd
 import spacy
 import textgrids
 import torch
-import yaml
 from datasets import Dataset
 from tqdm.auto import tqdm
 
@@ -34,7 +32,6 @@ logger = logging.getLogger(__name__)
 
 
 _SPACY_NLP = None
-_BENEPAR_LABELS_DICT: dict[str, int] | None = None
 _FASTTEXT_MODEL = None
 
 device = (
@@ -62,19 +59,6 @@ def _get_spacy_benepar_nlp():
         nlp.add_pipe("benepar", config={"model": "benepar_en3"})
     _SPACY_NLP = nlp
     return _SPACY_NLP
-
-
-def _get_benepar_labels_dict() -> dict[str, int]:
-    global _BENEPAR_LABELS_DICT
-    if _BENEPAR_LABELS_DICT is not None:
-        return _BENEPAR_LABELS_DICT
-
-    with open(f"{PROJECT_ROOT}/src/penn_treebank_labels.yml", "r") as f:
-        benepar_labels: dict[str, Any] = yaml.safe_load(f)
-    benepar_labels["<unk>"] = "UNK"
-    benepar_labels["<pad>"] = "PAD"
-    _BENEPAR_LABELS_DICT = {label: i for i, label in enumerate(benepar_labels.keys())}
-    return _BENEPAR_LABELS_DICT
 
 
 def _get_fasttext_model(target_dim: int = 100):
@@ -191,9 +175,6 @@ def efficient_syntax_parsing(transcriptions: list[dict]) -> list[np.ndarray]:
     # tagger_label_dict = {label: i for i, label in enumerate(tagger_labels)}
     # parser_labels = nlp.get_pipe("parser").labels  # type: ignore
     # parser_label_dict = {label: i for i, label in enumerate(parser_labels)}
-    # Similarly also get all the benepar labels
-    benepar_labels_dict = _get_benepar_labels_dict()
-
     all_syntax_feats = []
     for doc in tqdm(
         nlp.pipe(
@@ -206,46 +187,28 @@ def efficient_syntax_parsing(transcriptions: list[dict]) -> list[np.ndarray]:
         sent = list(doc.sents)[0]
         nltk_tree = nltk.Tree.fromstring(sent._.parse_string)
 
-        # for every word in the sentence, print the word, dependency label, constituent label, depth in constituency tree, word_character_length, location in sentence,
+        # For every word in the sentence, extract paper-aligned syntax features.
         syntax_feats = []
         for i, word in enumerate(sent):
             # Use the text to get the constituency label from the nltk tree
             node_location_in_tree = nltk_tree.leaf_treeposition(i)
 
-            constituent_label = nltk_tree[node_location_in_tree[:-1]]._label
-            constituent_label = benepar_labels_dict.get(
-                constituent_label, benepar_labels_dict["<unk>"]
-            )
-
             # Word location (depth) in tree
             node_depth_in_tree = len(node_location_in_tree)
             total_tree_depth = nltk_tree.height() - 1
-            node_depth_in_tree_norm = node_depth_in_tree / total_tree_depth
-
-            # Path from root to current token
-            # We need to pad the path to the maximum depth of the tree by making an empty array
-            path_from_root = [0] * total_tree_depth
-            for j, node in enumerate(node_location_in_tree):
-                path_from_root[j] = node
+            total_word_count = len(sent)
 
             word_location_in_sentence = i + 1
-            word_location_in_sentence_norm = word_location_in_sentence / len(sent)
-            # Print the features
-            # print(f"{word.text} - {word.pos} - {word.dep} - {constituent_label} - {depth} - {word_length} - {word_location_in_sentence_normalized:.2f}")
 
-            # Construct word features with vectorized features
             word_features = np.array(
                 [
                     word.pos,
                     word.dep,
-                    constituent_label,
                     node_depth_in_tree,
-                    node_depth_in_tree_norm,
-                    # word_length,
                     word_location_in_sentence,
-                    word_location_in_sentence_norm,
+                    total_tree_depth,
+                    total_word_count,
                 ]
-                + path_from_root,
             )
             syntax_feats.append(word_features)
 
@@ -380,8 +343,6 @@ def extract_syntax_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]
 
     logger.info("Extracting syntax features from text")
     nlp = _get_spacy_benepar_nlp()
-    benepar_labels_dict = _get_benepar_labels_dict()
-
     all_syntax_feats = {}
 
     for example in tqdm(dataset, desc="Syntax Feature Extraction"):
@@ -391,51 +352,26 @@ def extract_syntax_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]
         nltk_tree = nltk.Tree.fromstring(sent._.parse_string)
 
         syntax_feats = []
-        # for every word in the sentence, print the word, dependency label, constituent label, depth in constituency tree, word_character_length, location in sentence, and the character number within the sentence akin to offset_mapping in transformers
         offset_mapping = []
         for i, word in enumerate(sent):
-            # Use the text to get the constituency label from the nltk tree
             node_location_in_tree = nltk_tree.leaf_treeposition(i)
-            constituent_label = nltk_tree[node_location_in_tree[:-1]]._label
-            constituent_label = benepar_labels_dict.get(
-                constituent_label, benepar_labels_dict["<unk>"]
-            )
 
             # Word location (depth) in tree
             node_depth_in_tree = len(node_location_in_tree)
             total_tree_depth = nltk_tree.height() - 1
-            node_depth_in_tree_norm = node_depth_in_tree / total_tree_depth
+            total_word_count = len(sent)
 
             word_location_in_sentence = i + 1
-            word_location_in_sentence_norm = word_location_in_sentence / len(sent)
-
-            # Path from root to current token
-            # We need to pad the path to the maximum depth of the tree by making an empty array
-            path_from_root = [0] * total_tree_depth
-            for j, node in enumerate(node_location_in_tree):
-                path_from_root[j] = node
-
-            # In addition to labels associated with the token
-            # We also add the label of the head of the token
-            # Along with the index of the head in the sentence
-
-            word_head = word.head
-            word_head_idx = word_head.i
 
             word_features = np.array(
                 [
                     word.pos,
                     word.dep,
-                    constituent_label,
                     node_depth_in_tree,
-                    node_depth_in_tree_norm,
                     word_location_in_sentence,
-                    word_location_in_sentence_norm,
-                    word_head.pos,
-                    word_head.dep,
-                    word_head_idx,
+                    total_tree_depth,
+                    total_word_count,
                 ]
-                # + path_from_root,
             )
             syntax_feats.append(word_features)
 
@@ -446,14 +382,10 @@ def extract_syntax_features(dataset: Dataset, **kwargs) -> dict[str, np.ndarray]
         feature_names = [
             "pos",
             "dep",
-            "constituent_label",
             "node_depth_in_tree",
-            "node_depth_in_tree_norm",
             "word_location_in_sentence",
-            "word_location_in_sentence_norm",
-            "word_head_pos",
-            "word_head_dep",
-            "word_head_idx",
+            "total_tree_depth",
+            "total_word_count",
         ]
         if len(feature_names) != len(syntax_feats[0]):
             raise ValueError(

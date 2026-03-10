@@ -34,7 +34,6 @@ CONFIG_NAME_RENAME: dict = {
     "word_embedding": "-Lexicon",
     "ppg_feature": "-Phonetics",
     "syntax_feature": "-Syntax",
-    "syntax_head_word_embedding": "Syntactic Head Lexicon",
     "syntax_feature+word_embedding": "-Syntax -Lexicon",
     "ppg_feature+eGeMAPSv02": "-Phonetics - Acoustics",
     "ppg_feature+SpeakerID-OH": "-Phonetics -Speaker",
@@ -57,6 +56,15 @@ MODELNAME_ORDER: list = [
     "ModernBERT-base",
 ]
 
+SYNTAX_COMPONENT_RENAME: dict[str, str] = {
+    "syntax_POS_OH": "-Syntax POS",
+    "syntax_Dependency_Label_OH": "-Syntax Dependency",
+    "syntax_Tree_Depth": "-Syntax Tree Depth",
+    "syntax_Word_Position": "-Syntax Position",
+    "syntax_Total_Tree_Depth": "-Syntax Total Tree Depth",
+    "syntax_Total_Word_Count": "-Syntax Total Word Count",
+}
+
 CONFIG_NAME_ORDER: list = [
     "All Features",
     "Acoustic Only",
@@ -64,7 +72,6 @@ CONFIG_NAME_ORDER: list = [
     "-Lexicon",
     "-Phonetics",
     "-Syntax",
-    "Syntactic Head Lexical",
     "-Speaker",
     "-Syntax -Lexicon",
     "-Acoustics -Speaker",
@@ -81,13 +88,40 @@ PLOT_COLOR_MAPPING: dict = {
     "-Lexicon": "#1f77b4",
     "-Phonetics": "#1f77b4",
     "-Syntax": "#ff7f0e",
-    "Syntactic Head Lexical": "#bcbd22",
     "-Syntax -Lexicon": "#17cf76",
     "-Acoustics -Speaker": "#17cf76",
     "-Phonetics -Speaker": "#17cf76",
     "Combined -Lexicon -Syntax": "#8c564b",
     "Sum of Individual Effects": "#8c564b",
 }
+
+
+def _rename_syntax_component_config(config_name: str) -> str:
+    for component, label in SYNTAX_COMPONENT_RENAME.items():
+        token = f"word_embedding+{component}"
+        if config_name == token:
+            return f"-Lexicon {label.replace('-Syntax ', '-Syntax ')}"
+    return config_name
+
+
+def _safe_list(value, default: list[str]) -> list[str]:
+    return value if isinstance(value, list) else default
+
+
+def _safe_str(value, default: str) -> str:
+    return value if isinstance(value, str) else default
+
+
+def _safe_int(value, default: int | None = None) -> int | None:
+    if value is None:
+        return default
+    return value if isinstance(value, int) else default
+
+
+def _safe_tuple2(value, default: tuple[int, int]) -> tuple[int, int]:
+    if isinstance(value, tuple) and len(value) == 2:
+        return value
+    return default
 
 
 def plot_helper(
@@ -215,6 +249,7 @@ def read_all_results(librispeech_split: str = "dev-clean") -> pd.DataFrame:
     results_dirs = [
         "single_feat_removal",
         "syntax_feat_removal",
+        "syntax_lexicon_decomposition",
         "speakerid_phonetic_acoustic_removal",
     ]
 
@@ -277,6 +312,7 @@ def read_random_seed_results(
     results_dirs = [
         "single_feat_removal",
         "syntax_feat_removal",
+        "syntax_lexicon_decomposition",
         "speakerid_phonetic_acoustic_removal",
     ]
 
@@ -452,7 +488,6 @@ def plot_main_figures(all_results_df: pd.DataFrame, show_plots: bool = False):
             "target_configs": [
                 "-Lexicon",
                 "-Syntax",
-                "-Syntax Head Lexicon",
                 "-Syntax -Lexicon",
             ],
             "target_models": [
@@ -464,7 +499,6 @@ def plot_main_figures(all_results_df: pd.DataFrame, show_plots: bool = False):
             "target_configs": [
                 "-Lexicon",
                 "-Syntax",
-                "-Syntax Head Lexicon",
                 "-Syntax -Lexicon",
             ],
             "target_models": [
@@ -500,7 +534,6 @@ def plot_main_figures(all_results_df: pd.DataFrame, show_plots: bool = False):
             "target_configs": [
                 "-Lexicon",
                 "-Syntax",
-                "-Syntax Head Lexicon",
                 "-Syntax -Lexicon",
             ],
             "target_models": list(mode_results_df["modelname"].unique()),
@@ -531,7 +564,6 @@ def plot_main_figures(all_results_df: pd.DataFrame, show_plots: bool = False):
             "target_configs": [
                 "-Lexicon",
                 "-Syntax",
-                "-Syntactic Head Lexical",
                 "-Syntax -Lexicon",
             ],
             "target_models": ["wav2vec2-base"],
@@ -564,20 +596,42 @@ def plot_main_figures(all_results_df: pd.DataFrame, show_plots: bool = False):
             "figure_size": (4, 4),
             "legend_n_row": 2,
         },
+        "syntax_lexicon_decomposition_wav2vec2": {
+            "target_configs": [
+                "-Lexicon",
+                "-Lexicon -Syntax POS",
+                "-Lexicon -Syntax Dependency",
+                "-Lexicon -Syntax Tree Depth",
+                "-Lexicon -Syntax Position",
+                "-Lexicon -Syntax Total Tree Depth",
+                "-Lexicon -Syntax Total Word Count",
+            ],
+            "target_models": ["wav2vec2-base"],
+            "x_col": "layer",
+            "y_col": "test_score",
+            "figure_size": (4, 4),
+            "legend_n_row": 2,
+        },
     }
 
     for featname, plotting_config in plotting_configs.items():
-        target_configs = plotting_config["target_configs"]
-        target_models = plotting_config["target_models"]
-        x_col = plotting_config.get("x_col", "layer")
-        y_col = plotting_config.get("y_col", "test_score")
-        legend_n_row = plotting_config.get("legend_n_row", None)
-        figure_size = plotting_config.get("figure_size", (6, 3))
+        target_configs = _safe_list(plotting_config["target_configs"], [])
+        target_models = _safe_list(plotting_config["target_models"], [])
+        x_col = _safe_str(plotting_config.get("x_col", "layer"), "layer")
+        y_col = _safe_str(plotting_config.get("y_col", "test_score"), "test_score")
+        legend_n_row = _safe_int(plotting_config.get("legend_n_row", None), None)
+        figure_size = _safe_tuple2(plotting_config.get("figure_size", (6, 3)), (6, 3))
 
-        plot_df = mode_results_df[
-            (mode_results_df["config_name"].isin(target_configs))
-            & (mode_results_df["modelname"].isin(target_models))
+        plot_df = mode_results_df.copy()
+        plot_df = plot_df.copy()
+        plot_df["config_name"] = plot_df["config_name"].map(
+            _rename_syntax_component_config
+        )
+        plot_df = plot_df[
+            (plot_df["config_name"].isin(target_configs))
+            & (plot_df["modelname"].isin(target_models))
         ]
+
         plot_compare_df = mode_comparison_results_df[
             mode_comparison_results_df["modelname"].isin(target_models)
         ]
@@ -832,7 +886,7 @@ def plot_focus_random_seed(
 
 def summarize_random_seed_line_differences(
     random_seed_results_df: pd.DataFrame,
-    focus_lookup: dict[str, Union[list[str], dict[str, list[str] | str]]],
+    focus_lookup: dict[str, Union[list[str], dict[str, object]]],
     output_dir: str = RESULTS_ROOT,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Summarize pairwise line differences across random seeds and layers.
@@ -859,16 +913,22 @@ def summarize_random_seed_line_differences(
             return round(float(value), 8)
 
         if isinstance(focus_spec, dict):
-            single_configs = list(focus_spec.get("single_configs", []))
+            single_configs = _safe_list(focus_spec.get("single_configs", []), [])
             joint_config = focus_spec.get("joint_config")
             if isinstance(joint_config, str):
-                line_configs = list(
-                    focus_spec.get("line_configs", [*single_configs, joint_config])
+                line_configs = _safe_list(
+                    focus_spec.get("line_configs", [*single_configs, joint_config]),
+                    [*single_configs, joint_config],
                 )
             else:
-                line_configs = list(focus_spec.get("line_configs", single_configs))
-            comparison_configs = list(
-                focus_spec.get("comparison_configs", ["All Features", "Acoustics Only"])
+                line_configs = _safe_list(
+                    focus_spec.get("line_configs", single_configs), single_configs
+                )
+            comparison_configs = _safe_list(
+                focus_spec.get(
+                    "comparison_configs", ["All Features", "Acoustics Only"]
+                ),
+                ["All Features", "Acoustics Only"],
             )
         else:
             line_configs = list(focus_spec)
@@ -1128,7 +1188,7 @@ def main():
         librispeech_split=librispeech_split, modelname=modelname
     )
 
-    all_focus_lookup = {
+    all_focus_lookup: dict[str, Union[list[str], dict[str, object]]] = {
         "syntax_lexical": {
             "single_configs": ["-Lexicon", "-Syntax"],
             "joint_config": "-Syntax -Lexicon",

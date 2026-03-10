@@ -15,7 +15,7 @@ from probe_runner import (
     run_standard_probe,
     select_feature_groups,
 )
-from utils import RESULTS_ROOT, SAVEPATH, parse_args, pick_probe
+from utils import RESULTS_ROOT, parse_args, pick_probe
 
 # Set up logger with time, name, level, and message
 logging.basicConfig(
@@ -253,6 +253,97 @@ def syntax_decoder_probe_baseline():
             f.write("\n")
 
 
+def run_lexicon_syntax_decomposition_experiment(
+    librispeech_split: str,
+    modelname: str,
+    probe_name: str,
+    select_layers: list[int] | None,
+    overwrite: bool,
+    random_seed: int,
+    normalize_features: bool,
+) -> None:
+    """Run focused syntax ablations on top of the -Lexicon condition.
+
+    This experiment encodes the restricted syntax dimensions separately and then
+    removes each syntax subfeature in addition to lexical removal.
+    """
+
+    input_feature_select_components = [
+        "eGeMAPSv02",
+        "syntax_feature",
+        "ppg_feature",
+        "metadata",
+        "word_embedding",
+    ]
+    feature_sets, model_hidden_states, filename_timestamp, data_shape = load_data(
+        librispeech_split=librispeech_split,
+        modelname=modelname,
+        selected_input_components=input_feature_select_components,
+        seq_sampling="random_frames",
+        select_layers=select_layers,
+        overwrite=overwrite,
+        one_hot_encode_syntax=False,
+        one_hot_encode_syntax_separate=True,
+        one_hot_encode_metadata=True,
+        argmax_ppg=False,
+        normalize_features=normalize_features,
+        random_seed=random_seed,
+    )
+
+    speaker_ID = [x[0].split("-")[0] for x in filename_timestamp]
+    section_shapes = np.array(get_section_shapes(data_shape=data_shape))
+    estimator, param_grid = pick_probe(probe_name=probe_name, n_components=None)
+
+    syntax_components = [
+        component
+        for component in data_shape
+        if component
+        in {
+            "syntax_POS_OH",
+            "syntax_Dependency_Label_OH",
+            "syntax_Tree_Depth",
+            "syntax_Word_Position",
+            "syntax_Total_Tree_Depth",
+            "syntax_Total_Word_Count",
+        }
+    ]
+
+    if len(syntax_components) == 0:
+        raise ValueError(
+            "No separated syntax components found. Expected one_hot_encode_syntax_separate output."
+        )
+
+    feature_group_config = [["word_embedding"]] + [
+        ["word_embedding", syntax_component] for syntax_component in syntax_components
+    ]
+
+    results = run_topdown_probe(
+        feature_sets=feature_sets,
+        model_hidden_states=model_hidden_states,
+        section_shapes=section_shapes,
+        do_topline=False,
+        speaker_ids=speaker_ID,
+        feature_group_config=feature_group_config,
+        librispeech_split=librispeech_split,
+        modelname=modelname,
+        estimator=estimator,
+        param_grid=param_grid,
+    )
+
+    savepath = os.path.join(
+        RESULTS_ROOT,
+        "syntax_lexicon_decomposition",
+        f"{librispeech_split}_{modelname.replace('/', '-')}_{probe_name}_results.pkl",
+    )
+    if random_seed != 42:
+        savepath = savepath.replace("results.pkl", f"results-seed{random_seed}.pkl")
+
+    os.makedirs(os.path.dirname(savepath), exist_ok=True)
+    with open(savepath, "wb") as f:
+        pickle.dump(results, f)
+    logger.info("Syntax/lexicon decomposition results saved to %s", savepath)
+
+
 def main():
     args = parse_args()
     librispeech_split = args.librispeech_split
@@ -288,7 +379,6 @@ def main():
 
     speaker_ID = [x[0].split("-")[0] for x in filename_timestamp]
 
-    feature_groups = [(x,) for x in list(data_shape.keys())]
     section_shapes = np.array(get_section_shapes(data_shape=data_shape))
 
     estimator, param_grid = pick_probe(probe_name=probe_name, n_components=None)
@@ -427,6 +517,16 @@ def main():
         )
     logger.info(
         f"SpeakerID, Phonetic, Acoustic feature removal results saved to {speakerid_phonetic_acoustic_save_path}"
+    )
+
+    run_lexicon_syntax_decomposition_experiment(
+        librispeech_split=librispeech_split,
+        modelname=modelname,
+        probe_name=probe_name,
+        select_layers=select_layers,
+        overwrite=overwrite,
+        random_seed=random_seed,
+        normalize_features=normalize_features,
     )
 
 

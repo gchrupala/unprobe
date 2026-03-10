@@ -554,40 +554,36 @@ def further_process(
         add_additional_syntax_features
         and "syntax_feature" in all_input_features_dict.keys()
     ):
-        # Use word_head_idx to look up the word embedding of the head
-        syntax_feature_names = all_input_features_dict["syntax_feature_names"]
-
-        word_head_idx_idx = syntax_feature_names.index("word_head_idx")
-        word_head_indices = all_input_features_dict["syntax_feature"][
-            :, word_head_idx_idx
-        ].astype(int)
-
-        # Look up the corresponding dnn_word_embedding for each head index
-        dnn_word_embeddings = all_input_features_dict["dnn_word_embedding"]
-        head_word_embeddings = dnn_word_embeddings[word_head_indices]
-        all_input_features_dict["syntax_head_word_embedding"] = head_word_embeddings
-        selected_input_components.append("syntax_head_word_embedding")
+        logger.warning(
+            "add_additional_syntax_features is deprecated for the restricted syntax setup and will be ignored."
+        )
 
     if one_hot_encode_syntax_separate:
-        # One hot encode individual columns within syntax feature like above
-        # But save the one-hot encoded syntax features as separate components in the dictionary
-        # Syntax feature indices mapping
-        syntax_feature_idx = {
-            "POS": 0,
-            "Dependency_Label": 1,
-            # "Constituent_Label": 2,
-            "Tree_Depth": 3,
-            # "Tree_Depth_Normed": 4,
-            "Word_Position": 5,
-            # "Word_Position_Normed": 6,
+        # One hot encode categorical syntax columns and keep continuous ones as numeric columns.
+        syntax_feature_names = all_input_features_dict["syntax_feature_names"]
+        onehot_syntax_feature_idx = {
+            "POS": syntax_feature_names.index("pos"),
+            "Dependency_Label": syntax_feature_names.index("dep"),
+        }
+        numeric_syntax_feature_idx = {
+            "Tree_Depth": syntax_feature_names.index("node_depth_in_tree"),
+            "Word_Position": syntax_feature_names.index("word_location_in_sentence"),
+            "Total_Tree_Depth": syntax_feature_names.index("total_tree_depth"),
+            "Total_Word_Count": syntax_feature_names.index("total_word_count"),
         }
         syntax_feature_array = np.array(all_input_features_dict["syntax_feature"])
         encoder = _make_onehot_encoder()
-        for feature_name, idx in syntax_feature_idx.items():
+        for feature_name, idx in onehot_syntax_feature_idx.items():
             original_syntax_feat = syntax_feature_array[:, idx].reshape(-1, 1)
             onehot_encoded_col = encoder.fit_transform(original_syntax_feat)
             all_input_features_dict[f"syntax_{feature_name}_OH"] = onehot_encoded_col
             selected_input_components.append(f"syntax_{feature_name}_OH")
+
+        for feature_name, idx in numeric_syntax_feature_idx.items():
+            numeric_col = syntax_feature_array[:, idx].reshape(-1, 1)
+            all_input_features_dict[f"syntax_{feature_name}"] = numeric_col
+            selected_input_components.append(f"syntax_{feature_name}")
+
         # Remove the original syntax_feature from selected_input_components
         selected_input_components.remove("syntax_feature")
         del all_input_features_dict["syntax_feature"]

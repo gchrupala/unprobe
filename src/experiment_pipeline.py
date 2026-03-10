@@ -558,6 +558,7 @@ def main():
         load_overrides={
             "one_hot_encode_syntax": False,
             "one_hot_encode_syntax_separate": True,
+            "overwrite": False,
         },
     )
     syntax_lexicon_spec = build_syntax_lexicon_decomposition_spec(

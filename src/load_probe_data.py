@@ -28,7 +28,45 @@ def _make_onehot_encoder():
     try:
         return OneHotEncoder(sparse_output=False)
     except TypeError:
-        return OneHotEncoder(sparse=False)
+        return OneHotEncoder(sparse=False)  # type: ignore[call-arg]
+
+
+def _encode_syntax_components(
+    syntax_feature_array: np.ndarray,
+    syntax_feature_names: list[str],
+) -> dict[str, np.ndarray]:
+    required_feature_map = {
+        "syntax_POS_OH": "pos",
+        "syntax_Dependency_Label_OH": "dep",
+        "syntax_Tree_Depth": "node_depth_in_tree",
+        "syntax_Word_Position": "word_location_in_sentence",
+        "syntax_Total_Tree_Depth": "total_tree_depth",
+        "syntax_Total_Word_Count": "total_word_count",
+    }
+
+    name_to_idx = {name: idx for idx, name in enumerate(syntax_feature_names)}
+    missing = [
+        source_name
+        for source_name in required_feature_map.values()
+        if source_name not in name_to_idx
+    ]
+    if missing:
+        raise ValueError(
+            "Missing required syntax features for encoding: "
+            + ", ".join(sorted(missing))
+        )
+
+    encoder = _make_onehot_encoder()
+    syntax_components: dict[str, np.ndarray] = {}
+    for output_name, source_name in required_feature_map.items():
+        source_idx = name_to_idx[source_name]
+        source_col = syntax_feature_array[:, source_idx].reshape(-1, 1)
+        if output_name in {"syntax_POS_OH", "syntax_Dependency_Label_OH"}:
+            syntax_components[output_name] = encoder.fit_transform(source_col)
+        else:
+            syntax_components[output_name] = source_col
+
+    return syntax_components
 
 
 INPUT_FEATURE_SELECT_COMPONENTS = [
@@ -473,6 +511,11 @@ def further_process(
             all_input_features_dict[feature_name]
         )
 
+    if one_hot_encode_syntax and one_hot_encode_syntax_separate:
+        raise ValueError(
+            "one_hot_encode_syntax and one_hot_encode_syntax_separate are mutually exclusive."
+        )
+
     if (
         reduce_dnn_word_embedding
         and "dnn_word_embedding" in all_input_features_dict.keys()
@@ -520,30 +563,24 @@ def further_process(
         )
 
     if one_hot_encode_syntax and "syntax_feature" in all_input_features_dict.keys():
-        # One hot encode the individual columns within syntax_feature
-        # mask out the normed features for one-hot encoding
         syntax_feature_array = np.array(all_input_features_dict["syntax_feature"])
         syntax_feature_names = all_input_features_dict["syntax_feature_names"]
-        # Get the index of the feature name where they contain any of the
-        # component in the string content
-        components = ["depth", "location", "idx"]
-        syntax_to_onehot_idx = []
-        for i, feature_name in enumerate(syntax_feature_names):
-            if any(comp in feature_name.lower() for comp in components):
-                syntax_to_onehot_idx.append(i)
-        syntax_to_onehot_idx = np.array(syntax_to_onehot_idx)
-        syntax_feature_mask = np.ones_like(syntax_feature_names, dtype=bool)
-        # Floating point features to be excluded from one-hot encoding
-        syntax_feature_mask[syntax_to_onehot_idx] = False
-        syntax_feature_array = syntax_feature_array[:, syntax_feature_mask]
-        encoder = _make_onehot_encoder()
-        onehot_encoded_columns = []
-        for original_syntax_feat in syntax_feature_array.T:
-            original_syntax_feat = original_syntax_feat.reshape(-1, 1)
-            onehot_encoded_col = encoder.fit_transform(original_syntax_feat)
-            onehot_encoded_columns.append(onehot_encoded_col)
-        syntax_feature_onehot = np.concatenate(onehot_encoded_columns, axis=1)
-        all_input_features_dict["syntax_feature"] = syntax_feature_onehot
+        syntax_components = _encode_syntax_components(
+            syntax_feature_array=syntax_feature_array,
+            syntax_feature_names=syntax_feature_names,
+        )
+        concat_order = [
+            "syntax_POS_OH",
+            "syntax_Dependency_Label_OH",
+            "syntax_Tree_Depth",
+            "syntax_Word_Position",
+            "syntax_Total_Tree_Depth",
+            "syntax_Total_Word_Count",
+        ]
+        all_input_features_dict["syntax_feature"] = np.concatenate(
+            [syntax_components[name] for name in concat_order],
+            axis=1,
+        )
     if (
         add_additional_syntax_features
         and "syntax_feature" in all_input_features_dict.keys()
@@ -555,31 +592,20 @@ def further_process(
     if one_hot_encode_syntax_separate:
         # One hot encode categorical syntax columns and keep continuous ones as numeric columns.
         syntax_feature_names = all_input_features_dict["syntax_feature_names"]
-        onehot_syntax_feature_idx = {
-            "POS": syntax_feature_names.index("pos"),
-            "Dependency_Label": syntax_feature_names.index("dep"),
-        }
-        numeric_syntax_feature_idx = {
-            "Tree_Depth": syntax_feature_names.index("node_depth_in_tree"),
-            "Word_Position": syntax_feature_names.index("word_location_in_sentence"),
-            "Total_Tree_Depth": syntax_feature_names.index("total_tree_depth"),
-            "Total_Word_Count": syntax_feature_names.index("total_word_count"),
-        }
         syntax_feature_array = np.array(all_input_features_dict["syntax_feature"])
-        encoder = _make_onehot_encoder()
-        for feature_name, idx in onehot_syntax_feature_idx.items():
-            original_syntax_feat = syntax_feature_array[:, idx].reshape(-1, 1)
-            onehot_encoded_col = encoder.fit_transform(original_syntax_feat)
-            all_input_features_dict[f"syntax_{feature_name}_OH"] = onehot_encoded_col
-            selected_input_components.append(f"syntax_{feature_name}_OH")
+        syntax_components = _encode_syntax_components(
+            syntax_feature_array=syntax_feature_array,
+            syntax_feature_names=syntax_feature_names,
+        )
 
-        for feature_name, idx in numeric_syntax_feature_idx.items():
-            numeric_col = syntax_feature_array[:, idx].reshape(-1, 1)
-            all_input_features_dict[f"syntax_{feature_name}"] = numeric_col
-            selected_input_components.append(f"syntax_{feature_name}")
+        for component_name, component_values in syntax_components.items():
+            all_input_features_dict[component_name] = component_values
+            if component_name not in selected_input_components:
+                selected_input_components.append(component_name)
 
         # Remove the original syntax_feature from selected_input_components
-        selected_input_components.remove("syntax_feature")
+        if "syntax_feature" in selected_input_components:
+            selected_input_components.remove("syntax_feature")
         del all_input_features_dict["syntax_feature"]
 
     if one_hot_encode_metadata and "metadata" in all_input_features_dict.keys():

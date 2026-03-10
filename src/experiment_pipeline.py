@@ -2,7 +2,8 @@ import logging
 import os
 import pickle
 import sys
-from itertools import combinations
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
 import numpy as np
 from sklearn.model_selection import GridSearchCV, train_test_split
@@ -27,6 +28,27 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ExperimentSpec:
+    name: str
+    mode: Literal["top-down", "acoustic-baseline-addition"]
+    result_subdir: str
+    feature_group_config: list[list[str]]
+    do_topline: bool = True
+    load_overrides: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ExperimentContext:
+    librispeech_split: str
+    modelname: str
+    probe_name: str
+    select_layers: list[int] | None
+    overwrite: bool
+    random_seed: int
+    normalize_features: bool
 
 
 def run_acoustic_base_probe(
@@ -253,47 +275,103 @@ def syntax_decoder_probe_baseline():
             f.write("\n")
 
 
-def run_lexicon_syntax_decomposition_experiment(
-    librispeech_split: str,
-    modelname: str,
-    probe_name: str,
-    select_layers: list[int] | None,
-    overwrite: bool,
-    random_seed: int,
-    normalize_features: bool,
-) -> None:
-    """Run focused syntax ablations on top of the -Lexicon condition.
+def get_default_load_kwargs(context: ExperimentContext) -> dict[str, Any]:
+    return {
+        "librispeech_split": context.librispeech_split,
+        "modelname": context.modelname,
+        "selected_input_components": [
+            "eGeMAPSv02",
+            "syntax_feature",
+            "ppg_feature",
+            "metadata",
+            "word_embedding",
+        ],
+        "seq_sampling": "random_frames",
+        "select_layers": context.select_layers,
+        "overwrite": context.overwrite,
+        "one_hot_encode_syntax": True,
+        "one_hot_encode_syntax_separate": False,
+        "one_hot_encode_metadata": True,
+        "argmax_ppg": False,
+        "normalize_features": context.normalize_features,
+        "random_seed": context.random_seed,
+    }
 
-    This experiment encodes the restricted syntax dimensions separately and then
-    removes each syntax subfeature in addition to lexical removal.
-    """
 
-    input_feature_select_components = [
-        "eGeMAPSv02",
-        "syntax_feature",
-        "ppg_feature",
-        "metadata",
-        "word_embedding",
-    ]
-    feature_sets, model_hidden_states, filename_timestamp, data_shape = load_data(
-        librispeech_split=librispeech_split,
-        modelname=modelname,
-        selected_input_components=input_feature_select_components,
-        seq_sampling="random_frames",
-        select_layers=select_layers,
-        overwrite=overwrite,
-        one_hot_encode_syntax=False,
-        one_hot_encode_syntax_separate=True,
-        one_hot_encode_metadata=True,
-        argmax_ppg=False,
-        normalize_features=normalize_features,
-        random_seed=random_seed,
+def load_experiment_data(
+    context: ExperimentContext,
+    load_overrides: dict[str, Any] | None = None,
+):
+    kwargs = get_default_load_kwargs(context)
+    kwargs.update(load_overrides or {})
+    return load_data(**kwargs)
+
+
+def build_results_path(context: ExperimentContext, result_subdir: str) -> str:
+    savepath = os.path.join(
+        RESULTS_ROOT,
+        result_subdir,
+        f"{context.librispeech_split}_{context.modelname.replace('/', '-')}_{context.probe_name}_results.pkl",
     )
+    if context.random_seed != 42:
+        savepath = savepath.replace(
+            "results.pkl", f"results-seed{context.random_seed}.pkl"
+        )
+    return savepath
 
-    speaker_ID = [x[0].split("-")[0] for x in filename_timestamp]
-    section_shapes = np.array(get_section_shapes(data_shape=data_shape))
-    estimator, param_grid = pick_probe(probe_name=probe_name, n_components=None)
 
+def save_results(savepath: str, results: list[dict]) -> None:
+    os.makedirs(os.path.dirname(savepath), exist_ok=True)
+    with open(savepath, "wb") as f:
+        pickle.dump(results, f)
+
+
+def build_default_experiment_specs(data_shape: dict[str, Any]) -> list[ExperimentSpec]:
+    possible_feature_group_names = [
+        feature_name
+        for feature_name in list(data_shape.keys())
+        if feature_name != "eGeMAPSv02"
+    ]
+    single_feature_group_config = [
+        [feature_name] for feature_name in possible_feature_group_names
+    ]
+
+    return [
+        ExperimentSpec(
+            name="single_feat_removal",
+            mode="top-down",
+            result_subdir="single_feat_removal",
+            feature_group_config=single_feature_group_config + [["eGeMAPSv02"]],
+            do_topline=True,
+        ),
+        ExperimentSpec(
+            name="syntax_feat_removal",
+            mode="top-down",
+            result_subdir="syntax_feat_removal",
+            feature_group_config=[
+                ["syntax_feature"],
+                ["syntax_feature", "word_embedding"],
+            ],
+            do_topline=True,
+        ),
+        ExperimentSpec(
+            name="speakerid_phonetic_acoustic_removal",
+            mode="top-down",
+            result_subdir="speakerid_phonetic_acoustic_removal",
+            feature_group_config=[
+                ["ppg_feature", "eGeMAPSv02"],
+                ["ppg_feature", "SpeakerID-OH"],
+                ["SpeakerID-OH", "eGeMAPSv02"],
+                ["SpeakerID-OH", "eGeMAPSv02", "ppg_feature"],
+            ],
+            do_topline=True,
+        ),
+    ]
+
+
+def build_syntax_lexicon_decomposition_spec(
+    data_shape: dict[str, Any],
+) -> ExperimentSpec:
     syntax_components = [
         component
         for component in data_shape
@@ -317,216 +395,183 @@ def run_lexicon_syntax_decomposition_experiment(
         ["word_embedding", syntax_component] for syntax_component in syntax_components
     ]
 
-    results = run_topdown_probe(
+    return ExperimentSpec(
+        name="syntax_lexicon_decomposition",
+        mode="top-down",
+        result_subdir="syntax_lexicon_decomposition",
+        feature_group_config=feature_group_config,
+        do_topline=True,
+        load_overrides={
+            "one_hot_encode_syntax": False,
+            "one_hot_encode_syntax_separate": True,
+        },
+    )
+
+
+def run_and_save_experiment(
+    spec: ExperimentSpec,
+    context: ExperimentContext,
+    estimator,
+    param_grid,
+    feature_sets: np.ndarray,
+    model_hidden_states: np.ndarray,
+    filename_timestamp,
+    data_shape: dict[str, Any],
+) -> None:
+    speaker_ids = [x[0].split("-")[0] for x in filename_timestamp]
+    section_shapes = np.array(get_section_shapes(data_shape=data_shape))
+
+    if spec.mode == "top-down":
+        results = run_topdown_probe(
+            feature_sets=feature_sets,
+            model_hidden_states=model_hidden_states,
+            section_shapes=section_shapes,
+            do_topline=spec.do_topline,
+            speaker_ids=speaker_ids,
+            feature_group_config=spec.feature_group_config,
+            librispeech_split=context.librispeech_split,
+            modelname=context.modelname,
+            estimator=estimator,
+            param_grid=param_grid,
+        )
+    elif spec.mode == "acoustic-baseline-addition":
+        results = run_acoustic_base_probe(
+            feature_sets=feature_sets,
+            model_hidden_states=model_hidden_states,
+            section_shapes=section_shapes,
+            speaker_ids=speaker_ids,
+            feature_group_config=spec.feature_group_config,
+            librispeech_split=context.librispeech_split,
+            modelname=context.modelname,
+            estimator=estimator,
+            param_grid=param_grid,
+        )
+    else:
+        raise ValueError(f"Unknown experiment mode: {spec.mode}")
+
+    for row in results:
+        row["experiment_name"] = spec.name
+
+    savepath = build_results_path(context, spec.result_subdir)
+    save_results(savepath, results)
+    logger.info("%s results saved to %s", spec.name, savepath)
+
+
+def run_combined_topdown_and_save_per_experiment(
+    specs: list[ExperimentSpec],
+    context: ExperimentContext,
+    estimator,
+    param_grid,
+    feature_sets: np.ndarray,
+    model_hidden_states: np.ndarray,
+    filename_timestamp,
+    data_shape: dict[str, Any],
+) -> None:
+    if len(specs) == 0:
+        return
+
+    combined_feature_group_config: list[list[str]] = []
+    seen_configs: set[tuple[str, ...]] = set()
+    for spec in specs:
+        for feature_group in spec.feature_group_config:
+            config_key = tuple(feature_group)
+            if config_key in seen_configs:
+                continue
+            seen_configs.add(config_key)
+            combined_feature_group_config.append(feature_group)
+
+    speaker_ids = [x[0].split("-")[0] for x in filename_timestamp]
+    section_shapes = np.array(get_section_shapes(data_shape=data_shape))
+    combined_results = run_topdown_probe(
         feature_sets=feature_sets,
         model_hidden_states=model_hidden_states,
         section_shapes=section_shapes,
-        do_topline=False,
-        speaker_ids=speaker_ID,
-        feature_group_config=feature_group_config,
-        librispeech_split=librispeech_split,
-        modelname=modelname,
+        do_topline=any(spec.do_topline for spec in specs),
+        speaker_ids=speaker_ids,
+        feature_group_config=combined_feature_group_config,
+        librispeech_split=context.librispeech_split,
+        modelname=context.modelname,
         estimator=estimator,
         param_grid=param_grid,
     )
 
-    savepath = os.path.join(
-        RESULTS_ROOT,
-        "syntax_lexicon_decomposition",
-        f"{librispeech_split}_{modelname.replace('/', '-')}_{probe_name}_results.pkl",
-    )
-    if random_seed != 42:
-        savepath = savepath.replace("results.pkl", f"results-seed{random_seed}.pkl")
+    topline_config_names = {"AllFeatures"}
+    for spec in specs:
+        config_names_for_spec = {
+            "+".join(feature_group) for feature_group in spec.feature_group_config
+        }
+        spec_results = []
+        for row in combined_results:
+            if (
+                row["config_name"] in config_names_for_spec
+                or row["config_name"] in topline_config_names
+            ):
+                new_row = row.copy()
+                new_row["experiment_name"] = spec.name
+                spec_results.append(new_row)
 
-    os.makedirs(os.path.dirname(savepath), exist_ok=True)
-    with open(savepath, "wb") as f:
-        pickle.dump(results, f)
-    logger.info("Syntax/lexicon decomposition results saved to %s", savepath)
+        savepath = build_results_path(context, spec.result_subdir)
+        save_results(savepath, spec_results)
+        logger.info("%s results saved to %s", spec.name, savepath)
 
 
 def main():
     args = parse_args()
-    librispeech_split = args.librispeech_split
-    modelname = args.modelname
-    probe_name = args.probe_name
-    select_layers = args.select_layers
-    normalize_features = args.normalize_features
-    overwrite = args.overwrite
-    random_seed = args.random_seed
-
-    input_feature_select_components = [
-        "eGeMAPSv02",
-        "syntax_feature",
-        "ppg_feature",
-        "metadata",
-        "word_embedding",
-    ]
-
-    feature_sets, model_hidden_states, filename_timestamp, data_shape = load_data(
-        librispeech_split=librispeech_split,
-        modelname=modelname,
-        selected_input_components=input_feature_select_components,
-        seq_sampling="random_frames",
-        select_layers=select_layers,
-        overwrite=overwrite,
-        one_hot_encode_syntax=True,
-        one_hot_encode_syntax_separate=False,
-        one_hot_encode_metadata=True,
-        argmax_ppg=False,
-        normalize_features=normalize_features,
-        random_seed=random_seed,
+    context = ExperimentContext(
+        librispeech_split=args.librispeech_split,
+        modelname=args.modelname,
+        probe_name=args.probe_name,
+        select_layers=args.select_layers,
+        overwrite=args.overwrite,
+        random_seed=args.random_seed,
+        normalize_features=args.normalize_features,
     )
 
-    speaker_ID = [x[0].split("-")[0] for x in filename_timestamp]
+    estimator, param_grid = pick_probe(probe_name=context.probe_name, n_components=None)
 
-    section_shapes = np.array(get_section_shapes(data_shape=data_shape))
+    (
+        default_feature_sets,
+        default_model_hidden_states,
+        default_filename_timestamp,
+        default_data_shape,
+    ) = load_experiment_data(context=context)
 
-    estimator, param_grid = pick_probe(probe_name=probe_name, n_components=None)
-
-    possible_feature_group_names = [
-        x for x in list(data_shape.keys()) if x != "eGeMAPSv02"
-    ]
-
-    feature_group_config = [
-        list(x) for x in combinations(possible_feature_group_names, 1)
-    ]
-
-    # acoustic_baseline_results = run_acoustic_base_probe(
-    #     feature_sets=feature_sets,
-    #     model_hidden_states=model_hidden_states,
-    #     section_shapes=section_shapes,
-    #     speaker_ID=speaker_ID,
-    #     feature_group_config=feature_group_config,
-    #     librispeech_split=librispeech_split,
-    #     modelname=modelname,
-    #     estimator=estimator,
-    #     param_grid=param_grid,
-    # )
-
-    single_feat_removal_results = run_topdown_probe(
-        feature_sets=feature_sets,
-        model_hidden_states=model_hidden_states,
-        section_shapes=section_shapes,
-        do_topline=True,
-        speaker_ids=speaker_ID,
-        feature_group_config=feature_group_config
-        + [
-            [
-                "eGeMAPSv02",
-            ],
-        ],
-        librispeech_split=librispeech_split,
-        modelname=modelname,
+    default_specs = build_default_experiment_specs(default_data_shape)
+    run_combined_topdown_and_save_per_experiment(
+        specs=default_specs,
+        context=context,
         estimator=estimator,
         param_grid=param_grid,
+        feature_sets=default_feature_sets,
+        model_hidden_states=default_model_hidden_states,
+        filename_timestamp=default_filename_timestamp,
+        data_shape=default_data_shape,
     )
 
-    savepath = os.path.join(
-        RESULTS_ROOT,
-        "single_feat_removal",
-        f"{librispeech_split}_{modelname.replace('/', '-')}_{probe_name}_results.pkl",
+    (
+        syntax_feature_sets,
+        syntax_model_hidden_states,
+        syntax_filename_timestamp,
+        syntax_data_shape,
+    ) = load_experiment_data(
+        context=context,
+        load_overrides={
+            "one_hot_encode_syntax": False,
+            "one_hot_encode_syntax_separate": True,
+        },
     )
-
-    # Rename savepath in case random_seed is not default
-    if random_seed != 42:
-        savepath = savepath.replace("results.pkl", f"results-seed{random_seed}.pkl")
-
-    os.makedirs(os.path.dirname(savepath), exist_ok=True)
-    with open(savepath, "wb") as f:
-        pickle.dump(
-            single_feat_removal_results,
-            f,
-        )
-    logger.info(f"Results saved to {savepath}")
-
-    syntax_feature_removal_config = [
-        ["syntax_feature"],
-        ["syntax_feature", "word_embedding"],
-    ]
-
-    syntax_feat_removal_results = run_topdown_probe(
-        feature_sets=feature_sets,
-        model_hidden_states=model_hidden_states,
-        section_shapes=section_shapes,
-        do_topline=False,
-        speaker_ids=speaker_ID,
-        feature_group_config=syntax_feature_removal_config,
-        librispeech_split=librispeech_split,
-        modelname=modelname,
+    syntax_lexicon_spec = build_syntax_lexicon_decomposition_spec(
+        data_shape=syntax_data_shape,
+    )
+    run_and_save_experiment(
+        spec=syntax_lexicon_spec,
+        context=context,
         estimator=estimator,
         param_grid=param_grid,
-    )
-
-    syntax_save_path = os.path.join(
-        RESULTS_ROOT,
-        "syntax_feat_removal",
-        f"{librispeech_split}_{modelname.replace('/', '-')}_{probe_name}_results.pkl",
-    )
-
-    # Rename savepath in case random_seed is not default
-    if random_seed != 42:
-        syntax_save_path = syntax_save_path.replace(
-            "results.pkl", f"results-seed{random_seed}.pkl"
-        )
-
-    os.makedirs(os.path.dirname(syntax_save_path), exist_ok=True)
-    with open(syntax_save_path, "wb") as f:
-        pickle.dump(
-            syntax_feat_removal_results,
-            f,
-        )
-    logger.info(f"Syntax feature removal results saved to {syntax_save_path}")
-
-    speakerid_phonetic_acoustic_removal_config = [
-        ["ppg_feature", "eGeMAPSv02"],
-        ["ppg_feature", "SpeakerID-OH"],
-        ["SpeakerID-OH", "eGeMAPSv02"],
-        ["SpeakerID-OH", "eGeMAPSv02", "ppg_feature"],
-    ]
-
-    speakerid_phonetic_acoustic_removal_results = run_topdown_probe(
-        feature_sets=feature_sets,
-        model_hidden_states=model_hidden_states,
-        section_shapes=section_shapes,
-        do_topline=False,
-        speaker_ids=speaker_ID,
-        feature_group_config=speakerid_phonetic_acoustic_removal_config,
-        librispeech_split=librispeech_split,
-        modelname=modelname,
-        estimator=estimator,
-        param_grid=param_grid,
-    )
-    speakerid_phonetic_acoustic_save_path = os.path.join(
-        RESULTS_ROOT,
-        "speakerid_phonetic_acoustic_removal",
-        f"{librispeech_split}_{modelname.replace('/', '-')}_{probe_name}_results.pkl",
-    )
-    # Rename savepath in case random_seed is not default
-    if random_seed != 42:
-        speakerid_phonetic_acoustic_save_path = (
-            speakerid_phonetic_acoustic_save_path.replace(
-                "results.pkl", f"results-seed{random_seed}.pkl"
-            )
-        )
-
-    os.makedirs(os.path.dirname(speakerid_phonetic_acoustic_save_path), exist_ok=True)
-    with open(speakerid_phonetic_acoustic_save_path, "wb") as f:
-        pickle.dump(
-            speakerid_phonetic_acoustic_removal_results,
-            f,
-        )
-    logger.info(
-        f"SpeakerID, Phonetic, Acoustic feature removal results saved to {speakerid_phonetic_acoustic_save_path}"
-    )
-
-    run_lexicon_syntax_decomposition_experiment(
-        librispeech_split=librispeech_split,
-        modelname=modelname,
-        probe_name=probe_name,
-        select_layers=select_layers,
-        overwrite=overwrite,
-        random_seed=random_seed,
-        normalize_features=normalize_features,
+        feature_sets=syntax_feature_sets,
+        model_hidden_states=syntax_model_hidden_states,
+        filename_timestamp=syntax_filename_timestamp,
+        data_shape=syntax_data_shape,
     )
 
 

@@ -32,17 +32,11 @@ def _make_onehot_encoder():
 
 
 INPUT_FEATURE_SELECT_COMPONENTS = [
-    # "OtherAcoustic",
-    # "SpectralInfo",
-    # "Formants",
-    # "word_embedding",
+    "word_embedding",
     "eGeMAPSv02",
     "syntax_feature",
     "ppg_feature",
-    # "spk_embedding",
     "metadata",
-    # "word_form_feature",
-    "dnn_word_embedding",
 ]
 
 

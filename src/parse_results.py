@@ -30,7 +30,7 @@ CONFIG_NAME_RENAME: dict = {
     "eGeMAPSv02": "-Acoustics",
     "ChapterID-OH": "-Chapter ID",
     "SpeakerID-OH": "-Speaker",
-    "dnn_word_embedding": "-Lexicon",
+    # "dnn_word_embedding": "-Lexicon",
     "word_embedding": "-Lexicon",
     "ppg_feature": "-Phonetics",
     "syntax_feature": "-Syntax",
@@ -67,18 +67,20 @@ SYNTAX_COMPONENT_RENAME: dict[str, str] = {
 
 CONFIG_NAME_ORDER: list = [
     "All Features",
-    "Acoustic Only",
-    "-Acoustics",
-    "-Lexicon",
-    "-Phonetics",
-    "-Syntax",
-    "-Speaker",
-    "-Syntax -Lexicon",
-    "-Acoustics -Speaker",
-    "-Phonetics -Speaker",
-    "Combined -Lexicon -Syntax",
-    "Sum of Individual Effects",
+    "Acoustics Only",
 ]
+CONFIG_NAME_ORDER += sorted(
+    [
+        config
+        for config in CONFIG_NAME_RENAME.values()
+        if config not in CONFIG_NAME_ORDER
+    ],
+    key=lambda x: (x.count("-"), x),
+)
+CONFIG_NAME_ORDER += ["Sum of Individual Effects"]
+
+# Remove duplicates while preserving order
+CONFIG_NAME_ORDER = list(dict.fromkeys(CONFIG_NAME_ORDER))
 
 PLOT_COLOR_MAPPING: dict = {
     "All Features": "#7f7f7f",
@@ -100,7 +102,7 @@ def _rename_syntax_component_config(config_name: str) -> str:
     for component, label in SYNTAX_COMPONENT_RENAME.items():
         token = f"word_embedding+{component}"
         if config_name == token:
-            return f"-Lexicon {label.replace('-Syntax ', '-Syntax ')}"
+            return f"-Lexicon {label}"
     return config_name
 
 
@@ -133,6 +135,8 @@ def plot_helper(
     y_col: str = "test_score",
     legend_n_row: Union[int, None] = 2,
     include_sum_of_individual: bool = True,
+    order_facet_by_topline: bool = False,
+    topline_config_name: str = "All Features",
 ) -> p9.ggplot:
     if not include_sum_of_individual:
         col_name = "Sum of Individual Effects"
@@ -154,16 +158,63 @@ def plot_helper(
         comparison_results_df["config_name"].unique()
     )
 
-    modelname_order = [x for x in CONFIG_NAME_ORDER if x in all_config_names]
+    config_name_order = [x for x in CONFIG_NAME_ORDER if x in all_config_names]
+
+    if order_facet_by_topline and facet == "config_name":
+        layer_key = "normalized_layer"
+        if (
+            layer_key not in results_df.columns
+            or layer_key not in comparison_results_df.columns
+        ):
+            layer_key = x_col
+
+        key_cols = ["modelname", layer_key]
+        if (
+            "experiment" in results_df.columns
+            and "experiment" in comparison_results_df.columns
+        ):
+            key_cols.append("experiment")
+        if (
+            "random_seed" in results_df.columns
+            and "random_seed" in comparison_results_df.columns
+        ):
+            key_cols.append("random_seed")
+
+        topline_df = comparison_results_df[
+            comparison_results_df["config_name"] == topline_config_name
+        ]
+        if not topline_df.empty:
+            topline_lookup = (
+                topline_df[key_cols + ["test_score"]]
+                .drop_duplicates(subset=key_cols)
+                .rename(columns={"test_score": "topline_test_score"})
+            )
+            facet_rank_df = results_df.merge(topline_lookup, on=key_cols, how="left")
+            facet_rank_df = facet_rank_df.dropna(subset=["topline_test_score"]).copy()
+            if not facet_rank_df.empty:
+                facet_rank_df["abs_gap_to_topline"] = (
+                    facet_rank_df["test_score"] - facet_rank_df["topline_test_score"]
+                ).abs()
+                ranked_configs = (
+                    facet_rank_df.groupby("config_name")["abs_gap_to_topline"]
+                    .mean()
+                    .sort_values(ascending=True)
+                    .index.tolist()
+                )
+                config_name_order = ranked_configs + [
+                    config
+                    for config in config_name_order
+                    if config not in ranked_configs
+                ]
 
     results_df["config_name"] = pd.Categorical(
         results_df["config_name"],
-        categories=modelname_order,
+        categories=config_name_order,
         ordered=True,
     )
     comparison_results_df["config_name"] = pd.Categorical(
         comparison_results_df["config_name"],
-        categories=modelname_order,
+        categories=config_name_order,
         ordered=True,
     )
     linetype_mapping = {
@@ -271,6 +322,10 @@ def read_all_results(librispeech_split: str = "dev-clean") -> pd.DataFrame:
                 logger.warning(
                     f"Results not found for {librispeech_split} and {modelname} under {results_dir}. Skipping."
                 )
+    if not all_results:
+        logger.warning("No result files found for split '%s'.", librispeech_split)
+        return pd.DataFrame()
+
     all_results_df = pd.concat(all_results, ignore_index=True)
 
     all_results_df["config_name"] = all_results_df["config_name"].map(
@@ -338,6 +393,14 @@ def read_random_seed_results(
             results_df["random_seed"] = 42
             results_df["experiment"] = results_dir
             all_results.append(results_df)
+    if not all_results:
+        logger.warning(
+            "No random-seed result files found for split '%s' and model '%s'.",
+            librispeech_split,
+            modelname,
+        )
+        return pd.DataFrame()
+
     all_results_df = pd.concat(all_results, ignore_index=True)
 
     all_results_df["config_name"] = all_results_df["config_name"].map(
@@ -367,35 +430,45 @@ def get_combined_single_results(
     target_configs: list,
     new_config_name: Union[str, None],
 ) -> pd.DataFrame:
-    # Compute the amount of test_score departure of the different config_names to the topline for all layers
+    # Compute departure to topline using baseline rows from the same run/directory.
+    key_cols = ["modelname", "normalized_layer"]
     if "random_seed" in mode_results_df.columns:
-        mode_results_df["departure_to_topline"] = mode_results_df.apply(
-            lambda row: (
-                row["test_score"]
-                - mode_comparison_results_df[
-                    (mode_comparison_results_df["modelname"] == row["modelname"])
-                    & (
-                        mode_comparison_results_df["normalized_layer"]
-                        == row["normalized_layer"]
-                    )
-                    & (mode_comparison_results_df["random_seed"] == row["random_seed"])
-                ]["test_score"].values[0]
-            ),
-            axis=1,
-        )
-    else:
-        mode_results_df["departure_to_topline"] = mode_results_df.apply(
-            lambda row: (
-                row["test_score"]
-                - mode_comparison_results_df[
-                    (mode_comparison_results_df["modelname"] == row["modelname"])
-                    & (
-                        mode_comparison_results_df["normalized_layer"]
-                        == row["normalized_layer"]
-                    )
-                ]["test_score"].values[0]
-            ),
-            axis=1,
+        key_cols.append("random_seed")
+    if (
+        "experiment" in mode_results_df.columns
+        and "experiment" in mode_comparison_results_df.columns
+    ):
+        key_cols.append("experiment")
+
+    comparison_df = mode_comparison_results_df.copy()
+    if "config_name" in comparison_df.columns:
+        all_features_rows = comparison_df[
+            comparison_df["config_name"] == "All Features"
+        ]
+        if not all_features_rows.empty:
+            comparison_df = all_features_rows
+
+    comparison_lookup = (
+        comparison_df[key_cols + ["test_score"]]
+        .drop_duplicates(subset=key_cols, keep="first")
+        .rename(columns={"test_score": "topline_test_score"})
+    )
+
+    mode_results_df = mode_results_df.merge(
+        comparison_lookup,
+        on=key_cols,
+        how="left",
+    )
+    mode_results_df["departure_to_topline"] = (
+        mode_results_df["test_score"] - mode_results_df["topline_test_score"]
+    )
+    before_drop = len(mode_results_df)
+    mode_results_df = mode_results_df.dropna(subset=["departure_to_topline"]).copy()
+    dropped_rows = before_drop - len(mode_results_df)
+    if dropped_rows > 0:
+        logger.warning(
+            "Dropped %s rows without same-run topline matches.",
+            dropped_rows,
         )
 
     # Add the departure_to_topline from -Lexical and -Syntactic together and append that to the df under a new config_name
@@ -405,11 +478,7 @@ def get_combined_single_results(
     if "random_seed" in mode_results_df.columns:
         combined_lex_syntx_departure = (
             combined_lex_syntx_departure.groupby(
-                [
-                    combined_lex_syntx_departure["modelname"],
-                    combined_lex_syntx_departure["normalized_layer"],
-                    combined_lex_syntx_departure["random_seed"],
-                ]
+                ["modelname", "normalized_layer", "random_seed"]
             )
             .agg({"departure_to_topline": "sum"})
             .reset_index()
@@ -417,50 +486,45 @@ def get_combined_single_results(
     else:
         combined_lex_syntx_departure = (
             combined_lex_syntx_departure.groupby(
-                [
-                    combined_lex_syntx_departure["modelname"],
-                    combined_lex_syntx_departure["normalized_layer"],
-                    combined_lex_syntx_departure["layer"],
-                ]
+                ["modelname", "normalized_layer", "layer"]
             )
             .agg({"departure_to_topline": "sum"})
             .reset_index()
+        )
+
+    if "experiment" in mode_results_df.columns:
+        experiment_per_key = mode_results_df[key_cols].drop_duplicates()
+        combined_lex_syntx_departure = combined_lex_syntx_departure.merge(
+            experiment_per_key,
+            on=[k for k in key_cols if k in combined_lex_syntx_departure.columns],
+            how="left",
         )
     combined_lex_syntx_departure["config_name"] = (
         new_config_name
         if new_config_name is not None
         else "Combined " + " + ".join(target_configs)
     )
-    # Use the departure to calculate the theoretical test_score from the topline
-    if "random_seed" in mode_results_df.columns:
-        combined_lex_syntx_departure["test_score"] = combined_lex_syntx_departure.apply(
-            lambda row: (
-                row["departure_to_topline"]
-                + mode_comparison_results_df[
-                    (mode_comparison_results_df["modelname"] == row["modelname"])
-                    & (
-                        mode_comparison_results_df["normalized_layer"]
-                        == row["normalized_layer"]
-                    )
-                    & (mode_comparison_results_df["random_seed"] == row["random_seed"])
-                ]["test_score"].values[0]
-            ),
-            axis=1,
-        )
-    else:
-        combined_lex_syntx_departure["test_score"] = combined_lex_syntx_departure.apply(
-            lambda row: (
-                row["departure_to_topline"]
-                + mode_comparison_results_df[
-                    (mode_comparison_results_df["modelname"] == row["modelname"])
-                    & (
-                        mode_comparison_results_df["normalized_layer"]
-                        == row["normalized_layer"]
-                    )
-                ]["test_score"].values[0]
-            ),
-            axis=1,
-        )
+    # Use the departure to calculate the theoretical test_score from same-run topline.
+    combined_lex_syntx_departure = combined_lex_syntx_departure.merge(
+        comparison_lookup,
+        on=[k for k in key_cols if k in combined_lex_syntx_departure.columns],
+        how="left",
+    )
+    combined_lex_syntx_departure["test_score"] = (
+        combined_lex_syntx_departure["departure_to_topline"]
+        + combined_lex_syntx_departure["topline_test_score"]
+    )
+    combined_lex_syntx_departure = combined_lex_syntx_departure.dropna(
+        subset=["test_score"]
+    )
+    combined_lex_syntx_departure = combined_lex_syntx_departure.drop(
+        columns=["topline_test_score"],
+        errors="ignore",
+    )
+
+    mode_results_df = mode_results_df.drop(
+        columns=["topline_test_score"], errors="ignore"
+    )
 
     mode_results_df = pd.concat(
         [mode_results_df, combined_lex_syntx_departure], ignore_index=True
@@ -469,7 +533,11 @@ def get_combined_single_results(
     return mode_results_df
 
 
-def plot_main_figures(all_results_df: pd.DataFrame, show_plots: bool = False):
+def plot_main_figures(
+    all_results_df: pd.DataFrame,
+    show_plots: bool = False,
+    librispeech_split: str = "train-clean-100",
+):
     # For each mode, we plot the test score with the topline
     # Topline and baseline comparison points are "All Features" and "Acoustics Only"
     mode = "top-down"
@@ -502,8 +570,8 @@ def plot_main_figures(all_results_df: pd.DataFrame, show_plots: bool = False):
                 "-Syntax -Lexicon",
             ],
             "target_models": [
+                "wav2vec2-base",
                 "wav2vec2-base-960h",
-                "hubert-base-ls960",
             ],
         },
         "acoustics_speaker_id": {
@@ -514,7 +582,6 @@ def plot_main_figures(all_results_df: pd.DataFrame, show_plots: bool = False):
             ],
             "target_models": [
                 "wav2vec2-base",
-                "wav2vec2-base-960h",
                 "wav2vec2-ls100-sid",
             ],
         },
@@ -526,8 +593,29 @@ def plot_main_figures(all_results_df: pd.DataFrame, show_plots: bool = False):
             ],
             "target_models": [
                 "wav2vec2-base",
-                "wav2vec2-base-960h",
                 "wav2vec2-ls100-sid",
+            ],
+        },
+        "acoustics_speaker_id_2": {
+            "target_configs": [
+                "-Acoustics",
+                "-Speaker",
+                "-Acoustics -Speaker",
+            ],
+            "target_models": [
+                "wav2vec2-base",
+                "wav2vec2-base-960h",
+            ],
+        },
+        "phonetic_speaker_id_2": {
+            "target_configs": [
+                "-Phonetics",
+                "-Speaker",
+                "-Phonetics -Speaker",
+            ],
+            "target_models": [
+                "wav2vec2-base",
+                "wav2vec2-base-960h",
             ],
         },
         "all_models_syntax_lexical": {
@@ -605,12 +693,15 @@ def plot_main_figures(all_results_df: pd.DataFrame, show_plots: bool = False):
                 "-Lexicon -Syntax Position",
                 "-Lexicon -Syntax Total Tree Depth",
                 "-Lexicon -Syntax Total Word Count",
+                "-Syntax -Lexicon",
             ],
             "target_models": ["wav2vec2-base"],
             "x_col": "layer",
             "y_col": "test_score",
-            "figure_size": (4, 4),
-            "legend_n_row": 2,
+            "figure_size": (8, 8),
+            "legend_n_row": 5,
+            "facet": "config_name",
+            "color_mapping": None,
         },
     }
 
@@ -621,9 +712,16 @@ def plot_main_figures(all_results_df: pd.DataFrame, show_plots: bool = False):
         y_col = _safe_str(plotting_config.get("y_col", "test_score"), "test_score")
         legend_n_row = _safe_int(plotting_config.get("legend_n_row", None), None)
         figure_size = _safe_tuple2(plotting_config.get("figure_size", (6, 3)), (6, 3))
+        facet = _safe_str(plotting_config.get("facet", "modelname"), "modelname")
+        color_mapping_value = plotting_config.get("color_mapping", PLOT_COLOR_MAPPING)
+        if color_mapping_value is not None and not isinstance(
+            color_mapping_value, dict
+        ):
+            color_mapping = PLOT_COLOR_MAPPING
+        else:
+            color_mapping = color_mapping_value
 
         plot_df = mode_results_df.copy()
-        plot_df = plot_df.copy()
         plot_df["config_name"] = plot_df["config_name"].map(
             _rename_syntax_component_config
         )
@@ -631,10 +729,22 @@ def plot_main_figures(all_results_df: pd.DataFrame, show_plots: bool = False):
             (plot_df["config_name"].isin(target_configs))
             & (plot_df["modelname"].isin(target_models))
         ]
+        if plot_df.empty:
+            logger.warning("No rows for plotting config '%s'. Skipping.", featname)
+            continue
+
+        target_experiments = plot_df["experiment"].unique().tolist()
 
         plot_compare_df = mode_comparison_results_df[
-            mode_comparison_results_df["modelname"].isin(target_models)
+            (mode_comparison_results_df["modelname"].isin(target_models))
+            & (mode_comparison_results_df["experiment"].isin(target_experiments))
         ]
+        if plot_compare_df.empty:
+            logger.warning(
+                "No same-run baseline rows for plotting config '%s'. Skipping.",
+                featname,
+            )
+            continue
 
         plot_df = get_combined_single_results(
             plot_df,
@@ -644,16 +754,24 @@ def plot_main_figures(all_results_df: pd.DataFrame, show_plots: bool = False):
             ],  # Only include the configs with single feature removal for calculating the sum of individual effects
             new_config_name="Sum of Individual Effects",
         )
+        if plot_df.empty:
+            logger.warning(
+                "No rows remain after baseline matching for '%s'. Skipping.",
+                featname,
+            )
+            continue
 
         # Plot the results in mode_results_df and use mode_comparison_results_df as the baseline with dashed gray line
         p = plot_helper(
             plot_df,
             plot_compare_df,
-            color_mapping=PLOT_COLOR_MAPPING,
+            facet=facet,
+            color_mapping=color_mapping,
             x_col=x_col,
             y_col=y_col,
             legend_n_row=legend_n_row,
             include_sum_of_individual=False,
+            order_facet_by_topline=(facet == "config_name"),
         )
 
         p += p9.labs(
@@ -673,7 +791,11 @@ def plot_main_figures(all_results_df: pd.DataFrame, show_plots: bool = False):
         if show_plots:
             p.show()
 
-        p.save(os.path.join(FIGURES_ROOT, f"{mode}_{featname.lower()}_results.png"))
+        filename = f"{featname.lower()}_{mode}_results.png"
+        if librispeech_split != "train-clean-100":
+            filename = f"{featname.lower()}_{mode}_{librispeech_split}_results.png"
+
+        p.save(os.path.join(FIGURES_ROOT, filename))
 
 
 def plot_focus_random_seed(
@@ -681,6 +803,7 @@ def plot_focus_random_seed(
     focus: str = "syntax_lexical",
     show_plot: bool = False,
     print_ttest: bool = False,
+    librispeech_split: str = "train-clean-100",
 ):
     # Plot the syntax and lexical removal results,
     # to see if the random seed has an impact on the results
@@ -876,10 +999,14 @@ def plot_focus_random_seed(
         p.show()
     modelname = random_seed_results_df["modelname"].iloc[0]
     modelname = modelname.split(": ")[-1]
+
+    filename = f"{focus}_random_seed_results_{modelname}.png"
+    if librispeech_split != "train-clean-100":
+        filename = f"{focus}_random_seed_results_{modelname}_{librispeech_split}.png"
     p.save(
         os.path.join(
             FIGURES_ROOT,
-            f"{modelname}_random_seed_{focus}_results.png",
+            filename,
         )
     )
 
@@ -887,7 +1014,7 @@ def plot_focus_random_seed(
 def summarize_random_seed_line_differences(
     random_seed_results_df: pd.DataFrame,
     focus_lookup: dict[str, Union[list[str], dict[str, object]]],
-    output_dir: str = RESULTS_ROOT,
+    output_dir: str = FIGURES_ROOT,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Summarize pairwise line differences across random seeds and layers.
 
@@ -1172,20 +1299,32 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print per-layer pairwise t-test results to the console.",
     )
+    parser.add_argument(
+        "--librispeech_split",
+        type=str,
+        default="train-clean-100",
+        help="Specify the LibriSpeech split to analyze (e.g., 'dev-clean', 'train-clean-100').",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    librispeech_split = "dev-clean"
-    librispeech_split = "train-clean-100"
+    librispeech_split = args.librispeech_split
     all_results_df = read_all_results(librispeech_split)
-    plot_main_figures(all_results_df, show_plots=args.show_plots)
+    plot_main_figures(
+        all_results_df, show_plots=args.show_plots, librispeech_split=librispeech_split
+    )
 
-    librispeech_split = "train-clean-100"
+    if librispeech_split != "train-clean-100":
+        logger.info(
+            "Random seed analysis is currently only set up for 'train-clean-100' split. Skipping random seed plots."
+        )
+        return
     modelname = "facebook/wav2vec2-base"
     random_seed_results_df = read_random_seed_results(
-        librispeech_split=librispeech_split, modelname=modelname
+        librispeech_split=librispeech_split,
+        modelname=modelname,
     )
 
     all_focus_lookup: dict[str, Union[list[str], dict[str, object]]] = {
@@ -1212,18 +1351,21 @@ def main():
         focus="syntax_lexical",
         show_plot=args.show_plots,
         print_ttest=args.print_ttest,
+        librispeech_split=librispeech_split,
     )
     plot_focus_random_seed(
         random_seed_results_df,
         focus="acoustic_speaker",
         show_plot=args.show_plots,
         print_ttest=args.print_ttest,
+        librispeech_split=librispeech_split,
     )
     plot_focus_random_seed(
         random_seed_results_df,
         focus="phonetic_speaker",
         show_plot=args.show_plots,
         print_ttest=args.print_ttest,
+        librispeech_split=librispeech_split,
     )
 
     modelname = "google-bert/bert-base-uncased"
@@ -1238,6 +1380,7 @@ def main():
         random_seed_results_df,
         show_plot=args.show_plots,
         print_ttest=args.print_ttest,
+        librispeech_split=librispeech_split,
     )
 
 

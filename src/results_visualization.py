@@ -23,10 +23,13 @@ import seaborn as sns
 from parse_results import (
     _build_main_figure_filename,
     _build_random_seed_figure_filename,
+    _build_sanity_speakerid_figure_filename,
     plot_focus_random_seed,
     plot_main_figures,
+    plot_speakerid_sanity_by_layer,
     read_all_results,
     read_random_seed_results,
+    read_speakerid_sanity_results,
 )
 from utils import FIGURES_ROOT, RESULTS_ROOT
 
@@ -725,8 +728,13 @@ def run_feature_removal(split: str) -> None:
         )
         for featname in plotting_configs
     ]
+    expected_files.append(
+        _build_sanity_speakerid_figure_filename(librispeech_split=split)
+    )
     logger.info("Expected parse_results naming for main figures: %s", expected_files)
     plot_main_figures(all_results, librispeech_split=split)
+    sanity_df = read_speakerid_sanity_results(librispeech_split=split)
+    plot_speakerid_sanity_by_layer(sanity_df, librispeech_split=split)
 
 
 def run_random_seed_focus(split: str, modelname: str, focuses: Sequence[str]) -> None:

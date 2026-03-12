@@ -96,6 +96,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Normalize acoustic features inside load_data.",
     )
+    parser.add_argument(
+        "--aggregate_only",
+        action="store_true",
+        help="Skip probe runs and only aggregate existing CSV results.",
+    )
     return parser.parse_args()
 
 
@@ -302,6 +307,38 @@ def aggregate_saved_results(
     aggregated["all"] = (
         pd.concat(all_frames, ignore_index=True) if all_frames else pd.DataFrame()
     )
+
+    # Print column names of aggregated['all'] for debugging
+    if not aggregated["all"].empty:
+        logger.info(
+            "Aggregated 'all' columns: %s",
+            aggregated["all"].columns.tolist(),
+        )
+    # Sort all_df by configname, modelname, and layer (with NaNs last)
+    # Give empty layer rows a layer value of -1 for sorting
+    aggregated["all"]["layer"] = aggregated["all"]["layer"].fillna(-1)
+    # Rename modelname in rows where "hidden_state" is not in x_groups to "input-feature" for clearer sorting
+    aggregated["all"]["modelname"] = aggregated["all"].apply(
+        lambda row: "input-feature"
+        if "hidden_state" not in row["x_groups"]
+        else row["modelname"],
+        axis=1,
+    )
+    # Drop duplicate rows based on config_name, modelname, and layer, keeping the first occurrence
+    aggregated["all"] = aggregated["all"].drop_duplicates()
+    aggregated["all"] = (
+        aggregated["all"]
+        .sort_values(
+            by=[
+                "modelname",
+                "layer",
+                "config_name",
+            ],
+            ascending=[True, True, True],
+            na_position="last",
+        )
+        .reset_index(drop=True)
+    )
     aggregated["all"].to_csv(
         os.path.join(
             FIGURES_ROOT,
@@ -363,6 +400,15 @@ def _append_result_row(savepath: str, row: dict) -> None:
 
 def main() -> None:
     args = parse_args()
+
+    if args.aggregate_only:
+        logger.info("Running in aggregate-only mode. Skipping probe runs.")
+        aggregate_saved_results(
+            librispeech_split=args.librispeech_split,
+            random_seed=args.random_seed,
+            save_combined=True,
+        )
+        return
 
     selected_input_components = [
         "word_embedding",

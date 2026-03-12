@@ -150,6 +150,145 @@ def _build_random_seed_figure_filename(
     return filename
 
 
+def _build_sanity_speakerid_figure_filename(*, librispeech_split: str) -> str:
+    filename = "speakerid_sanity_by_layer.png"
+    if librispeech_split != "train-clean-100":
+        filename = f"speakerid_sanity_by_layer_{librispeech_split}.png"
+    return filename
+
+
+def read_speakerid_sanity_results(
+    librispeech_split: str = "train-clean-100",
+    sanity_csv_path: str | None = None,
+) -> pd.DataFrame:
+    csv_path = sanity_csv_path or os.path.join(
+        FIGURES_ROOT, f"combined_all_sanity_{librispeech_split}.csv"
+    )
+    if not os.path.exists(csv_path):
+        logger.warning("Sanity CSV not found at '%s'. Skipping sanity plot.", csv_path)
+        return pd.DataFrame()
+
+    sanity_df = pd.read_csv(csv_path)
+    if sanity_df.empty:
+        logger.warning("Sanity CSV '%s' is empty. Skipping sanity plot.", csv_path)
+        return pd.DataFrame()
+
+    unnamed_cols = [col for col in sanity_df.columns if col.startswith("Unnamed:")]
+    if unnamed_cols:
+        sanity_df = sanity_df.drop(columns=unnamed_cols)
+
+    if "librispeech_split" in sanity_df.columns:
+        sanity_df = sanity_df[
+            sanity_df["librispeech_split"] == librispeech_split
+        ].copy()
+
+    sanity_df = sanity_df[
+        sanity_df["config_name"].astype(str).str.contains("->SpeakerID", regex=False)
+    ].copy()
+    sanity_df = sanity_df[
+        sanity_df["config_name"].astype(str).str.contains("hidden_state_L", regex=False)
+    ].copy()
+
+    if sanity_df.empty:
+        logger.warning(
+            "No hidden-state -> SpeakerID rows found in '%s'. Skipping sanity plot.",
+            csv_path,
+        )
+        return pd.DataFrame()
+
+    sanity_df["modelname"] = sanity_df["modelname"].map(lambda x: x.split("/")[-1])
+    sanity_df["layer"] = pd.to_numeric(sanity_df["layer"], errors="coerce")
+    sanity_df = sanity_df.dropna(subset=["layer", "test_score"]).copy()
+    if sanity_df.empty:
+        logger.warning("No valid layer/test_score rows found for sanity plotting.")
+        return pd.DataFrame()
+
+    sanity_df["normalized_layer"] = sanity_df.groupby("modelname")["layer"].transform(
+        lambda x: x / x.max() if x.max() > 0 else 0
+    )
+
+    sanity_df["modelname"] = pd.Categorical(
+        sanity_df["modelname"],
+        categories=[m for m in MODELNAME_ORDER if m in sanity_df["modelname"].unique()],
+        ordered=True,
+    )
+    return sanity_df
+
+
+def plot_speakerid_sanity_by_layer(
+    sanity_df: pd.DataFrame,
+    *,
+    show_plot: bool = False,
+    librispeech_split: str = "train-clean-100",
+) -> None:
+    if sanity_df.empty:
+        return
+    sanity_df["modelname"] = sanity_df["modelname"].cat.remove_unused_categories()
+
+    if sanity_df.empty:
+        return
+
+    color_mapping = {
+        "wav2vec2-base": "#1f77b4",
+        "wav2vec2-base-960h": "#ff7f0e",
+        "wav2vec2-ls100-sid": "#d62728",
+    }
+
+    figure = (
+        p9.ggplot(sanity_df)
+        + p9.geom_line(
+            p9.aes(
+                x="layer",
+                y="test_score",
+                # group="modelname",
+                # color="modelname",
+            )
+        )
+        + p9.geom_point(
+            p9.aes(
+                x="layer",
+                y="test_score",
+                # color="modelname",
+                # shape="modelname",
+            ),
+            size=0.8,
+        )
+        + p9.facet_wrap("modelname")
+        # + p9.scale_x_continuous(breaks=(0, 0.25, 0.5, 0.75, 1))
+        + p9.scale_x_continuous(
+            breaks=np.arange(sanity_df["layer"].min(), sanity_df["layer"].max() + 1, 6)
+        )
+        + p9.theme_minimal()
+        + p9.theme(
+            figure_size=(6, 3),
+            dpi=200,
+            legend_position="bottom",
+            legend_justification="center",
+            legend_title=p9.element_blank(),
+        )
+        + p9.labs(
+            x="Layer",
+            y="Speaker-ID Accuracy",
+            # color="Model",
+            # shape="Model",
+        )
+        # + p9.guides(
+        #     color=p9.guide_legend(nrow=2, byrow=True),
+        #     shape=p9.guide_legend(nrow=2, byrow=True),
+        # )
+        # Make the color mapping colrblind friendly
+        # + p9.scale_color_manual(values=color_mapping)
+    )
+
+    if show_plot:
+        figure.show()
+
+    filename = _build_sanity_speakerid_figure_filename(
+        librispeech_split=librispeech_split
+    )
+    figure.save(os.path.join(FIGURES_ROOT, filename))
+
+
 def plot_helper(
     results_df: pd.DataFrame,
     comparison_results_df: pd.DataFrame,
@@ -1342,6 +1481,21 @@ def main():
     all_results_df = read_all_results(librispeech_split)
     plot_main_figures(
         all_results_df, show_plots=args.show_plots, librispeech_split=librispeech_split
+    )
+    speakerid_sanity_df = read_speakerid_sanity_results(librispeech_split)
+    # Subset speakerid_sanity_df to only include rows of selected models
+    selected_models = [
+        "wav2vec2-base",
+        "wav2vec2-base-960h",
+        "wav2vec2-ls100-sid",
+    ]
+    speakerid_sanity_df = speakerid_sanity_df[
+        speakerid_sanity_df["modelname"].isin(selected_models)
+    ]
+    plot_speakerid_sanity_by_layer(
+        speakerid_sanity_df,
+        show_plot=args.show_plots,
+        librispeech_split=librispeech_split,
     )
 
     if librispeech_split != "train-clean-100":

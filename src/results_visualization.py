@@ -21,6 +21,8 @@ import plotnine as p9
 import seaborn as sns
 
 from parse_results import (
+    _build_main_figure_filename,
+    _build_random_seed_figure_filename,
     plot_focus_random_seed,
     plot_main_figures,
     read_all_results,
@@ -699,7 +701,32 @@ def plot_permutation_results(
 
 def run_feature_removal(split: str) -> None:
     all_results = read_all_results(split)
-    plot_main_figures(all_results)
+    mode = "top-down"
+    plotting_configs = [
+        "syntax_lexical",
+        "syntax_lexical_2",
+        "acoustics_speaker_id",
+        "phonetic_speaker_id",
+        "acoustics_speaker_id_2",
+        "phonetic_speaker_id_2",
+        "all_models_syntax_lexical",
+        "all_models_acoustic_speaker",
+        "all_models_phonetic_speaker",
+        "syntax_lexical_wav2vec2",
+        "acoustics_speaker_id_wav2vec2",
+        "phonetic_speaker_id_wav2vec2",
+        "syntax_lexicon_decomposition_wav2vec2",
+    ]
+    expected_files = [
+        _build_main_figure_filename(
+            mode=mode,
+            featname=featname,
+            librispeech_split=split,
+        )
+        for featname in plotting_configs
+    ]
+    logger.info("Expected parse_results naming for main figures: %s", expected_files)
+    plot_main_figures(all_results, librispeech_split=split)
 
 
 def run_random_seed_focus(split: str, modelname: str, focuses: Sequence[str]) -> None:
@@ -708,7 +735,21 @@ def run_random_seed_focus(split: str, modelname: str, focuses: Sequence[str]) ->
         librispeech_split=split, modelname=modelname
     )
     for focus in focus_targets:
-        plot_focus_random_seed(random_seed_results, focus=focus)
+        display_modelname = random_seed_results["modelname"].iloc[0].split(": ")[-1]
+        expected_file = _build_random_seed_figure_filename(
+            modelname=display_modelname,
+            focus=focus,
+            librispeech_split=split,
+        )
+        logger.info(
+            "Expected parse_results naming for random-seed figure: %s",
+            expected_file,
+        )
+        plot_focus_random_seed(
+            random_seed_results,
+            focus=focus,
+            librispeech_split=split,
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:

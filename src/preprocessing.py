@@ -1,9 +1,11 @@
 import argparse
+import gc
 import glob
 import logging
 import os
 import pickle
 import sys
+from typing import cast
 
 import benepar
 import fasttext
@@ -68,6 +70,29 @@ def _get_fasttext_model(target_dim: int = 100):
         _FASTTEXT_MODEL = fasttext.load_model("cc.en.300.bin")
         fasttext.util.reduce_model(_FASTTEXT_MODEL, target_dim)
     return _FASTTEXT_MODEL
+
+
+def _estimate_representation_size_mb(representations: dict[str, object]) -> float:
+    """Approximate memory footprint of extracted representations in MB."""
+
+    total_bytes = 0
+    for value in representations.values():
+        if not isinstance(value, dict):
+            continue
+        value_dict = cast(dict[str, object], value)
+
+        hidden = value_dict.get("hidden_states")
+        if isinstance(hidden, np.ndarray):
+            total_bytes += hidden.nbytes
+
+        frame_info = value_dict.get("frame_token_indices")
+        if isinstance(frame_info, dict):
+            frame_info_dict = cast(dict[str, object], frame_info)
+            for frame_value in frame_info_dict.values():
+                if isinstance(frame_value, np.ndarray):
+                    total_bytes += frame_value.nbytes
+
+    return total_bytes / (1024 * 1024)
 
 
 def save_librispeech_tg_to_single_file(
@@ -631,14 +656,12 @@ def extract_audio_representation(
         )
         n_frames = args_n_frames
         inputs = {k: v.to(device) for k, v in inputs.items()}
-        with torch.no_grad():
+        with torch.inference_mode():
             outputs = model(**inputs, output_hidden_states=True)
         # output shape need to be (batch_size, seq_len, hidden_size)
         # Save all hidden states and preserve seq_len dimension with shape (batch_size, layer, seq_len, hidden_size)
-        hidden_states = outputs.hidden_states
-        hidden_states = torch.stack(hidden_states, dim=0)
+        hidden_states = torch.stack(outputs.hidden_states, dim=0)
         raw_hidden_state_shape = hidden_states.shape
-        hidden_states = hidden_states.to("cpu")
         if seq_sampling == "mean":
             # Take the mean over the seq_len dimension
             hidden_states = hidden_states.mean(dim=2, keepdim=True)
@@ -658,7 +681,16 @@ def extract_audio_representation(
             raise ValueError(f"Unknown seq_sampling method: {seq_sampling}")
 
         # Select the frames from the hidden states
-        selected_hidden_states = hidden_states[:, :, frame_indices, :]
+        if frame_indices is None:
+            selected_hidden_states = hidden_states
+        else:
+            selected_hidden_states = hidden_states[:, :, frame_indices, :]
+        selected_hidden_states_np = (
+            selected_hidden_states.squeeze(1)
+            .to(device="cpu", dtype=torch.float32)
+            .contiguous()
+            .numpy()
+        )
 
         # We also want to convert the indices to the original time stamps in ms
         # So we can use the timestamps to lookup the corresponding text tokens
@@ -673,19 +705,25 @@ def extract_audio_representation(
         )
         # Round the frame_indices_in_ms to the nearest 20ms
         frame_indices_in_ms = (
-            np.round(frame_indices_in_ms / 20) * 20
+            (np.round(frame_indices_in_ms / 20) * 20).astype(np.int32)
             if frame_indices_in_ms is not None
             else None
         )
 
         # Store the hidden states in a dictionary with the fileID as key
         audio_representations[fileID] = {
-            "hidden_states": selected_hidden_states.cpu().squeeze().numpy(),
+            "hidden_states": selected_hidden_states_np,
             "frame_token_indices": {
                 "frame_indices": frame_indices,
                 "frame_indices_in_ms": frame_indices_in_ms,
             },
         }
+
+        del outputs
+        del hidden_states
+        del selected_hidden_states
+        del selected_hidden_states_np
+        del inputs
 
     if num_skipped_short_sequences > 0:
         logger.info(
@@ -834,7 +872,7 @@ def extract_text_representation(
         fileID = example["fileID"]  # type: ignore
         word_ids = encoded_input.word_ids()
         encoded_input = {k: v.to(device) for k, v in encoded_input.items()}
-        with torch.no_grad():
+        with torch.inference_mode():
             outputs = model(**encoded_input, output_hidden_states=True)
             # output shape need to be (batch_size, seq_len, hidden_size)
             # Save all hidden states and preserve seq_len dimension with shape (batch_size, layer, seq_len, hidden_size)
@@ -862,16 +900,27 @@ def extract_text_representation(
             selected_hidden_states = hidden_states[:, :, frame_indices, :]
         else:
             selected_hidden_states = hidden_states
+        selected_hidden_states_np = (
+            selected_hidden_states.squeeze(0)
+            .to(device="cpu", dtype=torch.float32)
+            .contiguous()
+            .numpy()
+        )
 
         # Store the hidden states in a dictionary with the fileID as key
         text_representations[fileID] = {
-            "hidden_states": selected_hidden_states.cpu().squeeze().numpy(),
+            "hidden_states": selected_hidden_states_np,
             "frame_token_indices": {
                 "frame_indices": frame_indices,
                 "offset_mapping": offset_mapping,
                 "word_ids": word_ids,
             },
         }
+        del outputs
+        del hidden_states
+        del selected_hidden_states
+        del selected_hidden_states_np
+        del encoded_input
     return text_representations
 
 
@@ -1131,7 +1180,7 @@ def extract_transformer_features(
         )
     if not os.path.exists(transformer_feature_savepath) or overwrite:
         logger.info(
-            f"Saving generated transformer features to {transformer_feature_savepath}"
+            f"Starting to extract transformer features with model {modelname} and sequence sampling method {seq_sampling} (n_frames={n_frames} if random_frames)"
         )
         transformer_features = extraction_function(
             dataset,
@@ -1142,8 +1191,22 @@ def extract_transformer_features(
             n_frames=n_frames,
             random_seed=random_seed,
         )
+        logger.info(f"Saving transformer features to {transformer_feature_savepath}...")
+        logger.info("Transformer entries to save: %s", len(transformer_features))
+        logger.info(
+            "Approx transformer payload size in memory: %.2f MB",
+            _estimate_representation_size_mb(
+                cast(dict[str, object], transformer_features)
+            ),
+        )
+        gc.collect()
         with open(transformer_feature_savepath, "wb") as f:
-            pickle.dump(transformer_features, f)
+            pickle.dump(transformer_features, f, protocol=pickle.HIGHEST_PROTOCOL)
+        logger.info(
+            "Finished saving transformer features to %s", transformer_feature_savepath
+        )
+        del transformer_features
+        gc.collect()
     else:
         logger.info(f"{transformer_feature_savepath} already exists, skipping...")
 
@@ -1192,6 +1255,8 @@ def extract_features(
         )
 
     if do_transformer:
+        del transcriptions
+        gc.collect()
         extract_transformer_features(
             dataset,
             librispeech_split=librispeech_split,

@@ -126,6 +126,30 @@ def _safe_tuple2(value, default: tuple[int, int]) -> tuple[int, int]:
     return default
 
 
+def _build_main_figure_filename(
+    *,
+    mode: str,
+    featname: str,
+    librispeech_split: str,
+) -> str:
+    filename = f"{featname.lower()}_{mode}_results.png"
+    if librispeech_split != "train-clean-100":
+        filename = f"{featname.lower()}_{mode}_{librispeech_split}_results.png"
+    return filename
+
+
+def _build_random_seed_figure_filename(
+    *,
+    modelname: str,
+    focus: str,
+    librispeech_split: str,
+) -> str:
+    filename = f"{modelname}_random_seed_{focus}_results.png"
+    if librispeech_split != "train-clean-100":
+        filename = f"{modelname}_random_seed_{focus}_{librispeech_split}_results.png"
+    return filename
+
+
 def plot_helper(
     results_df: pd.DataFrame,
     comparison_results_df: pd.DataFrame,
@@ -791,9 +815,11 @@ def plot_main_figures(
         if show_plots:
             p.show()
 
-        filename = f"{featname.lower()}_{mode}_results.png"
-        if librispeech_split != "train-clean-100":
-            filename = f"{featname.lower()}_{mode}_{librispeech_split}_results.png"
+        filename = _build_main_figure_filename(
+            mode=mode,
+            featname=featname,
+            librispeech_split=librispeech_split,
+        )
 
         p.save(os.path.join(FIGURES_ROOT, filename))
 
@@ -1000,9 +1026,11 @@ def plot_focus_random_seed(
     modelname = random_seed_results_df["modelname"].iloc[0]
     modelname = modelname.split(": ")[-1]
 
-    filename = f"{focus}_random_seed_results_{modelname}.png"
-    if librispeech_split != "train-clean-100":
-        filename = f"{focus}_random_seed_results_{modelname}_{librispeech_split}.png"
+    filename = _build_random_seed_figure_filename(
+        modelname=modelname,
+        focus=focus,
+        librispeech_split=librispeech_split,
+    )
     p.save(
         os.path.join(
             FIGURES_ROOT,

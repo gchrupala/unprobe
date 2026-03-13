@@ -41,6 +41,14 @@ CONFIG_NAME_RENAME: dict = {
     "SpeakerID-OH+eGeMAPSv02+ppg_feature": "-Acoustics -Phonetics -Speaker",
 }
 
+JOINT_REMOVAL_CONFIGS: set[str] = {
+    "-Syntax -Lexicon",
+    "-Acoustics -Speaker",
+    "-Phonetics -Speaker",
+    "-Acoustics -Phonetics -Speaker",
+}
+JOINT_REMOVAL_LABEL = "Joint removal"
+
 
 MODELNAME_ORDER: list = [
     "wav2vec2-base",
@@ -83,18 +91,20 @@ CONFIG_NAME_ORDER += ["Sum of Individual Effects"]
 CONFIG_NAME_ORDER = list(dict.fromkeys(CONFIG_NAME_ORDER))
 
 PLOT_COLOR_MAPPING: dict = {
-    "All Features": "#7f7f7f",
-    "Acoustics Only": "#7f7f7f",
-    "-Acoustics": "#1f77b4",
-    "-Speaker": "#d62728",
-    "-Lexicon": "#1f77b4",
-    "-Phonetics": "#1f77b4",
-    "-Syntax": "#ff7f0e",
-    "-Syntax -Lexicon": "#17cf76",
-    "-Acoustics -Speaker": "#17cf76",
-    "-Phonetics -Speaker": "#17cf76",
-    "Combined -Lexicon -Syntax": "#8c564b",
-    "Sum of Individual Effects": "#8c564b",
+    "All Features": "#808080",
+    "Acoustics Only": "#A9A9A9",
+    "-Acoustics": "#4E79A7",
+    "-Speaker": "#E15759",
+    "-Lexicon": "#59A14F",
+    "-Phonetics": "#F28E2B",
+    "-Syntax": "#B07AA1",
+    "Joint removal": "#2F2F2F",
+    "-Syntax -Lexicon": "#76B7B2",
+    "-Acoustics -Speaker": "#76B7B2",
+    "-Phonetics -Speaker": "#76B7B2",
+    "-Acoustics -Phonetics -Speaker": "#76B7B2",
+    "Combined -Lexicon -Syntax": "#76B7B2",
+    "Sum of Individual Effects": "#76B7B2",
 }
 
 
@@ -103,6 +113,12 @@ def _rename_syntax_component_config(config_name: str) -> str:
         token = f"word_embedding+{component}"
         if config_name == token:
             return f"-Lexicon {label}"
+    return config_name
+
+
+def _to_plot_config_label(config_name: str) -> str:
+    if config_name in JOINT_REMOVAL_CONFIGS:
+        return JOINT_REMOVAL_LABEL
     return config_name
 
 
@@ -227,12 +243,6 @@ def plot_speakerid_sanity_by_layer(
 
     if sanity_df.empty:
         return
-
-    color_mapping = {
-        "wav2vec2-base": "#1f77b4",
-        "wav2vec2-base-960h": "#ff7f0e",
-        "wav2vec2-ls100-sid": "#d62728",
-    }
 
     figure = (
         p9.ggplot(sanity_df)
@@ -380,12 +390,42 @@ def plot_helper(
         categories=config_name_order,
         ordered=True,
     )
+
+    results_df["plot_config_name"] = results_df["config_name"].map(
+        _to_plot_config_label
+    )
+    comparison_results_df["plot_config_name"] = comparison_results_df[
+        "config_name"
+    ].map(_to_plot_config_label)
+
+    all_plot_config_names = list(results_df["plot_config_name"].unique()) + list(
+        comparison_results_df["plot_config_name"].unique()
+    )
+    plot_config_name_order = list(
+        dict.fromkeys(_to_plot_config_label(x) for x in CONFIG_NAME_ORDER)
+    )
+    plot_config_name_order = [
+        x for x in plot_config_name_order if x in all_plot_config_names
+    ] + [x for x in all_plot_config_names if x not in plot_config_name_order]
+
+    results_df["plot_config_name"] = pd.Categorical(
+        results_df["plot_config_name"],
+        categories=plot_config_name_order,
+        ordered=True,
+    )
+    comparison_results_df["plot_config_name"] = pd.Categorical(
+        comparison_results_df["plot_config_name"],
+        categories=plot_config_name_order,
+        ordered=True,
+    )
+
     linetype_mapping = {
         "All Features": "dashed",
         "Acoustics Only": "dashed",
     }
     linetype_mapping = {
-        config: linetype_mapping.get(config, "solid") for config in all_config_names
+        config: linetype_mapping.get(config, "solid")
+        for config in all_plot_config_names
     }
 
     # Drop all nan columns
@@ -403,9 +443,9 @@ def plot_helper(
             mapping=p9.aes(
                 x=x_col,
                 y=y_col,
-                color="config_name",
-                group="config_name",
-                linetype="config_name",
+                color="plot_config_name",
+                group="plot_config_name",
+                linetype="plot_config_name",
             ),
         )
         + p9.geom_point(
@@ -413,8 +453,8 @@ def plot_helper(
             mapping=p9.aes(
                 x=x_col,
                 y=y_col,
-                color="config_name",
-                shape="config_name",
+                color="plot_config_name",
+                shape="plot_config_name",
             ),
             size=0.7,
         )
@@ -992,6 +1032,13 @@ def plot_focus_random_seed(
         target_configs=focus_lookup[focus][:-1],  # Exclude the combined config
         new_config_name="Sum of Individual Effects",
     )
+
+    subset_results_df["config_name"] = subset_results_df["config_name"].map(
+        _to_plot_config_label
+    )
+    subset_results_comparison_df["config_name"] = subset_results_comparison_df[
+        "config_name"
+    ].map(_to_plot_config_label)
 
     subset_results_df["layer"] = subset_results_df["normalized_layer"] * 12
     subset_results_comparison_df["layer"] = (

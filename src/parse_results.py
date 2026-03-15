@@ -9,7 +9,6 @@ import sys
 import numpy as np
 import pandas as pd
 import plotnine as p9
-from cv2 import line
 
 from utils import FIGURES_ROOT, RESULTS_ROOT
 
@@ -93,6 +92,23 @@ MODELNAME_ORDER: list = [
     "roberta-base",
     "ModernBERT-base",
 ]
+
+
+MODELNAME_RENAME: dict[str, str] = {
+    "wav2vec2-base": "wav2vec2 (base)",
+    "wav2vec2-base-960h": "wav2vec2 (ASR)",
+    "wav2vec2-large": "wav2vec2 (large)",
+    "hubert-base-ls960": "HuBERT (base)",
+    "hubert-large-ll60k": "HuBERT (large)",
+    "wavlm-base": "WavLM (base)",
+    "roberta-base": "RoBERTa (base)",
+    "bert-base-uncased": "BERT (base)",
+    "ModernBERT-base": "ModernBERT (base)",
+    "wav2vec2-base-superb-sid": "wav2vec2 (SID-superb)",
+    "wav2vec2-ls100-sid": "wav2vec2 (SID)",
+}
+
+MODELNAME_RENAME_BACKWARD: dict[str, str] = {v: k for k, v in MODELNAME_RENAME.items()}
 
 SYNTAX_COMPONENT_RENAME: dict[str, str] = {
     "syntax_POS_OH": "—Syntax POS",
@@ -211,6 +227,7 @@ PLOTTING_CONFIGS: dict[str, dict] = {
             "—Syntax —Lexicon",
         ],
         "target_models": None,
+        "exclude_models": ["wav2vec2-ls100-sid"],
         "x_col": "normalized_layer",
         "figure_size": (8, 8),
     },
@@ -221,6 +238,7 @@ PLOTTING_CONFIGS: dict[str, dict] = {
             "—Acoustics —Speaker",
         ],
         "target_models": None,
+        "exclude_models": ["wav2vec2-ls100-sid"],
         "x_col": "normalized_layer",
         "figure_size": (8, 8),
     },
@@ -231,6 +249,7 @@ PLOTTING_CONFIGS: dict[str, dict] = {
             "—Phonetics —Speaker",
         ],
         "target_models": None,
+        "exclude_models": ["wav2vec2-ls100-sid"],
         "x_col": "normalized_layer",
         "figure_size": (8, 8),
     },
@@ -540,6 +559,10 @@ def read_decoding_results(
         ],
         ordered=True,
     )
+    # Rename modelname for better display
+    decoding_df["modelname"] = decoding_df["modelname"].map(
+        lambda x: MODELNAME_RENAME.get(x, x)
+    )
     return decoding_df
 
 
@@ -557,7 +580,7 @@ def read_classification_baselines(
             os.path.join(
                 RESULTS_ROOT,
                 "decoding_results",
-                f"classification_baselines_*{modelname}*_{librispeech_split}.csv",
+                f"classification_baselines_*{modelname}_{librispeech_split}.csv",
             )
         )
         if not baseline_files:
@@ -750,20 +773,25 @@ def plot_decoding_by_layer(
             plot_config.get("baseline_exact_match", False) if plot_config else False
         )
         plot_models = list(decoding_df["modelname"].unique())
+        # Revert plot_models back to their original modelnames for baseline lookup
+        original_modelnames = [MODELNAME_RENAME_BACKWARD.get(x, x) for x in plot_models]
         baselines_per_model = []
-        for model in plot_models:
+        for model in original_modelnames:
             model_baseline = read_classification_baselines(
                 librispeech_split=librispeech_split,
                 target_variable=target_variable,
                 exact_match=exact_match,
                 modelname=model,
             )
-            model_baseline["modelname"] = model
+            plot_model = MODELNAME_RENAME.get(
+                model, model
+            )  # Map back to plot model name for consistency with decoding_df
+            model_baseline["modelname"] = plot_model
             model_baseline["config_name"] = model_baseline["target_variable"].map(
                 lambda x: x.replace("syntax_", "").replace("OH", "").replace("_", " ")
             )
             # duplicate model_baseline rows for each layer in decoding_df for this model
-            model_layers = decoding_df[decoding_df["modelname"] == model][
+            model_layers = decoding_df[decoding_df["modelname"] == plot_model][
                 "layer"
             ].unique()
             model_baseline = model_baseline.loc[
@@ -824,9 +852,15 @@ def plot_helper(
     results_df["modelname"] = pd.Categorical(
         results_df["modelname"], categories=MODELNAME_ORDER, ordered=True
     )
+    results_df["modelname"] = results_df["modelname"].map(
+        lambda x: MODELNAME_RENAME.get(x, x)
+    )
 
     comparison_results_df["modelname"] = pd.Categorical(
         comparison_results_df["modelname"], categories=MODELNAME_ORDER, ordered=True
+    )
+    comparison_results_df["modelname"] = comparison_results_df["modelname"].map(
+        lambda x: MODELNAME_RENAME.get(x, x)
     )
 
     all_config_names = list(results_df["config_name"].unique()) + list(
@@ -1259,6 +1293,10 @@ def plot_main_figures(
             target_models = list(mode_results_df["modelname"].unique())
         else:
             target_models = _safe_list(target_models_raw, [])
+        exclude_models_raw = plotting_config.get("exclude_models", None)
+        if exclude_models_raw is not None:
+            exclude_models = _safe_list(exclude_models_raw, [])
+            target_models = [m for m in target_models if m not in exclude_models]
         x_col = _safe_str(plotting_config.get("x_col", "layer"), "layer")
         y_col = _safe_str(plotting_config.get("y_col", "test_score"), "test_score")
         legend_n_row = _safe_int(plotting_config.get("legend_n_row", None), None)
@@ -1336,7 +1374,7 @@ def plot_main_figures(
 
         p += p9.labs(
             x="Layer (From shallow to deep)",
-            y=r"$R^2$ Score",
+            y=r"MIRS ($R^2$) Score",
             color="Feature Group",
             shape="Feature Group",
             linetype="Feature Group",
@@ -1488,7 +1526,9 @@ def plot_focus_random_seed(
         "\n%s",
         subset_results_comparison_df_mean.groupby(["config_name"])[
             ["test_score_mean", "test_score_std"]
-        ].mean(),
+        ]
+        .mean()
+        .dropna(),
     )
 
     # Calculate the confidence interval for the test_score_mean using the test_score_std and the number of random seeds
@@ -1614,7 +1654,7 @@ def plot_focus_random_seed(
         )
         + p9.labs(
             x="Layer (From shallow to deep)",
-            y=r"$R^2$ Score",
+            y=r"MIRS ($R^2$) Score",
             color="Feature",
             shape="Feature",
         )
@@ -2037,7 +2077,7 @@ def main():
                 ],
             },
             "plot_config": {
-                "y_label": "Syntax Accuracy",
+                "y_label": "Syntax Decoding Metrics",
                 "x_label": "Layer",
                 "figure_name_suffix": "syntax_decoding_by_layer",
                 "figure_size": (6, 3),

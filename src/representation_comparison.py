@@ -352,6 +352,7 @@ def plot_decoding_representation(
         )
         + p9.facet_wrap("~ metric_display", scales="free_y")
         + p9.scale_x_continuous(breaks=range(0, int(plot_df["layer"].max()) + 1, 3))
+        + p9.theme_minimal()
         + p9.theme(
             figure_size=(7, 4),
             dpi=300,
@@ -367,6 +368,7 @@ def plot_decoding_representation(
     )
     filename = f"ppg_decoding_representation_{_slug_modelname(modelname)}_{librispeech_split}.png"
     plot.save(os.path.join(outdir, filename))
+    plot.save(os.path.join(FIGURES_ROOT, filename))
 
 
 def plot_encode_decode_comparison(
@@ -404,6 +406,7 @@ def plot_encode_decode_comparison(
         )
         + p9.facet_wrap("~ direction_metric", scales="free_y")
         + p9.scale_x_continuous(breaks=range(0, int(plot_df["layer"].max()) + 1, 3))
+        + p9.theme_minimal()
         + p9.theme(
             figure_size=(9, 4),
             dpi=300,

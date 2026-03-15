@@ -203,8 +203,6 @@ def _run_regression_probe(
 ) -> dict:
     """Memory-friendly local regression probe for decoding checks."""
 
-    X, y = _catch_too_few_classes(X, y)
-
     x_train, x_test, y_train, y_test = split_train_test(
         X,
         y,
@@ -284,10 +282,11 @@ def aggregate_saved_results(
         "hidden_speaker",
         "hidden_phoneid",
         "hidden_syntax",
+        "classification_baselines",
     ]
 
     if modelnames is None:
-        pattern = os.path.join(RESULTS_ROOT, f"*_{split_id}.csv")
+        pattern = os.path.join(RESULTS_ROOT, "decoding_results", f"*_{split_id}.csv")
         all_category_files = sorted(glob.glob(pattern))
     else:
         all_category_files = []
@@ -295,7 +294,9 @@ def aggregate_saved_results(
             model_slug = modelname.replace("/", "-")
             for category in categories:
                 filepath = os.path.join(
-                    RESULTS_ROOT, f"{category}_{model_slug}_{split_id}.csv"
+                    RESULTS_ROOT,
+                    "decoding_results",
+                    f"{category}_{model_slug}_{split_id}.csv",
                 )
                 if os.path.isfile(filepath):
                     all_category_files.append(filepath)
@@ -669,6 +670,56 @@ def main() -> None:
 
         _save_category_results(hidden_syntax_savepath, hidden_syntax_rows)
         logger.info("Saved hidden_syntax results to %s", hidden_syntax_savepath)
+
+    # 6) Add the majority baseline for all the classification probes to a separate csv file for easier plotting later, since the baseline is the same across all layers and models for a given target.
+    baseline_savepath = _build_category_savepath(
+        args, category="classification_baselines"
+    )
+    if os.path.isfile(baseline_savepath) and not args.overwrite:
+        logger.info("Skipping classification_baselines category: %s", baseline_savepath)
+    else:
+        baseline_rows = []
+        # Syntax baseline
+        for syntax_target in CATEGORICAL_SYNTAX_TARGETS:
+            Y = select_feature_groups(feature_sets, lookup, [syntax_target])
+            y_labels = np.argmax(Y, axis=1)
+            unique_labels, label_counts = np.unique(y_labels, return_counts=True)
+            majority_class_count = label_counts.max()
+            majority_class_proportion = majority_class_count / len(y_labels)
+            row = {
+                "librispeech_split": args.librispeech_split,
+                "modelname": "majority-baseline",
+                "config_name": f"MajorityClass->{syntax_target}",
+                "x_groups": ["none"],
+                "y_groups": [syntax_target],
+                "metric": "accuracy",
+                "train_score": majority_class_proportion,
+                "test_score": majority_class_proportion,
+                "best_params": {},
+                "n_samples": int(feature_sets.shape[0]),
+            }
+            baseline_rows.append(row)
+
+        # SpeakerID baseline
+        unique_speakers, speaker_counts = np.unique(speaker_labels, return_counts=True)
+        majority_speaker_count = speaker_counts.max()
+        majority_speaker_proportion = majority_speaker_count / len(speaker_labels)
+        row = {
+            "librispeech_split": args.librispeech_split,
+            "modelname": "majority-baseline",
+            "config_name": "MajorityClass->SpeakerID",
+            "x_groups": ["none"],
+            "y_groups": ["SpeakerID"],
+            "metric": "accuracy",
+            "train_score": majority_speaker_proportion,
+            "test_score": majority_speaker_proportion,
+            "best_params": {},
+            "n_samples": int(feature_sets.shape[0]),
+        }
+        baseline_rows.append(row)
+
+        _save_category_results(baseline_savepath, baseline_rows)
+        logger.info("Saved classification baselines to %s", baseline_savepath)
 
     logger.info(
         "Completed new probe runs: syntax=%s, speaker_input=%s, speaker_hidden=%s, phoneid=%s, syntax_hidden=%s",

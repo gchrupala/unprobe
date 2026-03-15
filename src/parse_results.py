@@ -3,12 +3,13 @@ import glob
 import logging
 import os
 import pickle
+import re
 import sys
-from typing import Union
 
 import numpy as np
 import pandas as pd
 import plotnine as p9
+from cv2 import line
 
 from utils import FIGURES_ROOT, RESULTS_ROOT
 
@@ -27,27 +28,56 @@ logger = logging.getLogger(__name__)
 CONFIG_NAME_RENAME: dict = {
     "AllFeatures": "All Features",
     "AcousticOnly": "Acoustics Only",
-    "eGeMAPSv02": "-Acoustics",
-    "ChapterID-OH": "-Chapter ID",
-    "SpeakerID-OH": "-Speaker",
-    # "dnn_word_embedding": "-Lexicon",
-    "word_embedding": "-Lexicon",
-    "ppg_feature": "-Phonetics",
-    "syntax_feature": "-Syntax",
-    "syntax_feature+word_embedding": "-Syntax -Lexicon",
-    "ppg_feature+eGeMAPSv02": "-Phonetics - Acoustics",
-    "ppg_feature+SpeakerID-OH": "-Phonetics -Speaker",
-    "SpeakerID-OH+eGeMAPSv02": "-Acoustics -Speaker",
-    "SpeakerID-OH+eGeMAPSv02+ppg_feature": "-Acoustics -Phonetics -Speaker",
+    "eGeMAPSv02": "—Acoustics",
+    "ChapterID-OH": "—Chapter ID",
+    "SpeakerID-OH": "—Speaker",
+    # "dnn_word_embedding": "Lexicon",
+    "word_embedding": "—Lexicon",
+    "ppg_feature": "—Phonetics",
+    "syntax_feature": "—Syntax",
+    "syntax_feature+word_embedding": "—Syntax —Lexicon",
+    "ppg_feature+eGeMAPSv02": "—Phonetics — Acoustics",
+    "ppg_feature+SpeakerID-OH": "—Phonetics —Speaker",
+    "SpeakerID-OH+eGeMAPSv02": "—Acoustics —Speaker",
+    "SpeakerID-OH+eGeMAPSv02+ppg_feature": "—Acoustics —Phonetics —Speaker",
 }
 
 JOINT_REMOVAL_CONFIGS: set[str] = {
-    "-Syntax -Lexicon",
-    "-Acoustics -Speaker",
-    "-Phonetics -Speaker",
-    "-Acoustics -Phonetics -Speaker",
+    "—Syntax —Lexicon",
+    "—Acoustics —Speaker",
+    "—Phonetics —Speaker",
+    "—Acoustics —Phonetics —Speaker",
 }
 JOINT_REMOVAL_LABEL = "Joint removal"
+
+SHARED_TOPLINE_RUN_GROUP = "combined_topdown_shared_topline"
+RUN_GROUP_BY_EXPERIMENT: dict[str, str] = {
+    "single_feat_removal": SHARED_TOPLINE_RUN_GROUP,
+    "syntax_feat_removal": SHARED_TOPLINE_RUN_GROUP,
+    "speakerid_phonetic_acoustic_removal": SHARED_TOPLINE_RUN_GROUP,
+}
+
+RESULTS_DIRS: list[str] = [
+    "single_feat_removal",
+    "syntax_feat_removal",
+    "syntax_lexicon_decomposition",
+    "speakerid_phonetic_acoustic_removal",
+]
+
+FOCUS_CONFIGS: dict[str, dict[str, list[str] | str]] = {
+    "syntax_lexical": {
+        "single_configs": ["—Lexicon", "—Syntax"],
+        "joint_config": "—Syntax —Lexicon",
+    },
+    "acoustic_speaker": {
+        "single_configs": ["—Acoustics", "—Speaker"],
+        "joint_config": "—Acoustics —Speaker",
+    },
+    "phonetic_speaker": {
+        "single_configs": ["—Phonetics", "—Speaker"],
+        "joint_config": "—Phonetics —Speaker",
+    },
+}
 
 
 MODELNAME_ORDER: list = [
@@ -65,12 +95,12 @@ MODELNAME_ORDER: list = [
 ]
 
 SYNTAX_COMPONENT_RENAME: dict[str, str] = {
-    "syntax_POS_OH": "-Syntax POS",
-    "syntax_Dependency_Label_OH": "-Syntax Dependency",
-    "syntax_Tree_Depth": "-Syntax Tree Depth",
-    "syntax_Word_Position": "-Syntax Position",
-    "syntax_Total_Tree_Depth": "-Syntax Total Tree Depth",
-    "syntax_Total_Word_Count": "-Syntax Total Word Count",
+    "syntax_POS_OH": "—Syntax POS",
+    "syntax_Dependency_Label_OH": "—Syntax Dependency",
+    "syntax_Tree_Depth": "—Syntax Tree Depth",
+    "syntax_Word_Position": "—Syntax Position",
+    "syntax_Total_Tree_Depth": "—Syntax Total Tree Depth",
+    "syntax_Total_Word_Count": "—Syntax Total Word Count",
 }
 
 CONFIG_NAME_ORDER: list = [
@@ -83,7 +113,7 @@ CONFIG_NAME_ORDER += sorted(
         for config in CONFIG_NAME_RENAME.values()
         if config not in CONFIG_NAME_ORDER
     ],
-    key=lambda x: (x.count("-"), x),
+    key=lambda x: (x.count("—"), x),
 )
 CONFIG_NAME_ORDER += ["Sum of Individual Effects"]
 
@@ -93,18 +123,172 @@ CONFIG_NAME_ORDER = list(dict.fromkeys(CONFIG_NAME_ORDER))
 PLOT_COLOR_MAPPING: dict = {
     "All Features": "#808080",
     "Acoustics Only": "#A9A9A9",
-    "-Acoustics": "#4E79A7",
-    "-Speaker": "#E15759",
-    "-Lexicon": "#59A14F",
-    "-Phonetics": "#F28E2B",
-    "-Syntax": "#B07AA1",
+    "—Acoustics": "#4E79A7",
+    "—Speaker": "#E15759",
+    "—Lexicon": "#59A14F",
+    "—Phonetics": "#F28E2B",
+    "—Syntax": "#B07AA1",
     "Joint removal": "#2F2F2F",
-    "-Syntax -Lexicon": "#76B7B2",
-    "-Acoustics -Speaker": "#76B7B2",
-    "-Phonetics -Speaker": "#76B7B2",
-    "-Acoustics -Phonetics -Speaker": "#76B7B2",
-    "Combined -Lexicon -Syntax": "#76B7B2",
+    "—Syntax —Lexicon": "#76B7B2",
+    "—Acoustics —Speaker": "#76B7B2",
+    "—Phonetics —Speaker": "#76B7B2",
+    "—Acoustics —Phonetics —Speaker": "#76B7B2",
+    "Combined —Lexicon —Syntax": "#76B7B2",
     "Sum of Individual Effects": "#76B7B2",
+}
+
+PLOTTING_CONFIGS: dict[str, dict] = {
+    "syntax_lexical": {
+        "target_configs": [
+            "—Lexicon",
+            "—Syntax",
+            "—Syntax —Lexicon",
+        ],
+        "target_models": [
+            "bert-base-uncased",
+            "wav2vec2-base",
+        ],
+    },
+    "syntax_lexical_2": {
+        "target_configs": [
+            "—Lexicon",
+            "—Syntax",
+            "—Syntax —Lexicon",
+        ],
+        "target_models": [
+            "wav2vec2-base",
+            "wav2vec2-base-960h",
+        ],
+    },
+    "acoustics_speaker_id": {
+        "target_configs": [
+            "—Acoustics",
+            "—Speaker",
+            "—Acoustics —Speaker",
+        ],
+        "target_models": [
+            "wav2vec2-base",
+            "wav2vec2-ls100-sid",
+        ],
+    },
+    "phonetic_speaker_id": {
+        "target_configs": [
+            "—Phonetics",
+            "—Speaker",
+            "—Phonetics —Speaker",
+        ],
+        "target_models": [
+            "wav2vec2-base",
+            "wav2vec2-ls100-sid",
+        ],
+    },
+    "acoustics_speaker_id_2": {
+        "target_configs": [
+            "—Acoustics",
+            "—Speaker",
+            "—Acoustics —Speaker",
+        ],
+        "target_models": [
+            "wav2vec2-base",
+            "wav2vec2-base-960h",
+        ],
+    },
+    "phonetic_speaker_id_2": {
+        "target_configs": [
+            "—Phonetics",
+            "—Speaker",
+            "—Phonetics —Speaker",
+        ],
+        "target_models": [
+            "wav2vec2-base",
+            "wav2vec2-base-960h",
+        ],
+    },
+    "all_models_syntax_lexical": {
+        "target_configs": [
+            "—Lexicon",
+            "—Syntax",
+            "—Syntax —Lexicon",
+        ],
+        "target_models": None,
+        "x_col": "normalized_layer",
+        "figure_size": (8, 8),
+    },
+    "all_models_acoustic_speaker": {
+        "target_configs": [
+            "—Acoustics",
+            "—Speaker",
+            "—Acoustics —Speaker",
+        ],
+        "target_models": None,
+        "x_col": "normalized_layer",
+        "figure_size": (8, 8),
+    },
+    "all_models_phonetic_speaker": {
+        "target_configs": [
+            "—Phonetics",
+            "—Speaker",
+            "—Phonetics —Speaker",
+        ],
+        "target_models": None,
+        "x_col": "normalized_layer",
+        "figure_size": (8, 8),
+    },
+    "syntax_lexical_wav2vec2": {
+        "target_configs": [
+            "—Lexicon",
+            "—Syntax",
+            "—Syntax —Lexicon",
+        ],
+        "target_models": ["wav2vec2-base"],
+        "x_col": "layer",
+        "y_col": "test_score",
+        "figure_size": (4, 4),
+        "legend_n_row": 2,
+    },
+    "acoustics_speaker_id_wav2vec2": {
+        "target_configs": [
+            "—Acoustics",
+            "—Speaker",
+            "—Acoustics —Speaker",
+        ],
+        "target_models": ["wav2vec2-base"],
+        "x_col": "layer",
+        "y_col": "test_score",
+        "figure_size": (4, 4),
+        "legend_n_row": 2,
+    },
+    "phonetic_speaker_id_wav2vec2": {
+        "target_configs": [
+            "—Phonetics",
+            "—Speaker",
+            "—Phonetics —Speaker",
+        ],
+        "target_models": ["wav2vec2-base"],
+        "x_col": "layer",
+        "y_col": "test_score",
+        "figure_size": (4, 4),
+        "legend_n_row": 2,
+    },
+    "syntax_lexicon_decomposition_wav2vec2": {
+        "target_configs": [
+            "—Lexicon",
+            "—Lexicon —Syntax POS",
+            "—Lexicon —Syntax Dependency",
+            "—Lexicon —Syntax Tree Depth",
+            "—Lexicon —Syntax Position",
+            "—Lexicon —Syntax Total Tree Depth",
+            "—Lexicon —Syntax Total Word Count",
+            "—Syntax —Lexicon",
+        ],
+        "target_models": ["wav2vec2-base"],
+        "x_col": "layer",
+        "y_col": "test_score",
+        "figure_size": (8, 8),
+        "legend_n_row": 5,
+        "facet": "config_name",
+        "color_mapping": None,
+    },
 }
 
 
@@ -120,6 +304,10 @@ def _to_plot_config_label(config_name: str) -> str:
     if config_name in JOINT_REMOVAL_CONFIGS:
         return JOINT_REMOVAL_LABEL
     return config_name
+
+
+def _get_run_group(experiment: str) -> str:
+    return RUN_GROUP_BY_EXPERIMENT.get(experiment, experiment)
 
 
 def _safe_list(value, default: list[str]) -> list[str]:
@@ -140,6 +328,94 @@ def _safe_tuple2(value, default: tuple[int, int]) -> tuple[int, int]:
     if isinstance(value, tuple) and len(value) == 2:
         return value
     return default
+
+
+def _shorten_modelname(modelname: str) -> str:
+    return modelname.split("/")[-1]
+
+
+def _read_results_impl(
+    librispeech_split: str,
+    modelnames: list[str] | None = None,
+    probename: str = "ridge",
+    require_random_seed: bool = False,
+) -> pd.DataFrame:
+    all_results = []
+    for results_dir in RESULTS_DIRS:
+        if modelnames is None:
+            target_models = [
+                "facebook/wav2vec2-base",
+                "facebook/wav2vec2-base-960h",
+                "superb/wav2vec2-base-superb-sid",
+                "facebook/wav2vec2-large",
+                "facebook/hubert-base-ls960",
+                "facebook/hubert-large-ll60k",
+                "microsoft/wavlm-base",
+                "FacebookAI/roberta-base",
+                "google-bert/bert-base-uncased",
+                "answerdotai/ModernBERT-base",
+                "techsword/wav2vec2-ls100-sid",
+            ]
+        else:
+            target_models = modelnames
+        for target_model in target_models:
+            savepath = os.path.join(
+                RESULTS_ROOT,
+                results_dir,
+                f"{librispeech_split}_{target_model.replace('/', '-')}_{probename}_results.pkl",
+            )
+            if require_random_seed:
+                savefiles = glob.glob(savepath.replace(".pkl", "-*.pkl"))
+                for savefile in savefiles:
+                    if os.path.exists(savefile):
+                        with open(savefile, "rb") as f:
+                            results = pickle.load(f)
+                        results_df = pd.DataFrame(results)
+                        seed = savefile.split("-")[-1].split(".")[0]
+                        results_df["random_seed"] = int(seed.replace("seed", ""))
+                        results_df["experiment"] = results_dir
+                        results_df["run_group"] = _get_run_group(results_dir)
+                        all_results.append(results_df)
+            if os.path.isfile(savepath):
+                with open(savepath, "rb") as f:
+                    results = pickle.load(f)
+                results_df = pd.DataFrame(results)
+                if require_random_seed:
+                    results_df["random_seed"] = 42
+                results_df["experiment"] = results_dir
+                results_df["run_group"] = _get_run_group(results_dir)
+                all_results.append(results_df)
+            elif not require_random_seed:
+                logger.warning(
+                    "Results not found for %s and %s under %s. Skipping.",
+                    librispeech_split,
+                    target_model,
+                    results_dir,
+                )
+    if not all_results:
+        if require_random_seed:
+            logger.warning(
+                "No random-seed result files found for split '%s'.",
+                librispeech_split,
+            )
+        else:
+            logger.warning("No result files found for split '%s'.", librispeech_split)
+        return pd.DataFrame()
+
+    all_results_df = pd.concat(all_results, ignore_index=True)
+    all_results_df["config_name"] = all_results_df["config_name"].map(
+        lambda x: CONFIG_NAME_RENAME.get(x, x)
+    )
+    all_results_df["modelname"] = all_results_df["modelname"].map(_shorten_modelname)
+    all_results_df["normalized_layer"] = all_results_df.groupby("modelname")[
+        "layer"
+    ].transform(lambda x: x / x.max())
+    order_config_name = all_results_df["config_name"].unique().tolist()
+    order_config_name.sort(key=lambda x: (x.count("-"), x))
+    all_results_df["config_name"] = pd.Categorical(
+        all_results_df["config_name"], categories=order_config_name, ordered=True
+    )
+    return all_results_df
 
 
 def _build_main_figure_filename(
@@ -166,135 +442,361 @@ def _build_random_seed_figure_filename(
     return filename
 
 
-def _build_sanity_speakerid_figure_filename(*, librispeech_split: str) -> str:
-    filename = "speakerid_sanity_by_layer.png"
+def _build_decoding_speakerid_figure_filename(
+    *, librispeech_split: str, figure_name_suffix: str = "speakerid_decoding_by_layer"
+) -> str:
+    filename = f"{figure_name_suffix}.png"
     if librispeech_split != "train-clean-100":
-        filename = f"speakerid_sanity_by_layer_{librispeech_split}.png"
+        filename = f"{figure_name_suffix}_{librispeech_split}.png"
     return filename
 
 
-def read_speakerid_sanity_results(
+def read_decoding_results(
     librispeech_split: str = "train-clean-100",
-    sanity_csv_path: str | None = None,
+    decoding_csv_path: str | None = None,
+    config_filter: dict | None = None,
 ) -> pd.DataFrame:
-    csv_path = sanity_csv_path or os.path.join(
-        FIGURES_ROOT, f"combined_all_sanity_{librispeech_split}.csv"
+    target_variable = _safe_str(
+        config_filter.get("target_variable", "SpeakerID")
+        if config_filter
+        else "SpeakerID",
+        "SpeakerID",
+    )
+    x_filter_pattern = _safe_str(
+        config_filter.get("x_filter_pattern", "hidden_state_L")
+        if config_filter
+        else "hidden_state_L",
+        "hidden_state_L",
+    )
+    target_models = config_filter.get("target_models") if config_filter else None
+
+    csv_path = decoding_csv_path or os.path.join(
+        RESULTS_ROOT, f"combined_all_decoding_{librispeech_split}.csv"
     )
     if not os.path.exists(csv_path):
-        logger.warning("Sanity CSV not found at '%s'. Skipping sanity plot.", csv_path)
+        logger.warning(
+            "decoding CSV not found at '%s'. Skipping decoding plot.", csv_path
+        )
         return pd.DataFrame()
 
-    sanity_df = pd.read_csv(csv_path)
-    if sanity_df.empty:
-        logger.warning("Sanity CSV '%s' is empty. Skipping sanity plot.", csv_path)
+    decoding_df = pd.read_csv(csv_path)
+    if decoding_df.empty:
+        logger.warning("decoding CSV '%s' is empty. Skipping decoding plot.", csv_path)
         return pd.DataFrame()
 
-    unnamed_cols = [col for col in sanity_df.columns if col.startswith("Unnamed:")]
+    unnamed_cols = [col for col in decoding_df.columns if col.startswith("Unnamed:")]
     if unnamed_cols:
-        sanity_df = sanity_df.drop(columns=unnamed_cols)
+        decoding_df = decoding_df.drop(columns=unnamed_cols)
 
-    if "librispeech_split" in sanity_df.columns:
-        sanity_df = sanity_df[
-            sanity_df["librispeech_split"] == librispeech_split
+    if "librispeech_split" in decoding_df.columns:
+        decoding_df = decoding_df[
+            decoding_df["librispeech_split"] == librispeech_split
         ].copy()
 
-    sanity_df = sanity_df[
-        sanity_df["config_name"].astype(str).str.contains("->SpeakerID", regex=False)
+    decoding_df = decoding_df[
+        decoding_df["config_name"]
+        .astype(str)
+        .str.contains(f"->{target_variable}", regex=False)
     ].copy()
-    sanity_df = sanity_df[
-        sanity_df["config_name"].astype(str).str.contains("hidden_state_L", regex=False)
+    decoding_df = decoding_df[
+        decoding_df["config_name"]
+        .astype(str)
+        .str.contains(x_filter_pattern, regex=False)
     ].copy()
 
-    if sanity_df.empty:
+    if decoding_df.empty:
         logger.warning(
-            "No hidden-state -> SpeakerID rows found in '%s'. Skipping sanity plot.",
+            "No rows matching pattern '%s' -> '%s' found in '%s'. Skipping decoding plot.",
+            x_filter_pattern,
+            target_variable,
             csv_path,
         )
         return pd.DataFrame()
 
-    sanity_df["modelname"] = sanity_df["modelname"].map(lambda x: x.split("/")[-1])
-    sanity_df["layer"] = pd.to_numeric(sanity_df["layer"], errors="coerce")
-    sanity_df = sanity_df.dropna(subset=["layer", "test_score"]).copy()
-    if sanity_df.empty:
-        logger.warning("No valid layer/test_score rows found for sanity plotting.")
+    decoding_df["modelname"] = decoding_df["modelname"].map(lambda x: x.split("/")[-1])
+    decoding_df["layer"] = pd.to_numeric(decoding_df["layer"], errors="coerce")
+    decoding_df = decoding_df.dropna(subset=["layer", "test_score"]).copy()
+    if decoding_df.empty:
+        logger.warning("No valid layer/test_score rows found for decoding plotting.")
         return pd.DataFrame()
 
-    sanity_df["normalized_layer"] = sanity_df.groupby("modelname")["layer"].transform(
-        lambda x: x / x.max() if x.max() > 0 else 0
-    )
+    if target_models is not None:
+        decoding_df = decoding_df[decoding_df["modelname"].isin(target_models)].copy()
+        if decoding_df.empty:
+            logger.warning(
+                "No rows found for target models %s. Skipping decoding plot.",
+                target_models,
+            )
+            return pd.DataFrame()
 
-    sanity_df["modelname"] = pd.Categorical(
-        sanity_df["modelname"],
-        categories=[m for m in MODELNAME_ORDER if m in sanity_df["modelname"].unique()],
+    decoding_df["normalized_layer"] = decoding_df.groupby("modelname")[
+        "layer"
+    ].transform(lambda x: x / x.max() if x.max() > 0 else 0)
+
+    decoding_df["modelname"] = pd.Categorical(
+        decoding_df["modelname"],
+        categories=[
+            m for m in MODELNAME_ORDER if m in decoding_df["modelname"].unique()
+        ],
         ordered=True,
     )
-    return sanity_df
+    return decoding_df
 
 
-def plot_speakerid_sanity_by_layer(
-    sanity_df: pd.DataFrame,
+def read_classification_baselines(
+    librispeech_split: str = "train-clean-100",
+    baseline_csv_path: str | None = None,
+    target_variable: str | None = None,
+    exact_match: bool = False,
+    modelname: str | None = None,
+) -> pd.DataFrame:
+    if baseline_csv_path:
+        baseline_files = [baseline_csv_path]
+    elif modelname:
+        baseline_files = glob.glob(
+            os.path.join(
+                RESULTS_ROOT,
+                "decoding_results",
+                f"classification_baselines_*{modelname}*_{librispeech_split}.csv",
+            )
+        )
+        if not baseline_files:
+            logger.info(
+                "No baseline file found for modelname '%s', falling back to any available.",
+                modelname,
+            )
+            baseline_files = glob.glob(
+                os.path.join(
+                    RESULTS_ROOT,
+                    "decoding_results",
+                    f"classification_baselines_*_{librispeech_split}.csv",
+                )
+            )
+    else:
+        baseline_files = glob.glob(
+            os.path.join(
+                RESULTS_ROOT,
+                "decoding_results",
+                f"classification_baselines_*_{librispeech_split}.csv",
+            )
+        )
+
+    if not baseline_files:
+        logger.warning(
+            "No classification baseline files found for split '%s'.", librispeech_split
+        )
+        return pd.DataFrame()
+
+    baseline_file = sorted(baseline_files)[0]
+    if len(baseline_files) > 1:
+        logger.info(
+            "Multiple baseline files found, using: %s",
+            os.path.basename(baseline_file),
+        )
+
+    if not os.path.exists(baseline_file):
+        return pd.DataFrame()
+
+    baselines_df = pd.read_csv(baseline_file)
+
+    unnamed_cols = [col for col in baselines_df.columns if col.startswith("Unnamed:")]
+    if unnamed_cols:
+        baselines_df = baselines_df.drop(columns=unnamed_cols)
+
+    if "librispeech_split" in baselines_df.columns:
+        baselines_df = baselines_df[
+            baselines_df["librispeech_split"] == librispeech_split
+        ].copy()
+
+    baselines_df["target_variable"] = (
+        baselines_df["config_name"]
+        .astype(str)
+        .str.extract(r"MajorityClass->(\w+)", expand=False)
+    )
+
+    if target_variable is not None:
+        if exact_match:
+            baselines_df = baselines_df[
+                baselines_df["target_variable"] == target_variable
+            ].copy()
+        else:
+            baselines_df = baselines_df[
+                baselines_df["target_variable"]
+                .astype(str)
+                .str.contains(target_variable, regex=True, na=False)
+            ].copy()
+
+    baselines_df = baselines_df.rename(columns={"test_score": "baseline_score"})
+    return baselines_df[
+        ["target_variable", "baseline_score", "n_samples"]
+    ].drop_duplicates()
+
+
+def plot_decoding_by_layer(
+    decoding_df: pd.DataFrame,
     *,
     show_plot: bool = False,
     librispeech_split: str = "train-clean-100",
+    plot_config: dict | None = None,
+    config_filter: dict | None = None,
 ) -> None:
-    if sanity_df.empty:
+    if decoding_df.empty:
         return
-    sanity_df["modelname"] = sanity_df["modelname"].cat.remove_unused_categories()
+    decoding_df["modelname"] = decoding_df["modelname"].cat.remove_unused_categories()
 
-    if sanity_df.empty:
+    if decoding_df.empty:
         return
+
+    y_label = _safe_str(
+        plot_config.get("y_label", "Speaker-ID Accuracy")
+        if plot_config
+        else "Speaker-ID Accuracy",
+        "Speaker-ID Accuracy",
+    )
+    x_label = _safe_str(
+        plot_config.get("x_label", "Layer") if plot_config else "Layer",
+        "Layer",
+    )
+    figure_name_suffix = _safe_str(
+        plot_config.get("figure_name_suffix", "speakerid_decoding_by_layer")
+        if plot_config
+        else "speakerid_decoding_by_layer",
+        "speakerid_decoding_by_layer",
+    )
+    figure_size = _safe_tuple2(
+        plot_config.get("figure_size", (6, 3)) if plot_config else (6, 3),
+        (6, 3),
+    )
+    # Remove 'hidden_state_L*->' from config_name using regex
+    decoding_df["config_name"] = (
+        decoding_df["config_name"]
+        .astype(str)
+        .map(lambda x: re.sub(r"hidden_state_L.*->", "", x))
+    )
+    # Remove syntax_ from config_name using the helper function
+    decoding_df["config_name"] = decoding_df["config_name"].map(
+        lambda x: x.replace("syntax_", "")
+    )
+    decoding_df["config_name"] = decoding_df["config_name"].map(
+        lambda x: x.replace("OH", "")
+    )
+    decoding_df["config_name"] = decoding_df["config_name"].map(
+        lambda x: x.replace("_", " ")
+    )
+    decoding_df["is_baseline"] = False
+
+    # If there are multiple "config_names"
+    if len(decoding_df["config_name"].unique()) > 1:
+        color_mapping = None
+    else:
+        # Keep all colors black
+        color_mapping = {
+            config_name: "#000000"
+            for config_name in decoding_df["config_name"].unique()
+        }
+
+    include_baseline = (
+        plot_config.get("include_baseline", False) if plot_config else False
+    )
 
     figure = (
-        p9.ggplot(sanity_df)
+        p9.ggplot(decoding_df)
         + p9.geom_line(
             p9.aes(
-                x="layer",
-                y="test_score",
-                # group="modelname",
-                # color="modelname",
+                x="layer", y="test_score", color="config_name", linetype="is_baseline"
             )
         )
         + p9.geom_point(
             p9.aes(
                 x="layer",
                 y="test_score",
-                # color="modelname",
-                # shape="modelname",
+                color="config_name",
+                shape="config_name",
             ),
             size=0.8,
         )
         + p9.facet_wrap("modelname")
-        # + p9.scale_x_continuous(breaks=(0, 0.25, 0.5, 0.75, 1))
         + p9.scale_x_continuous(
-            breaks=np.arange(sanity_df["layer"].min(), sanity_df["layer"].max() + 1, 6)
+            breaks=np.arange(
+                decoding_df["layer"].min(), decoding_df["layer"].max() + 1, 6
+            )
         )
         + p9.theme_minimal()
         + p9.theme(
-            figure_size=(6, 3),
+            figure_size=figure_size,
             dpi=200,
             legend_position="bottom",
             legend_justification="center",
             legend_title=p9.element_blank(),
         )
         + p9.labs(
-            x="Layer",
-            y="Speaker-ID Accuracy",
-            # color="Model",
-            # shape="Model",
+            x=x_label,
+            y=y_label,
         )
-        # + p9.guides(
-        #     color=p9.guide_legend(nrow=2, byrow=True),
-        #     shape=p9.guide_legend(nrow=2, byrow=True),
-        # )
-        # Make the color mapping colrblind friendly
-        # + p9.scale_color_manual(values=color_mapping)
     )
+    if color_mapping is not None:
+        figure += p9.scale_color_manual(values=color_mapping)
+    if len(decoding_df["config_name"].unique()) == 1:
+        figure += p9.theme(legend_position="none")
 
+    if include_baseline:
+        target_variable = _safe_str(
+            config_filter.get("target_variable", "SpeakerID")
+            if config_filter
+            else "SpeakerID",
+            "SpeakerID",
+        )
+        exact_match = (
+            plot_config.get("baseline_exact_match", False) if plot_config else False
+        )
+        plot_models = list(decoding_df["modelname"].unique())
+        baselines_per_model = []
+        for model in plot_models:
+            model_baseline = read_classification_baselines(
+                librispeech_split=librispeech_split,
+                target_variable=target_variable,
+                exact_match=exact_match,
+                modelname=model,
+            )
+            model_baseline["modelname"] = model
+            model_baseline["config_name"] = model_baseline["target_variable"].map(
+                lambda x: x.replace("syntax_", "").replace("OH", "").replace("_", " ")
+            )
+            # duplicate model_baseline rows for each layer in decoding_df for this model
+            model_layers = decoding_df[decoding_df["modelname"] == model][
+                "layer"
+            ].unique()
+            model_baseline = model_baseline.loc[
+                model_baseline.index.repeat(len(model_layers))
+            ].copy()
+            model_baseline["layer"] = np.tile(
+                model_layers, len(model_baseline) // len(model_layers)
+            )
+            model_baseline["is_baseline"] = True
+            baselines_per_model.append(model_baseline)
+        model_baseline = pd.concat(baselines_per_model, ignore_index=True)
+        if model_baseline.empty:
+            raise ValueError(
+                f"No baseline found for target variable '{target_variable}' with exact_match={exact_match} in split '{librispeech_split}'."
+            )
+        figure += p9.geom_line(
+            model_baseline,
+            p9.aes(
+                x="layer",
+                y="baseline_score",
+                color="config_name",
+                linetype="is_baseline",
+            ),
+        )
+    figure += p9.scale_linetype_manual(values={True: "dashed", False: "solid"})
+    # remove linetype from legend
+    figure += p9.guides(linetype="none")
     if show_plot:
         figure.show()
 
-    filename = _build_sanity_speakerid_figure_filename(
-        librispeech_split=librispeech_split
+    filename = _build_decoding_speakerid_figure_filename(
+        librispeech_split=librispeech_split,
+        figure_name_suffix=figure_name_suffix,
     )
     figure.save(os.path.join(FIGURES_ROOT, filename))
 
@@ -303,10 +805,10 @@ def plot_helper(
     results_df: pd.DataFrame,
     comparison_results_df: pd.DataFrame,
     facet: str = "modelname",
-    color_mapping: Union[dict, None] = None,
+    color_mapping: dict | None = None,
     x_col: str = "normalized_layer",
     y_col: str = "test_score",
-    legend_n_row: Union[int, None] = 2,
+    legend_n_row: int | None = 2,
     include_sum_of_individual: bool = True,
     order_facet_by_topline: bool = False,
     topline_config_name: str = "All Features",
@@ -343,6 +845,11 @@ def plot_helper(
 
         key_cols = ["modelname", layer_key]
         if (
+            "run_group" in results_df.columns
+            and "run_group" in comparison_results_df.columns
+        ):
+            key_cols.append("run_group")
+        elif (
             "experiment" in results_df.columns
             and "experiment" in comparison_results_df.columns
         ):
@@ -484,80 +991,7 @@ def plot_helper(
 
 
 def read_all_results(librispeech_split: str = "dev-clean") -> pd.DataFrame:
-    modelnames = (
-        "facebook/wav2vec2-base",
-        "facebook/wav2vec2-base-960h",
-        "superb/wav2vec2-base-superb-sid",
-        "facebook/wav2vec2-large",
-        "facebook/hubert-base-ls960",
-        "facebook/hubert-large-ll60k",
-        "microsoft/wavlm-base",
-        "FacebookAI/roberta-base",
-        "google-bert/bert-base-uncased",
-        "answerdotai/ModernBERT-base",
-        "techsword/wav2vec2-ls100-sid",
-    )
-
-    all_results = []
-
-    results_dirs = [
-        "single_feat_removal",
-        "syntax_feat_removal",
-        "syntax_lexicon_decomposition",
-        "speakerid_phonetic_acoustic_removal",
-    ]
-
-    for results_dir in results_dirs:
-        for modelname in modelnames:
-            probe_name = "ridge"
-            savepath = os.path.join(
-                RESULTS_ROOT,
-                results_dir,
-                f"{librispeech_split}_{modelname.replace('/', '-')}_{probe_name}_results.pkl",
-            )
-            if os.path.exists(savepath):
-                with open(savepath, "rb") as f:
-                    results = pickle.load(f)
-                results_df = pd.DataFrame(results)
-                results_df["experiment"] = results_dir
-                all_results.append(results_df)
-            else:
-                logger.warning(
-                    f"Results not found for {librispeech_split} and {modelname} under {results_dir}. Skipping."
-                )
-    if not all_results:
-        logger.warning("No result files found for split '%s'.", librispeech_split)
-        return pd.DataFrame()
-
-    all_results_df = pd.concat(all_results, ignore_index=True)
-
-    all_results_df["config_name"] = all_results_df["config_name"].map(
-        lambda x: CONFIG_NAME_RENAME.get(x, x)
-    )
-
-    all_results_df["modelname"] = all_results_df["modelname"].map(
-        lambda x: (
-            x.split("/")[-1]
-            # "Text: " + x.split("/")[-1]
-            # if ("wav" not in x) and ("hubert" not in x)
-            # else "Audio: " + x.split("/")[-1]
-        )
-    )
-
-    # Normalize layer for each model to be from 0 to 1
-    all_results_df["normalized_layer"] = all_results_df.groupby("modelname")[
-        "layer"
-    ].transform(lambda x: x / x.max())
-
-    # Set the config_name to be a categorical variable with a specific order
-    order_config_name = all_results_df["config_name"].unique().tolist()
-    # Sort the config_name by the number of - in the name, with fewer - first, and if tie, sort alphabetically
-    order_config_name.sort(key=lambda x: (x.count("-"), x))
-    all_results_df["config_name"] = pd.Categorical(
-        all_results_df["config_name"], categories=order_config_name, ordered=True
-    )
-
-    return all_results_df
+    return _read_results_impl(librispeech_split=librispeech_split)
 
 
 def read_random_seed_results(
@@ -565,79 +999,52 @@ def read_random_seed_results(
     modelname: str = "facebook/wav2vec2-base",
     probename: str = "ridge",
 ) -> pd.DataFrame:
-    all_results = []
-
-    results_dirs = [
-        "single_feat_removal",
-        "syntax_feat_removal",
-        "syntax_lexicon_decomposition",
-        "speakerid_phonetic_acoustic_removal",
-    ]
-
-    for results_dir in results_dirs:
-        savepath = os.path.join(
-            RESULTS_ROOT,
-            results_dir,
-            f"{librispeech_split}_{modelname.replace('/', '-')}_{probename}_results.pkl",
-        )
-        savefiles = glob.glob(savepath.replace(".pkl", "-*.pkl"))
-        for savefile in savefiles:
-            with open(savefile, "rb") as f:
-                results = pickle.load(f)
-            results_df = pd.DataFrame(results)
-            seed = savefile.split("-")[-1].split(".")[0]
-            results_df["random_seed"] = int(seed.replace("seed", ""))
-            results_df["experiment"] = results_dir
-            all_results.append(results_df)
-        if os.path.isfile(savepath):
-            with open(savepath, "rb") as f:
-                results = pickle.load(f)
-            results_df = pd.DataFrame(results)
-            results_df["random_seed"] = 42
-            results_df["experiment"] = results_dir
-            all_results.append(results_df)
-    if not all_results:
-        logger.warning(
-            "No random-seed result files found for split '%s' and model '%s'.",
-            librispeech_split,
-            modelname,
-        )
-        return pd.DataFrame()
-
-    all_results_df = pd.concat(all_results, ignore_index=True)
-
-    all_results_df["config_name"] = all_results_df["config_name"].map(
-        lambda x: CONFIG_NAME_RENAME.get(x, x)
+    return _read_results_impl(
+        librispeech_split=librispeech_split,
+        modelnames=[modelname],
+        probename=probename,
+        require_random_seed=True,
     )
-
-    all_results_df["modelname"] = all_results_df["modelname"].map(
-        lambda x: (
-            x.split("/")[-1]
-            # "Text: " + x.split("/")[-1]
-            # if ("wav" not in x) and ("hubert" not in x)
-            # else "Audio: " + x.split("/")[-1]
-        )
-    )
-
-    # Normalize layer for each model to be from 0 to 1
-    all_results_df["normalized_layer"] = all_results_df.groupby("modelname")[
-        "layer"
-    ].transform(lambda x: x / x.max())
-
-    return all_results_df
 
 
 def get_combined_single_results(
     mode_results_df,
     mode_comparison_results_df,
     target_configs: list,
-    new_config_name: Union[str, None],
+    new_config_name: str | None,
 ) -> pd.DataFrame:
+    if mode_results_df.empty:
+        return mode_results_df
+
+    if not target_configs:
+        logger.warning("No target configs provided for combined single results.")
+        return mode_results_df.copy()
+
+    target_config_set = set(target_configs)
+
     # Compute departure to topline using baseline rows from the same run/directory.
-    key_cols = ["modelname", "normalized_layer"]
-    if "random_seed" in mode_results_df.columns:
+    key_cols = ["modelname"]
+    if (
+        "layer" in mode_results_df.columns
+        and "layer" in mode_comparison_results_df.columns
+    ):
+        key_cols.append("layer")
+    if (
+        "normalized_layer" in mode_results_df.columns
+        and "normalized_layer" in mode_comparison_results_df.columns
+    ):
+        key_cols.append("normalized_layer")
+    if (
+        "random_seed" in mode_results_df.columns
+        and "random_seed" in mode_comparison_results_df.columns
+    ):
         key_cols.append("random_seed")
     if (
+        "run_group" in mode_results_df.columns
+        and "run_group" in mode_comparison_results_df.columns
+    ):
+        key_cols.append("run_group")
+    elif (
         "experiment" in mode_results_df.columns
         and "experiment" in mode_comparison_results_df.columns
     ):
@@ -650,6 +1057,12 @@ def get_combined_single_results(
         ]
         if not all_features_rows.empty:
             comparison_df = all_features_rows
+
+    if comparison_df.empty:
+        logger.warning(
+            "No baseline rows available for combined single-results calculation."
+        )
+        return mode_results_df.copy()
 
     comparison_lookup = (
         comparison_df[key_cols + ["test_score"]]
@@ -674,34 +1087,59 @@ def get_combined_single_results(
             dropped_rows,
         )
 
+    if mode_results_df.empty:
+        return mode_results_df
+
     # Add the departure_to_topline from -Lexical and -Syntactic together and append that to the df under a new config_name
     combined_lex_syntx_departure = mode_results_df[
         mode_results_df["config_name"].isin(target_configs)
     ].copy()
-    if "random_seed" in mode_results_df.columns:
-        combined_lex_syntx_departure = (
-            combined_lex_syntx_departure.groupby(
-                ["modelname", "normalized_layer", "random_seed"]
-            )
-            .agg({"departure_to_topline": "sum"})
-            .reset_index()
+
+    if combined_lex_syntx_departure.empty:
+        mode_results_df = mode_results_df.drop(
+            columns=["topline_test_score"], errors="ignore"
         )
-    else:
-        combined_lex_syntx_departure = (
-            combined_lex_syntx_departure.groupby(
-                ["modelname", "normalized_layer", "layer"]
-            )
-            .agg({"departure_to_topline": "sum"})
-            .reset_index()
+        return mode_results_df
+
+    group_cols = key_cols.copy()
+    coverage_by_group = (
+        combined_lex_syntx_departure.groupby(group_cols)["config_name"]
+        .nunique()
+        .reset_index(name="n_unique_configs")
+    )
+    complete_groups = coverage_by_group[
+        coverage_by_group["n_unique_configs"] == len(target_config_set)
+    ][group_cols]
+
+    if complete_groups.empty:
+        logger.warning(
+            "No groups contain all target configs (%s). Skipping '%s' line.",
+            sorted(target_config_set),
+            new_config_name or "Combined singles",
+        )
+        mode_results_df = mode_results_df.drop(
+            columns=["topline_test_score"], errors="ignore"
+        )
+        return mode_results_df
+
+    n_incomplete_groups = int(coverage_by_group.shape[0] - complete_groups.shape[0])
+    if n_incomplete_groups > 0:
+        logger.warning(
+            "Skipping %s incomplete group(s) missing one or more target configs.",
+            n_incomplete_groups,
         )
 
-    if "experiment" in mode_results_df.columns:
-        experiment_per_key = mode_results_df[key_cols].drop_duplicates()
-        combined_lex_syntx_departure = combined_lex_syntx_departure.merge(
-            experiment_per_key,
-            on=[k for k in key_cols if k in combined_lex_syntx_departure.columns],
-            how="left",
-        )
+    combined_lex_syntx_departure = combined_lex_syntx_departure.merge(
+        complete_groups,
+        on=group_cols,
+        how="inner",
+    )
+
+    combined_lex_syntx_departure = (
+        combined_lex_syntx_departure.groupby(group_cols)
+        .agg({"departure_to_topline": "sum"})
+        .reset_index()
+    )
     combined_lex_syntx_departure["config_name"] = (
         new_config_name
         if new_config_name is not None
@@ -736,13 +1174,74 @@ def get_combined_single_results(
     return mode_results_df
 
 
+def _filter_focus_to_complete_experiments(
+    subset_df: pd.DataFrame,
+    subset_comparison_df: pd.DataFrame,
+    *,
+    single_configs: list[str],
+    joint_config: str | None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if subset_df.empty:
+        return subset_df, subset_comparison_df
+
+    group_col = (
+        "run_group"
+        if "run_group" in subset_df.columns
+        else "experiment"
+        if "experiment" in subset_df.columns
+        else None
+    )
+    if group_col is None:
+        return subset_df.copy(), subset_comparison_df.copy()
+
+    required_configs = set(single_configs)
+    if joint_config is not None:
+        required_configs.add(joint_config)
+
+    if not required_configs:
+        return subset_df.copy(), subset_comparison_df.copy()
+
+    group_coverage = subset_df.groupby(group_col)["config_name"].apply(set).to_dict()
+
+    valid_groups = [
+        group_name
+        for group_name, configs in group_coverage.items()
+        if required_configs.issubset(configs)
+    ]
+
+    if subset_comparison_df.empty:
+        logger.warning("No baseline rows available for focus filtering.")
+        return subset_df.iloc[0:0].copy(), subset_comparison_df.iloc[0:0].copy()
+
+    comparison_group_coverage = (
+        subset_comparison_df.groupby(group_col)["config_name"].apply(set).to_dict()
+    )
+    valid_groups = [
+        group_name
+        for group_name in valid_groups
+        if "All Features" in comparison_group_coverage.get(group_name, set())
+    ]
+
+    if not valid_groups:
+        logger.warning(
+            "No run group contains full focus coverage with topline (%s).",
+            sorted(required_configs),
+        )
+        return subset_df.iloc[0:0].copy(), subset_comparison_df.iloc[0:0].copy()
+
+    filtered_subset = subset_df[subset_df[group_col].isin(valid_groups)].copy()
+    filtered_comparison = subset_comparison_df[
+        subset_comparison_df[group_col].isin(valid_groups)
+    ].copy()
+
+    return filtered_subset, filtered_comparison
+
+
 def plot_main_figures(
     all_results_df: pd.DataFrame,
     show_plots: bool = False,
     librispeech_split: str = "train-clean-100",
 ):
-    # For each mode, we plot the test score with the topline
-    # Topline and baseline comparison points are "All Features" and "Acoustics Only"
     mode = "top-down"
     comparison_configs = ["All Features", "Acoustics Only"]
     mode_results_df = all_results_df[all_results_df["mode"] == mode]
@@ -753,164 +1252,13 @@ def plot_main_figures(
         ~mode_results_df["config_name"].isin(comparison_configs)
     ].copy()
 
-    # Set up plotting configs
-    plotting_configs = {
-        "syntax_lexical": {
-            "target_configs": [
-                "-Lexicon",
-                "-Syntax",
-                "-Syntax -Lexicon",
-            ],
-            "target_models": [
-                "bert-base-uncased",
-                "wav2vec2-base",
-            ],
-        },
-        "syntax_lexical_2": {
-            "target_configs": [
-                "-Lexicon",
-                "-Syntax",
-                "-Syntax -Lexicon",
-            ],
-            "target_models": [
-                "wav2vec2-base",
-                "wav2vec2-base-960h",
-            ],
-        },
-        "acoustics_speaker_id": {
-            "target_configs": [
-                "-Acoustics",
-                "-Speaker",
-                "-Acoustics -Speaker",
-            ],
-            "target_models": [
-                "wav2vec2-base",
-                "wav2vec2-ls100-sid",
-            ],
-        },
-        "phonetic_speaker_id": {
-            "target_configs": [
-                "-Phonetics",
-                "-Speaker",
-                "-Phonetics -Speaker",
-            ],
-            "target_models": [
-                "wav2vec2-base",
-                "wav2vec2-ls100-sid",
-            ],
-        },
-        "acoustics_speaker_id_2": {
-            "target_configs": [
-                "-Acoustics",
-                "-Speaker",
-                "-Acoustics -Speaker",
-            ],
-            "target_models": [
-                "wav2vec2-base",
-                "wav2vec2-base-960h",
-            ],
-        },
-        "phonetic_speaker_id_2": {
-            "target_configs": [
-                "-Phonetics",
-                "-Speaker",
-                "-Phonetics -Speaker",
-            ],
-            "target_models": [
-                "wav2vec2-base",
-                "wav2vec2-base-960h",
-            ],
-        },
-        "all_models_syntax_lexical": {
-            "target_configs": [
-                "-Lexicon",
-                "-Syntax",
-                "-Syntax -Lexicon",
-            ],
-            "target_models": list(mode_results_df["modelname"].unique()),
-            "x_col": "normalized_layer",
-            "figure_size": (8, 8),
-        },
-        "all_models_acoustic_speaker": {
-            "target_configs": [
-                "-Acoustics",
-                "-Speaker",
-                "-Acoustics -Speaker",
-            ],
-            "target_models": list(mode_results_df["modelname"].unique()),
-            "x_col": "normalized_layer",
-            "figure_size": (8, 8),
-        },
-        "all_models_phonetic_speaker": {
-            "target_configs": [
-                "-Phonetics",
-                "-Speaker",
-                "-Phonetics -Speaker",
-            ],
-            "target_models": list(mode_results_df["modelname"].unique()),
-            "x_col": "normalized_layer",
-            "figure_size": (8, 8),
-        },
-        "syntax_lexical_wav2vec2": {
-            "target_configs": [
-                "-Lexicon",
-                "-Syntax",
-                "-Syntax -Lexicon",
-            ],
-            "target_models": ["wav2vec2-base"],
-            "x_col": "layer",
-            "y_col": "test_score",
-            "figure_size": (4, 4),
-            "legend_n_row": 2,
-        },
-        "acoustics_speaker_id_wav2vec2": {
-            "target_configs": [
-                "-Acoustics",
-                "-Speaker",
-                "-Acoustics -Speaker",
-            ],
-            "target_models": ["wav2vec2-base"],
-            "x_col": "layer",
-            "y_col": "test_score",
-            "figure_size": (4, 4),
-            "legend_n_row": 2,
-        },
-        "phonetic_speaker_id_wav2vec2": {
-            "target_configs": [
-                "-Phonetics",
-                "-Speaker",
-                "-Phonetics -Speaker",
-            ],
-            "target_models": ["wav2vec2-base"],
-            "x_col": "layer",
-            "y_col": "test_score",
-            "figure_size": (4, 4),
-            "legend_n_row": 2,
-        },
-        "syntax_lexicon_decomposition_wav2vec2": {
-            "target_configs": [
-                "-Lexicon",
-                "-Lexicon -Syntax POS",
-                "-Lexicon -Syntax Dependency",
-                "-Lexicon -Syntax Tree Depth",
-                "-Lexicon -Syntax Position",
-                "-Lexicon -Syntax Total Tree Depth",
-                "-Lexicon -Syntax Total Word Count",
-                "-Syntax -Lexicon",
-            ],
-            "target_models": ["wav2vec2-base"],
-            "x_col": "layer",
-            "y_col": "test_score",
-            "figure_size": (8, 8),
-            "legend_n_row": 5,
-            "facet": "config_name",
-            "color_mapping": None,
-        },
-    }
-
-    for featname, plotting_config in plotting_configs.items():
+    for featname, plotting_config in PLOTTING_CONFIGS.items():
         target_configs = _safe_list(plotting_config["target_configs"], [])
-        target_models = _safe_list(plotting_config["target_models"], [])
+        target_models_raw = plotting_config.get("target_models")
+        if target_models_raw is None:
+            target_models = list(mode_results_df["modelname"].unique())
+        else:
+            target_models = _safe_list(target_models_raw, [])
         x_col = _safe_str(plotting_config.get("x_col", "layer"), "layer")
         y_col = _safe_str(plotting_config.get("y_col", "test_score"), "test_score")
         legend_n_row = _safe_int(plotting_config.get("legend_n_row", None), None)
@@ -936,12 +1284,21 @@ def plot_main_figures(
             logger.warning("No rows for plotting config '%s'. Skipping.", featname)
             continue
 
-        target_experiments = plot_df["experiment"].unique().tolist()
-
-        plot_compare_df = mode_comparison_results_df[
-            (mode_comparison_results_df["modelname"].isin(target_models))
-            & (mode_comparison_results_df["experiment"].isin(target_experiments))
-        ]
+        if (
+            "run_group" in plot_df.columns
+            and "run_group" in mode_comparison_results_df.columns
+        ):
+            target_run_groups = plot_df["run_group"].unique().tolist()
+            plot_compare_df = mode_comparison_results_df[
+                (mode_comparison_results_df["modelname"].isin(target_models))
+                & (mode_comparison_results_df["run_group"].isin(target_run_groups))
+            ]
+        else:
+            target_experiments = plot_df["experiment"].unique().tolist()
+            plot_compare_df = mode_comparison_results_df[
+                (mode_comparison_results_df["modelname"].isin(target_models))
+                & (mode_comparison_results_df["experiment"].isin(target_experiments))
+            ]
         if plot_compare_df.empty:
             logger.warning(
                 "No same-run baseline rows for plotting config '%s'. Skipping.",
@@ -1010,28 +1367,46 @@ def plot_focus_random_seed(
     print_ttest: bool = False,
     librispeech_split: str = "train-clean-100",
 ):
-    # Plot the syntax and lexical removal results,
-    # to see if the random seed has an impact on the results
-
-    focus_lookup = {
-        "syntax_lexical": ["-Lexicon", "-Syntax", "-Syntax -Lexicon"],
-        "phonetic_speaker": ["-Phonetics", "-Speaker", "-Phonetics -Speaker"],
-        "acoustic_speaker": ["-Acoustics", "-Speaker", "-Acoustics -Speaker"],
-    }
+    focus_spec = FOCUS_CONFIGS[focus]
+    single_configs = _safe_list(focus_spec["single_configs"], [])
+    joint_config = _safe_str(focus_spec["joint_config"], "")
+    focus_configs = [*single_configs, joint_config]
 
     subset_results_df = random_seed_results_df[
-        random_seed_results_df["config_name"].isin(focus_lookup[focus])
+        random_seed_results_df["config_name"].isin(focus_configs)
     ].copy()
     subset_results_comparison_df = random_seed_results_df[
         random_seed_results_df["config_name"].isin(["All Features", "Acoustics Only"])
     ].copy()
 
+    subset_results_df, subset_results_comparison_df = (
+        _filter_focus_to_complete_experiments(
+            subset_results_df,
+            subset_results_comparison_df,
+            single_configs=single_configs,
+            joint_config=joint_config,
+        )
+    )
+    if subset_results_df.empty:
+        logger.warning(
+            "No complete experiments for focus '%s'; skipping random-seed plot.",
+            focus,
+        )
+        return
+
     subset_results_df = get_combined_single_results(
         subset_results_df,
         subset_results_comparison_df,
-        target_configs=focus_lookup[focus][:-1],  # Exclude the combined config
+        target_configs=single_configs,  # Exclude the combined config
         new_config_name="Sum of Individual Effects",
     )
+
+    if subset_results_df.empty:
+        logger.warning(
+            "No rows remain after sum-of-individual computation for focus '%s'.",
+            focus,
+        )
+        return
 
     subset_results_df["config_name"] = subset_results_df["config_name"].map(
         _to_plot_config_label
@@ -1045,21 +1420,54 @@ def plot_focus_random_seed(
         subset_results_comparison_df["normalized_layer"] * 12
     )  # Assuming wav2vec2-base has 12 layers
 
+    group_col = (
+        "run_group"
+        if "run_group" in subset_results_df.columns
+        else "experiment"
+        if "experiment" in subset_results_df.columns
+        else None
+    )
+    mean_group_cols = ["config_name", "modelname"]
+    if group_col is not None:
+        mean_group_cols.append(group_col)
+    mean_group_cols.append("layer")
+
     # Compute the mean and std of the test_score for each config_name and layer across different random seeds
     subset_results_df_mean = (
-        subset_results_df.groupby(["config_name", "modelname", "layer"])
+        subset_results_df.groupby(mean_group_cols)
         .agg(
             test_score_mean=("test_score", "mean"), test_score_std=("test_score", "std")
         )
         .reset_index()
     )
     subset_results_comparison_df_mean = (
-        subset_results_comparison_df.groupby(["config_name", "modelname", "layer"])
+        subset_results_comparison_df.groupby(mean_group_cols)
         .agg(
             test_score_mean=("test_score", "mean"), test_score_std=("test_score", "std")
         )
         .reset_index()
     )
+    line_group_col = (
+        "run_group"
+        if "run_group" in subset_results_df_mean.columns
+        else "experiment"
+        if "experiment" in subset_results_df_mean.columns
+        else None
+    )
+    if line_group_col is None:
+        subset_results_df_mean["line_group"] = subset_results_df_mean[
+            "config_name"
+        ].astype(str)
+        subset_results_comparison_df_mean["line_group"] = "baseline"
+    else:
+        subset_results_df_mean["line_group"] = (
+            subset_results_df_mean["config_name"].astype(str)
+            + "__"
+            + subset_results_df_mean[line_group_col].astype(str)
+        )
+        subset_results_comparison_df_mean["line_group"] = (
+            subset_results_comparison_df_mean[line_group_col].astype(str)
+        )
 
     # Order subset_results_comparison_df_mean based on how many - is in the config_name, with fewer - first, and if tie, sort alphabetically
     subset_results_comparison_df_mean["config_name"] = pd.Categorical(
@@ -1073,6 +1481,12 @@ def plot_focus_random_seed(
     logger.info(
         "\n%s",
         subset_results_df_mean.groupby(["config_name"])[
+            ["test_score_mean", "test_score_std"]
+        ].mean(),
+    )
+    logger.info(
+        "\n%s",
+        subset_results_comparison_df_mean.groupby(["config_name"])[
             ["test_score_mean", "test_score_std"]
         ].mean(),
     )
@@ -1141,7 +1555,7 @@ def plot_focus_random_seed(
                 x="layer",
                 y="test_score_mean",
                 color="config_name",
-                group="config_name",
+                group="line_group",
             ),
         )
         + p9.geom_point(
@@ -1166,7 +1580,7 @@ def plot_focus_random_seed(
         )
         + p9.geom_line(
             data=subset_results_comparison_df_mean,
-            mapping=p9.aes(x="layer", y="test_score_mean"),
+            mapping=p9.aes(x="layer", y="test_score_mean", group="line_group"),
             linetype="dashed",
             color="grey",
             size=1,
@@ -1227,7 +1641,7 @@ def plot_focus_random_seed(
 
 def summarize_random_seed_line_differences(
     random_seed_results_df: pd.DataFrame,
-    focus_lookup: dict[str, Union[list[str], dict[str, object]]],
+    focus_lookup: dict,
     output_dir: str = FIGURES_ROOT,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Summarize pairwise line differences across random seeds and layers.
@@ -1290,16 +1704,63 @@ def summarize_random_seed_line_differences(
             random_seed_results_df["config_name"].isin(comparison_configs)
         ].copy()
 
-        layer_lookup: dict[float, int] = {}
-        if "layer" in subset.columns:
-            layer_rows = subset[["normalized_layer", "layer"]].dropna()
+        subset, subset_comparison = _filter_focus_to_complete_experiments(
+            subset,
+            subset_comparison,
+            single_configs=single_configs,
+            joint_config=joint_config if isinstance(joint_config, str) else None,
+        )
+        if subset.empty:
+            logger.warning(
+                "No complete experiment coverage for focus '%s'; skipping summary.",
+                focus,
+            )
+            continue
+
+        subset["normalized_layer"] = pd.to_numeric(
+            subset["normalized_layer"], errors="coerce"
+        )
+        subset = subset.dropna(subset=["normalized_layer"]).copy()
+        if subset.empty:
+            logger.warning(
+                "No valid normalized_layer values for focus '%s'; skipping summary.",
+                focus,
+            )
+            continue
+
+        group_col = (
+            "run_group"
+            if "run_group" in subset.columns
+            else "experiment"
+            if "experiment" in subset.columns
+            else None
+        )
+
+        layer_lookup: dict[tuple[str, float], int] = {}
+        if "layer" in subset.columns and group_col is not None:
+            layer_rows = subset[[group_col, "normalized_layer", "layer"]].copy()
+            layer_rows["normalized_layer"] = pd.to_numeric(
+                layer_rows["normalized_layer"], errors="coerce"
+            )
+            layer_rows["layer"] = pd.to_numeric(layer_rows["layer"], errors="coerce")
+            layer_rows = layer_rows.dropna(
+                subset=[group_col, "normalized_layer", "layer"]
+            )
             if not layer_rows.empty:
-                layer_lookup = (
-                    layer_rows.groupby("normalized_layer")["layer"]
-                    .agg(lambda x: int(round(float(np.median(x)))))
-                    .rename(index=lambda x: _norm_key(x))
-                    .to_dict()
+                grouped_layer_rows = (
+                    layer_rows.groupby([group_col, "normalized_layer"], as_index=False)[
+                        "layer"
+                    ]
+                    .median()
+                    .reset_index(drop=True)
                 )
+                layer_lookup = {
+                    (
+                        str(row[group_col]),
+                        _norm_key(row["normalized_layer"]),
+                    ): int(round(float(row["layer"])))
+                    for _, row in grouped_layer_rows.iterrows()
+                }
 
         if (
             len(single_configs) >= 2
@@ -1314,8 +1775,12 @@ def summarize_random_seed_line_differences(
                 new_config_name="Sum of Individual Effects",
             )
 
+        pivot_index_cols = ["random_seed", "normalized_layer"]
+        if group_col is not None:
+            pivot_index_cols = [group_col] + pivot_index_cols
+
         pivot_df = subset.pivot_table(
-            index=["random_seed", "normalized_layer"],
+            index=pivot_index_cols,
             columns="config_name",
             values="test_score",
             aggfunc="mean",
@@ -1351,8 +1816,14 @@ def summarize_random_seed_line_differences(
                 pct_positive = float((delta_series > 0).mean())
 
                 # Seed-level aggregation to avoid overweighting layers
+                seed_group_cols = ["random_seed"]
+                if group_col is not None:
+                    seed_group_cols = [group_col] + seed_group_cols
                 seed_level_delta = (
-                    delta_series.reset_index().groupby("random_seed")[0].mean().dropna()
+                    delta_series.reset_index()
+                    .groupby(seed_group_cols)[0]
+                    .mean()
+                    .dropna()
                 )
                 n_seed = int(seed_level_delta.shape[0])
                 seed_mean_delta = float(seed_level_delta.mean())
@@ -1409,7 +1880,13 @@ def summarize_random_seed_line_differences(
                     }
                 )
 
-                for (seed, normalized_layer), delta_val in delta_series.items():
+                for idx, delta_val in delta_series.items():
+                    if group_col is not None:
+                        group_name, seed, normalized_layer = idx
+                        group_name = str(group_name)
+                    else:
+                        seed, normalized_layer = idx
+                        group_name = ""
                     norm_key = _norm_key(normalized_layer)
                     layerwise_rows.append(
                         {
@@ -1428,9 +1905,10 @@ def summarize_random_seed_line_differences(
                             )
                             if isinstance(joint_config, str)
                             else 0,
+                            group_col if group_col is not None else "group": group_name,
                             "random_seed": int(seed),
                             "normalized_layer": float(normalized_layer),
-                            "layer": layer_lookup.get(norm_key, np.nan),
+                            "layer": layer_lookup.get((group_name, norm_key), np.nan),
                             "delta": float(delta_val),
                         }
                     )
@@ -1529,21 +2007,59 @@ def main():
     plot_main_figures(
         all_results_df, show_plots=args.show_plots, librispeech_split=librispeech_split
     )
-    speakerid_sanity_df = read_speakerid_sanity_results(librispeech_split)
-    # Subset speakerid_sanity_df to only include rows of selected models
-    selected_models = [
-        "wav2vec2-base",
-        "wav2vec2-base-960h",
-        "wav2vec2-ls100-sid",
-    ]
-    speakerid_sanity_df = speakerid_sanity_df[
-        speakerid_sanity_df["modelname"].isin(selected_models)
-    ]
-    plot_speakerid_sanity_by_layer(
-        speakerid_sanity_df,
-        show_plot=args.show_plots,
-        librispeech_split=librispeech_split,
-    )
+    decoding_plot_configs: dict[str, dict] = {
+        "speakerid_hidden": {
+            "config_filter": {
+                "target_variable": "SpeakerID",
+                "x_filter_pattern": "hidden_state_L",
+                "target_models": [
+                    "wav2vec2-base",
+                    "wav2vec2-base-960h",
+                    "wav2vec2-ls100-sid",
+                ],
+            },
+            "plot_config": {
+                "y_label": "Speaker-ID Accuracy",
+                "x_label": "Layer",
+                "figure_name_suffix": "speakerid_decoding_by_layer",
+                "figure_size": (6, 3),
+                "include_baseline": True,
+            },
+        },
+        "syntax_hidden": {
+            "config_filter": {
+                "target_variable": "syntax_",
+                "x_filter_pattern": "hidden_state_L",
+                "target_models": [
+                    "bert-base-uncased",
+                    "wav2vec2-base",
+                    "wav2vec2-base-960h",
+                ],
+            },
+            "plot_config": {
+                "y_label": "Syntax Accuracy",
+                "x_label": "Layer",
+                "figure_name_suffix": "syntax_decoding_by_layer",
+                "figure_size": (6, 3),
+                "include_baseline": True,
+            },
+        },
+    }
+
+    for plot_name, decoding_config in decoding_plot_configs.items():
+        config_filter = decoding_config.get("config_filter")
+        plot_config = decoding_config.get("plot_config")
+        decoding_df = read_decoding_results(
+            librispeech_split,
+            config_filter=config_filter,
+        )
+        plot_decoding_by_layer(
+            decoding_df,
+            show_plot=args.show_plots,
+            librispeech_split=librispeech_split,
+            plot_config=plot_config,
+            config_filter=config_filter,
+        )
 
     if librispeech_split != "train-clean-100":
         logger.info(
@@ -1556,46 +2072,19 @@ def main():
         modelname=modelname,
     )
 
-    all_focus_lookup: dict[str, Union[list[str], dict[str, object]]] = {
-        "syntax_lexical": {
-            "single_configs": ["-Lexicon", "-Syntax"],
-            "joint_config": "-Syntax -Lexicon",
-        },
-        "acoustic_speaker": {
-            "single_configs": ["-Acoustics", "-Speaker"],
-            "joint_config": "-Acoustics -Speaker",
-        },
-        "phonetic_speaker": {
-            "single_configs": ["-Phonetics", "-Speaker"],
-            "joint_config": "-Phonetics -Speaker",
-        },
-    }
     summarize_random_seed_line_differences(
         random_seed_results_df=random_seed_results_df,
-        focus_lookup=all_focus_lookup,
+        focus_lookup=FOCUS_CONFIGS,
     )
 
-    plot_focus_random_seed(
-        random_seed_results_df,
-        focus="syntax_lexical",
-        show_plot=args.show_plots,
-        print_ttest=args.print_ttest,
-        librispeech_split=librispeech_split,
-    )
-    plot_focus_random_seed(
-        random_seed_results_df,
-        focus="acoustic_speaker",
-        show_plot=args.show_plots,
-        print_ttest=args.print_ttest,
-        librispeech_split=librispeech_split,
-    )
-    plot_focus_random_seed(
-        random_seed_results_df,
-        focus="phonetic_speaker",
-        show_plot=args.show_plots,
-        print_ttest=args.print_ttest,
-        librispeech_split=librispeech_split,
-    )
+    for focus in FOCUS_CONFIGS:
+        plot_focus_random_seed(
+            random_seed_results_df,
+            focus=focus,
+            show_plot=args.show_plots,
+            print_ttest=args.print_ttest,
+            librispeech_split=librispeech_split,
+        )
 
     modelname = "google-bert/bert-base-uncased"
     random_seed_results_df = read_random_seed_results(
@@ -1603,7 +2092,7 @@ def main():
     )
     summarize_random_seed_line_differences(
         random_seed_results_df=random_seed_results_df,
-        focus_lookup=all_focus_lookup,
+        focus_lookup=FOCUS_CONFIGS,
     )
     plot_focus_random_seed(
         random_seed_results_df,

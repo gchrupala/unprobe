@@ -718,6 +718,26 @@ def main() -> None:
         }
         baseline_rows.append(row)
 
+        # PhoneID baseline
+        phone_PPG = select_feature_groups(feature_sets, lookup, ["ppg_feature"])
+        phone_labels = np.argmax(phone_PPG, axis=1)
+        unique_phones, phone_counts = np.unique(phone_labels, return_counts=True)
+        majority_phone_count = phone_counts.max()
+        majority_phone_proportion = majority_phone_count / len(phone_labels)
+        row = {
+            "librispeech_split": args.librispeech_split,
+            "modelname": "majority-baseline",
+            "config_name": "MajorityClass->PhoneID",
+            "x_groups": ["none"],
+            "y_groups": ["PhoneID"],
+            "metric": "accuracy",
+            "train_score": majority_phone_proportion,
+            "test_score": majority_phone_proportion,
+            "best_params": {},
+            "n_samples": int(feature_sets.shape[0]),
+        }
+        baseline_rows.append(row)
+
         _save_category_results(baseline_savepath, baseline_rows)
         logger.info("Saved classification baselines to %s", baseline_savepath)
 

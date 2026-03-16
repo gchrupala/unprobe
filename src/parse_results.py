@@ -2066,6 +2066,25 @@ def main():
                 "include_baseline": True,
             },
         },
+        "phoneid_hidden": {
+            "config_filter": {
+                "target_variable": "PhoneID",
+                "x_filter_pattern": "hidden_state_L",
+                "target_models": [
+                    # "bert-base-uncased",
+                    "wav2vec2-base",
+                    "wav2vec2-base-960h",
+                    "wav2vec2-ls100-sid",
+                ],
+            },
+            "plot_config": {
+                "y_label": "Phone-ID Accuracy",
+                "x_label": "Layer",
+                "figure_name_suffix": "phoneid_decoding_by_layer",
+                "figure_size": (6, 3),
+                "include_baseline": True,
+            },
+        },
         "syntax_hidden": {
             "config_filter": {
                 "target_variable": "syntax_",

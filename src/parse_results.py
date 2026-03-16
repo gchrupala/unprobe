@@ -25,29 +25,48 @@ logger = logging.getLogger(__name__)
 
 # Rename config_name
 CONFIG_NAME_RENAME: dict = {
-    "AllFeatures": "All Features",
+    "AllFeatures": r"$Y_{\mathit{full}}$",
     "AcousticOnly": "Acoustics Only",
-    "eGeMAPSv02": "—Acoustics",
-    "ChapterID-OH": "—Chapter ID",
-    "SpeakerID-OH": "—Speaker",
-    # "dnn_word_embedding": "Lexicon",
-    "word_embedding": "—Lexicon",
-    "ppg_feature": "—Phonetics",
-    "syntax_feature": "—Syntax",
-    "syntax_feature+word_embedding": "—Syntax —Lexicon",
-    "ppg_feature+eGeMAPSv02": "—Phonetics — Acoustics",
-    "ppg_feature+SpeakerID-OH": "—Phonetics —Speaker",
-    "SpeakerID-OH+eGeMAPSv02": "—Acoustics —Speaker",
-    "SpeakerID-OH+eGeMAPSv02+ppg_feature": "—Acoustics —Phonetics —Speaker",
+    "eGeMAPSv02": r"$Y_{\mathit{full}} \setminus Y_{\mathit{acoustic}}$",
+    "ChapterID-OH": r"$Y_{\mathit{full}} \setminus Y_{\mathit{chapter}}$",
+    "SpeakerID-OH": r"$Y_{\mathit{full}} \setminus Y_{\mathit{speaker}}$",
+    "word_embedding": r"$Y_{\mathit{full}} \setminus Y_{\mathit{lexicon}}$",
+    "ppg_feature": r"$Y_{\mathit{full}} \setminus Y_{\mathit{phonetic}}$",
+    "syntax_feature": r"$Y_{\mathit{full}} \setminus Y_{\mathit{syntax}}$",
+    "syntax_feature+word_embedding": r"$Y_{\mathit{full}} \setminus Y_{\mathit{syntax}} \setminus Y_{\mathit{lexicon}}$",
+    "ppg_feature+eGeMAPSv02": r"$Y_{\mathit{full}} \setminus Y_{\mathit{phonetic}} \setminus Y_{\mathit{acoustic}}$",
+    "ppg_feature+SpeakerID-OH": r"$Y_{\mathit{full}} \setminus Y_{\mathit{phonetic}} \setminus Y_{\mathit{speaker}}$",
+    "SpeakerID-OH+eGeMAPSv02": r"$Y_{\mathit{full}} \setminus Y_{\mathit{acoustic}} \setminus Y_{\mathit{speaker}}$",
+    "SpeakerID-OH+eGeMAPSv02+ppg_feature": r"$Y_{\mathit{full}} \setminus Y_{\mathit{acoustic}} \setminus Y_{\mathit{phonetic}} \setminus Y_{\mathit{speaker}}$",
 }
 
-JOINT_REMOVAL_CONFIGS: set[str] = {
-    "—Syntax —Lexicon",
-    "—Acoustics —Speaker",
-    "—Phonetics —Speaker",
-    "—Acoustics —Phonetics —Speaker",
-}
-JOINT_REMOVAL_LABEL = "Joint removal"
+ALLFEATURE_NAME = CONFIG_NAME_RENAME.get("AllFeatures", "AllFeatures")
+SYNTAX_NAME = CONFIG_NAME_RENAME.get("syntax_feature", "syntax_feature")
+PHONETIC_NAME = CONFIG_NAME_RENAME.get("ppg_feature", "ppg_feature")
+ACOUSTIC_NAME = CONFIG_NAME_RENAME.get("eGeMAPSv02", "eGeMAPSv02")
+SPEAKERID_NAME = CONFIG_NAME_RENAME.get("SpeakerID-OH", "SpeakerID-OH")
+LEXICON_NAME = CONFIG_NAME_RENAME.get("word_embedding", "word_embedding")
+SYNTAX_LEXICON_NAME = CONFIG_NAME_RENAME.get(
+    "syntax_feature+word_embedding", "syntax_feature+word_embedding"
+)
+PHONETIC_ACOUSTIC_NAME = CONFIG_NAME_RENAME.get(
+    "ppg_feature+eGeMAPSv02", "ppg_feature+eGeMAPSv02"
+)
+SPEAKERID_ACOUSTIC_NAME = CONFIG_NAME_RENAME.get(
+    "SpeakerID-OH+eGeMAPSv02", "SpeakerID-OH+eGeMAPSv02"
+)
+
+PHONETIC_SPEAKERID_NAME = CONFIG_NAME_RENAME.get(
+    "ppg_feature+SpeakerID-OH", "ppg_feature+SpeakerID-OH"
+)
+
+# JOINT_REMOVAL_CONFIGS: set[str] = {
+#     "—Syntax —Lexicon",
+#     "—Acoustics —Speaker",
+#     "—Phonetics —Speaker",
+#     "—Acoustics —Phonetics —Speaker",
+# }
+# JOINT_REMOVAL_LABEL = "Joint removal"
 
 SHARED_TOPLINE_RUN_GROUP = "combined_topdown_shared_topline"
 RUN_GROUP_BY_EXPERIMENT: dict[str, str] = {
@@ -65,16 +84,16 @@ RESULTS_DIRS: list[str] = [
 
 FOCUS_CONFIGS: dict[str, dict[str, list[str] | str]] = {
     "syntax_lexical": {
-        "single_configs": ["—Lexicon", "—Syntax"],
-        "joint_config": "—Syntax —Lexicon",
+        "single_configs": [LEXICON_NAME, SYNTAX_NAME],
+        "joint_config": SYNTAX_LEXICON_NAME,
     },
     "acoustic_speaker": {
-        "single_configs": ["—Acoustics", "—Speaker"],
-        "joint_config": "—Acoustics —Speaker",
+        "single_configs": [ACOUSTIC_NAME, SPEAKERID_NAME],
+        "joint_config": SPEAKERID_ACOUSTIC_NAME,
     },
     "phonetic_speaker": {
-        "single_configs": ["—Phonetics", "—Speaker"],
-        "joint_config": "—Phonetics —Speaker",
+        "single_configs": [PHONETIC_NAME, SPEAKERID_NAME],
+        "joint_config": PHONETIC_SPEAKERID_NAME,
     },
 }
 
@@ -111,16 +130,26 @@ MODELNAME_RENAME: dict[str, str] = {
 MODELNAME_RENAME_BACKWARD: dict[str, str] = {v: k for k, v in MODELNAME_RENAME.items()}
 
 SYNTAX_COMPONENT_RENAME: dict[str, str] = {
-    "syntax_POS_OH": "—Syntax POS",
-    "syntax_Dependency_Label_OH": "—Syntax Dependency",
-    "syntax_Tree_Depth": "—Syntax Tree Depth",
-    "syntax_Word_Position": "—Syntax Position",
-    "syntax_Total_Tree_Depth": "—Syntax Total Tree Depth",
-    "syntax_Total_Word_Count": "—Syntax Total Word Count",
+    "syntax_POS_OH": r"\setminus Y_{\mathit{Syntax-POS}}",
+    "syntax_Dependency_Label_OH": r"\setminus Y_{\mathit{Syntax-Dependency}}",
+    "syntax_Tree_Depth": r"\setminus Y_{\mathit{Syntax-Tree-Depth}}",
+    "syntax_Word_Position": r"\setminus Y_{\mathit{Syntax-Word-Position}}",
+    "syntax_Total_Tree_Depth": r"\setminus Y_{\mathit{Syntax-Total-Tree-Depth}}",
+    "syntax_Total_Word_Count": r"\setminus Y_{\mathit{Syntax-Total-Word-Count}}",
 }
 
+
+def _rename_syntax_component_config(config_name: str) -> str:
+    base_str = r"Y_{\mathit{full}} \setminus Y_{\mathit{lexicon}}"
+    for component, label in SYNTAX_COMPONENT_RENAME.items():
+        token = f"word_embedding+{component}"
+        if config_name == token:
+            return "$" + base_str + " " + label + "$"
+    return config_name
+
+
 CONFIG_NAME_ORDER: list = [
-    "All Features",
+    ALLFEATURE_NAME,
     "Acoustics Only",
 ]
 CONFIG_NAME_ORDER += sorted(
@@ -129,7 +158,7 @@ CONFIG_NAME_ORDER += sorted(
         for config in CONFIG_NAME_RENAME.values()
         if config not in CONFIG_NAME_ORDER
     ],
-    key=lambda x: (x.count("—"), x),
+    key=lambda x: (x.count("_"), x),
 )
 CONFIG_NAME_ORDER += ["Sum of Individual Effects"]
 
@@ -137,28 +166,26 @@ CONFIG_NAME_ORDER += ["Sum of Individual Effects"]
 CONFIG_NAME_ORDER = list(dict.fromkeys(CONFIG_NAME_ORDER))
 
 PLOT_COLOR_MAPPING: dict = {
-    "All Features": "#808080",
+    ALLFEATURE_NAME: "#808080",
     "Acoustics Only": "#A9A9A9",
-    "—Acoustics": "#4E79A7",
-    "—Speaker": "#E15759",
-    "—Lexicon": "#59A14F",
-    "—Phonetics": "#F28E2B",
-    "—Syntax": "#B07AA1",
+    ACOUSTIC_NAME: "#4E79A7",
+    SPEAKERID_NAME: "#E15759",
+    LEXICON_NAME: "#59A14F",
+    PHONETIC_NAME: "#F28E2B",
+    SYNTAX_NAME: "#B07AA1",
     "Joint removal": "#2F2F2F",
-    "—Syntax —Lexicon": "#76B7B2",
-    "—Acoustics —Speaker": "#76B7B2",
-    "—Phonetics —Speaker": "#76B7B2",
-    "—Acoustics —Phonetics —Speaker": "#76B7B2",
-    "Combined —Lexicon —Syntax": "#76B7B2",
+    SYNTAX_LEXICON_NAME: "#2F2F2F",
+    SPEAKERID_ACOUSTIC_NAME: "#2F2F2F",
+    PHONETIC_SPEAKERID_NAME: "#2F2F2F",
     "Sum of Individual Effects": "#76B7B2",
 }
 
 PLOTTING_CONFIGS: dict[str, dict] = {
     "syntax_lexical": {
         "target_configs": [
-            "—Lexicon",
-            "—Syntax",
-            "—Syntax —Lexicon",
+            LEXICON_NAME,
+            SYNTAX_NAME,
+            SYNTAX_LEXICON_NAME,
         ],
         "target_models": [
             "bert-base-uncased",
@@ -167,9 +194,9 @@ PLOTTING_CONFIGS: dict[str, dict] = {
     },
     "syntax_lexical_2": {
         "target_configs": [
-            "—Lexicon",
-            "—Syntax",
-            "—Syntax —Lexicon",
+            LEXICON_NAME,
+            SYNTAX_NAME,
+            SYNTAX_LEXICON_NAME,
         ],
         "target_models": [
             "wav2vec2-base",
@@ -178,9 +205,9 @@ PLOTTING_CONFIGS: dict[str, dict] = {
     },
     "acoustics_speaker_id": {
         "target_configs": [
-            "—Acoustics",
-            "—Speaker",
-            "—Acoustics —Speaker",
+            ACOUSTIC_NAME,
+            SPEAKERID_NAME,
+            SPEAKERID_ACOUSTIC_NAME,
         ],
         "target_models": [
             "wav2vec2-base",
@@ -189,9 +216,9 @@ PLOTTING_CONFIGS: dict[str, dict] = {
     },
     "phonetic_speaker_id": {
         "target_configs": [
-            "—Phonetics",
-            "—Speaker",
-            "—Phonetics —Speaker",
+            PHONETIC_NAME,
+            SPEAKERID_NAME,
+            PHONETIC_SPEAKERID_NAME,
         ],
         "target_models": [
             "wav2vec2-base",
@@ -200,9 +227,9 @@ PLOTTING_CONFIGS: dict[str, dict] = {
     },
     "acoustics_speaker_id_2": {
         "target_configs": [
-            "—Acoustics",
-            "—Speaker",
-            "—Acoustics —Speaker",
+            ACOUSTIC_NAME,
+            SPEAKERID_NAME,
+            SPEAKERID_ACOUSTIC_NAME,
         ],
         "target_models": [
             "wav2vec2-base",
@@ -211,9 +238,9 @@ PLOTTING_CONFIGS: dict[str, dict] = {
     },
     "phonetic_speaker_id_2": {
         "target_configs": [
-            "—Phonetics",
-            "—Speaker",
-            "—Phonetics —Speaker",
+            PHONETIC_NAME,
+            SPEAKERID_NAME,
+            PHONETIC_SPEAKERID_NAME,
         ],
         "target_models": [
             "wav2vec2-base",
@@ -222,9 +249,9 @@ PLOTTING_CONFIGS: dict[str, dict] = {
     },
     "all_models_syntax_lexical": {
         "target_configs": [
-            "—Lexicon",
-            "—Syntax",
-            "—Syntax —Lexicon",
+            LEXICON_NAME,
+            SYNTAX_NAME,
+            SYNTAX_LEXICON_NAME,
         ],
         "target_models": None,
         "exclude_models": ["wav2vec2-ls100-sid"],
@@ -233,9 +260,9 @@ PLOTTING_CONFIGS: dict[str, dict] = {
     },
     "all_models_acoustic_speaker": {
         "target_configs": [
-            "—Acoustics",
-            "—Speaker",
-            "—Acoustics —Speaker",
+            ACOUSTIC_NAME,
+            SPEAKERID_NAME,
+            SPEAKERID_ACOUSTIC_NAME,
         ],
         "target_models": None,
         "exclude_models": ["wav2vec2-ls100-sid"],
@@ -244,9 +271,9 @@ PLOTTING_CONFIGS: dict[str, dict] = {
     },
     "all_models_phonetic_speaker": {
         "target_configs": [
-            "—Phonetics",
-            "—Speaker",
-            "—Phonetics —Speaker",
+            PHONETIC_NAME,
+            SPEAKERID_NAME,
+            PHONETIC_SPEAKERID_NAME,
         ],
         "target_models": None,
         "exclude_models": ["wav2vec2-ls100-sid"],
@@ -255,9 +282,9 @@ PLOTTING_CONFIGS: dict[str, dict] = {
     },
     "syntax_lexical_wav2vec2": {
         "target_configs": [
-            "—Lexicon",
-            "—Syntax",
-            "—Syntax —Lexicon",
+            LEXICON_NAME,
+            SYNTAX_NAME,
+            SYNTAX_LEXICON_NAME,
         ],
         "target_models": ["wav2vec2-base"],
         "x_col": "layer",
@@ -267,9 +294,9 @@ PLOTTING_CONFIGS: dict[str, dict] = {
     },
     "acoustics_speaker_id_wav2vec2": {
         "target_configs": [
-            "—Acoustics",
-            "—Speaker",
-            "—Acoustics —Speaker",
+            ACOUSTIC_NAME,
+            SPEAKERID_NAME,
+            SPEAKERID_ACOUSTIC_NAME,
         ],
         "target_models": ["wav2vec2-base"],
         "x_col": "layer",
@@ -279,9 +306,9 @@ PLOTTING_CONFIGS: dict[str, dict] = {
     },
     "phonetic_speaker_id_wav2vec2": {
         "target_configs": [
-            "—Phonetics",
-            "—Speaker",
-            "—Phonetics —Speaker",
+            PHONETIC_NAME,
+            SPEAKERID_NAME,
+            PHONETIC_SPEAKERID_NAME,
         ],
         "target_models": ["wav2vec2-base"],
         "x_col": "layer",
@@ -291,14 +318,18 @@ PLOTTING_CONFIGS: dict[str, dict] = {
     },
     "syntax_lexicon_decomposition_wav2vec2": {
         "target_configs": [
-            "—Lexicon",
-            "—Lexicon —Syntax POS",
-            "—Lexicon —Syntax Dependency",
-            "—Lexicon —Syntax Tree Depth",
-            "—Lexicon —Syntax Position",
-            "—Lexicon —Syntax Total Tree Depth",
-            "—Lexicon —Syntax Total Word Count",
-            "—Syntax —Lexicon",
+            LEXICON_NAME,
+            # "—Lexicon —Syntax POS",
+            # "—Lexicon —Syntax Dependency",
+            # "—Lexicon —Syntax Tree Depth",
+            # "—Lexicon —Syntax Position",
+            # "—Lexicon —Syntax Total Tree Depth",
+            # "—Lexicon —Syntax Total Word Count",
+            SYNTAX_LEXICON_NAME,
+        ]
+        + [
+            _rename_syntax_component_config("word_embedding+" + x)
+            for x in SYNTAX_COMPONENT_RENAME.keys()
         ],
         "target_models": ["wav2vec2-base"],
         "x_col": "layer",
@@ -311,18 +342,30 @@ PLOTTING_CONFIGS: dict[str, dict] = {
 }
 
 
-def _rename_syntax_component_config(config_name: str) -> str:
-    for component, label in SYNTAX_COMPONENT_RENAME.items():
-        token = f"word_embedding+{component}"
-        if config_name == token:
-            return f"-Lexicon {label}"
-    return config_name
-
-
 def _to_plot_config_label(config_name: str) -> str:
-    if config_name in JOINT_REMOVAL_CONFIGS:
-        return JOINT_REMOVAL_LABEL
+    # if config_name in JOINT_REMOVAL_CONFIGS:
+    #     return JOINT_REMOVAL_LABEL
+    # return config_name
     return config_name
+
+
+def _count_setminus(label: str) -> int:
+    return label.count("\\setminus")
+
+
+def _sort_labels_by_setminus(labels: list[str]) -> list[str]:
+    config_order_index = {
+        _to_plot_config_label(name): idx for idx, name in enumerate(CONFIG_NAME_ORDER)
+    }
+    unique_labels = list(dict.fromkeys(labels))
+    return sorted(
+        unique_labels,
+        key=lambda label: (
+            _count_setminus(label),
+            config_order_index.get(label, len(config_order_index)),
+            label,
+        ),
+    )
 
 
 def _get_run_group(experiment: str) -> str:
@@ -424,6 +467,9 @@ def _read_results_impl(
     all_results_df = pd.concat(all_results, ignore_index=True)
     all_results_df["config_name"] = all_results_df["config_name"].map(
         lambda x: CONFIG_NAME_RENAME.get(x, x)
+    )
+    all_results_df["config_name"] = all_results_df["config_name"].map(
+        _rename_syntax_component_config
     )
     all_results_df["modelname"] = all_results_df["modelname"].map(_shorten_modelname)
     all_results_df["normalized_layer"] = all_results_df.groupby("modelname")[
@@ -722,6 +768,17 @@ def plot_decoding_by_layer(
         plot_config.get("include_baseline", False) if plot_config else False
     )
 
+    # Fix the order of the facets to be the same as the order of the models in MODELNAME_ORDER
+    decoding_df["modelname"] = pd.Categorical(
+        decoding_df["modelname"],
+        categories=[
+            MODELNAME_RENAME.get(m, m)
+            for m in MODELNAME_ORDER
+            if MODELNAME_RENAME.get(m, m) in decoding_df["modelname"].unique()
+        ],
+        ordered=True,
+    )
+
     figure = (
         p9.ggplot(decoding_df)
         + p9.geom_line(
@@ -807,9 +864,19 @@ def plot_decoding_by_layer(
             raise ValueError(
                 f"No baseline found for target variable '{target_variable}' with exact_match={exact_match} in split '{librispeech_split}'."
             )
+        # Fix the order of the facets to be the same as the order of the models in MODELNAME_ORDER
+        model_baseline["modelname"] = pd.Categorical(
+            model_baseline["modelname"],
+            categories=[
+                MODELNAME_RENAME.get(m, m)
+                for m in MODELNAME_ORDER
+                if MODELNAME_RENAME.get(m, m) in model_baseline["modelname"].unique()
+            ],
+            ordered=True,
+        )
         figure += p9.geom_line(
-            model_baseline,
-            p9.aes(
+            data=model_baseline,
+            mapping=p9.aes(
                 x="layer",
                 y="baseline_score",
                 color="config_name",
@@ -839,7 +906,7 @@ def plot_helper(
     legend_n_row: int | None = 2,
     include_sum_of_individual: bool = True,
     order_facet_by_topline: bool = False,
-    topline_config_name: str = "All Features",
+    topline_config_name: str = ALLFEATURE_NAME,
 ) -> p9.ggplot:
     if not include_sum_of_individual:
         col_name = "Sum of Individual Effects"
@@ -942,12 +1009,9 @@ def plot_helper(
     all_plot_config_names = list(results_df["plot_config_name"].unique()) + list(
         comparison_results_df["plot_config_name"].unique()
     )
-    plot_config_name_order = list(
-        dict.fromkeys(_to_plot_config_label(x) for x in CONFIG_NAME_ORDER)
+    plot_config_name_order = _sort_labels_by_setminus(
+        [x for x in all_plot_config_names if isinstance(x, str)]
     )
-    plot_config_name_order = [
-        x for x in plot_config_name_order if x in all_plot_config_names
-    ] + [x for x in all_plot_config_names if x not in plot_config_name_order]
 
     results_df["plot_config_name"] = pd.Categorical(
         results_df["plot_config_name"],
@@ -961,7 +1025,7 @@ def plot_helper(
     )
 
     linetype_mapping = {
-        "All Features": "dashed",
+        ALLFEATURE_NAME: "dashed",
         "Acoustics Only": "dashed",
     }
     linetype_mapping = {
@@ -1087,7 +1151,7 @@ def get_combined_single_results(
     comparison_df = mode_comparison_results_df.copy()
     if "config_name" in comparison_df.columns:
         all_features_rows = comparison_df[
-            comparison_df["config_name"] == "All Features"
+            comparison_df["config_name"] == ALLFEATURE_NAME
         ]
         if not all_features_rows.empty:
             comparison_df = all_features_rows
@@ -1253,7 +1317,7 @@ def _filter_focus_to_complete_experiments(
     valid_groups = [
         group_name
         for group_name in valid_groups
-        if "All Features" in comparison_group_coverage.get(group_name, set())
+        if ALLFEATURE_NAME in comparison_group_coverage.get(group_name, set())
     ]
 
     if not valid_groups:
@@ -1277,7 +1341,7 @@ def plot_main_figures(
     librispeech_split: str = "train-clean-100",
 ):
     mode = "top-down"
-    comparison_configs = ["All Features", "Acoustics Only"]
+    comparison_configs = [ALLFEATURE_NAME, "Acoustics Only"]
     mode_results_df = all_results_df[all_results_df["mode"] == mode]
     mode_comparison_results_df = mode_results_df[
         mode_results_df["config_name"].isin(comparison_configs)
@@ -1373,8 +1437,8 @@ def plot_main_figures(
         )
 
         p += p9.labs(
-            x="Layer (From shallow to deep)",
-            y=r"MIRS ($R^2$) Score",
+            x="Layer (From bottom to top)",
+            y=r"HRS ($R^2$) Score",
             color="Feature Group",
             shape="Feature Group",
             linetype="Feature Group",
@@ -1413,8 +1477,25 @@ def plot_focus_random_seed(
     subset_results_df = random_seed_results_df[
         random_seed_results_df["config_name"].isin(focus_configs)
     ].copy()
+    available_comparison_configs = [
+        config_name
+        for config_name in [ALLFEATURE_NAME, "Acoustics Only"]
+        if config_name in set(random_seed_results_df["config_name"])
+    ]
+    if not available_comparison_configs:
+        logger.warning(
+            "No baseline rows available for focus '%s'; skipping random-seed plot.",
+            focus,
+        )
+        return
+    if "Acoustics Only" not in available_comparison_configs:
+        logger.warning(
+            "'Acoustics Only' baseline missing for focus '%s'; using '%s' only.",
+            focus,
+            ALLFEATURE_NAME,
+        )
     subset_results_comparison_df = random_seed_results_df[
-        random_seed_results_df["config_name"].isin(["All Features", "Acoustics Only"])
+        random_seed_results_df["config_name"].isin(available_comparison_configs)
     ].copy()
 
     subset_results_df, subset_results_comparison_df = (
@@ -1432,12 +1513,12 @@ def plot_focus_random_seed(
         )
         return
 
-    subset_results_df = get_combined_single_results(
-        subset_results_df,
-        subset_results_comparison_df,
-        target_configs=single_configs,  # Exclude the combined config
-        new_config_name="Sum of Individual Effects",
-    )
+    # subset_results_df = get_combined_single_results(
+    #     subset_results_df,
+    #     subset_results_comparison_df,
+    #     target_configs=single_configs,  # Exclude the combined config
+    #     new_config_name="Sum of Individual Effects",
+    # )
 
     if subset_results_df.empty:
         logger.warning(
@@ -1472,14 +1553,14 @@ def plot_focus_random_seed(
 
     # Compute the mean and std of the test_score for each config_name and layer across different random seeds
     subset_results_df_mean = (
-        subset_results_df.groupby(mean_group_cols)
+        subset_results_df.groupby(mean_group_cols, observed=True)
         .agg(
             test_score_mean=("test_score", "mean"), test_score_std=("test_score", "std")
         )
         .reset_index()
     )
     subset_results_comparison_df_mean = (
-        subset_results_comparison_df.groupby(mean_group_cols)
+        subset_results_comparison_df.groupby(mean_group_cols, observed=True)
         .agg(
             test_score_mean=("test_score", "mean"), test_score_std=("test_score", "std")
         )
@@ -1496,7 +1577,9 @@ def plot_focus_random_seed(
         subset_results_df_mean["line_group"] = subset_results_df_mean[
             "config_name"
         ].astype(str)
-        subset_results_comparison_df_mean["line_group"] = "baseline"
+        subset_results_comparison_df_mean["line_group"] = (
+            subset_results_comparison_df_mean["config_name"].astype(str)
+        )
     else:
         subset_results_df_mean["line_group"] = (
             subset_results_df_mean["config_name"].astype(str)
@@ -1504,14 +1587,27 @@ def plot_focus_random_seed(
             + subset_results_df_mean[line_group_col].astype(str)
         )
         subset_results_comparison_df_mean["line_group"] = (
-            subset_results_comparison_df_mean[line_group_col].astype(str)
+            subset_results_comparison_df_mean["config_name"].astype(str)
+            + "__"
+            + subset_results_comparison_df_mean[line_group_col].astype(str)
         )
 
-    # Order subset_results_comparison_df_mean based on how many - is in the config_name, with fewer - first, and if tie, sort alphabetically
+    subset_results_comparison_df_mean = subset_results_comparison_df_mean.dropna(
+        subset=["test_score_mean"]
+    )
+
     subset_results_comparison_df_mean["config_name"] = pd.Categorical(
         subset_results_comparison_df_mean["config_name"],
         categories=CONFIG_NAME_ORDER,
         ordered=True,
+    )
+
+    # Drop the unused categories to avoid plotting empty facets
+    subset_results_df_mean["config_name"] = subset_results_df_mean[
+        "config_name"
+    ].cat.remove_unused_categories()
+    subset_results_comparison_df_mean["config_name"] = (
+        subset_results_comparison_df_mean["config_name"].cat.remove_unused_categories()
     )
 
     # Print the mean std of the test_score for each config_name and layer across different random seeds
@@ -1520,7 +1616,9 @@ def plot_focus_random_seed(
         "\n%s",
         subset_results_df_mean.groupby(["config_name"])[
             ["test_score_mean", "test_score_std"]
-        ].mean(),
+        ]
+        .mean()
+        .dropna(),
     )
     logger.info(
         "\n%s",
@@ -1585,21 +1683,34 @@ def plot_focus_random_seed(
                         t_stat,
                         p_value,
                     )
-
+    linetype_mapping = {
+        ALLFEATURE_NAME: "dashed",
+        "Acoustics Only": "dashed",
+    }
+    all_config_names = list(subset_results_df_mean["config_name"].unique()) + list(
+        subset_results_comparison_df_mean["config_name"].unique()
+    )
+    linetype_mapping = {
+        config: linetype_mapping.get(config, "solid") for config in all_config_names
+    }
+    plot_df = pd.concat(
+        [subset_results_df_mean, subset_results_comparison_df_mean], ignore_index=True
+    )
     # Plot the random seed results with error bars using plotnine
     p = (
         p9.ggplot()
         + p9.geom_line(
-            data=subset_results_df_mean,
+            data=plot_df,
             mapping=p9.aes(
                 x="layer",
                 y="test_score_mean",
                 color="config_name",
                 group="line_group",
+                linetype="config_name",
             ),
         )
         + p9.geom_point(
-            data=subset_results_df_mean,
+            data=plot_df,
             mapping=p9.aes(
                 x="layer",
                 y="test_score_mean",
@@ -1609,35 +1720,16 @@ def plot_focus_random_seed(
             size=0.7,
         )
         + p9.geom_errorbar(
-            data=subset_results_df_mean,
+            data=plot_df,
             mapping=p9.aes(
                 x="layer",
-                ymin=subset_results_df_mean["ci_lower"],
-                ymax=subset_results_df_mean["ci_upper"],
+                ymin="ci_lower",
+                ymax="ci_upper",
                 color="config_name",
             ),
             width=0.02,
         )
-        + p9.geom_line(
-            data=subset_results_comparison_df_mean,
-            mapping=p9.aes(x="layer", y="test_score_mean", group="line_group"),
-            linetype="dashed",
-            color="grey",
-            size=1,
-        )
-        + p9.geom_errorbar(
-            data=subset_results_comparison_df_mean,
-            mapping=p9.aes(
-                x="layer",
-                ymin=subset_results_comparison_df_mean["ci_lower"],
-                ymax=subset_results_comparison_df_mean["ci_upper"],
-            ),
-            width=0.02,
-            linetype="dashed",
-            color="grey",
-        )
         + p9.theme_minimal()
-        # + p9.scale_y_continuous(limits=(0, syntax_lexical_df["test_score_mean"].max() * 1.1))
         + p9.theme(
             figure_size=(5, 4),
             dpi=300,
@@ -1653,14 +1745,18 @@ def plot_focus_random_seed(
             )
         )
         + p9.labs(
-            x="Layer (From shallow to deep)",
-            y=r"MIRS ($R^2$) Score",
-            color="Feature",
-            shape="Feature",
+            x="Layer (From bottom to top)",
+            y=r"HRS ($R^2$) Score",
         )
-        + p9.guides(color=p9.guide_legend(nrow=2, byrow=True))
         + p9.scale_color_manual(values=PLOT_COLOR_MAPPING)
+        + p9.scale_linetype_manual(values=linetype_mapping)
+        + p9.guides(
+            color=p9.guide_legend(nrow=2, byrow=True),
+            shape=p9.guide_legend(nrow=2, byrow=True),
+            linetype=p9.guide_legend(nrow=2, byrow=True),
+        )
     )
+
     if show_plot:
         p.show()
     modelname = random_seed_results_df["modelname"].iloc[0]
@@ -1721,9 +1817,9 @@ def summarize_random_seed_line_differences(
                 )
             comparison_configs = _safe_list(
                 focus_spec.get(
-                    "comparison_configs", ["All Features", "Acoustics Only"]
+                    "comparison_configs", [ALLFEATURE_NAME, "Acoustics Only"]
                 ),
-                ["All Features", "Acoustics Only"],
+                [ALLFEATURE_NAME, "Acoustics Only"],
             )
         else:
             line_configs = list(focus_spec)
@@ -1731,7 +1827,7 @@ def summarize_random_seed_line_differences(
                 line_configs[:-1] if len(line_configs) > 1 else line_configs
             )
             joint_config = line_configs[-1] if line_configs else None
-            comparison_configs = ["All Features", "Acoustics Only"]
+            comparison_configs = [ALLFEATURE_NAME, "Acoustics Only"]
 
         subset = random_seed_results_df[
             random_seed_results_df["config_name"].isin(line_configs)
@@ -2059,7 +2155,7 @@ def main():
                 ],
             },
             "plot_config": {
-                "y_label": "Speaker-ID Accuracy",
+                "y_label": "Speaker Label: Accuracy",
                 "x_label": "Layer",
                 "figure_name_suffix": "speakerid_decoding_by_layer",
                 "figure_size": (6, 3),
@@ -2078,7 +2174,7 @@ def main():
                 ],
             },
             "plot_config": {
-                "y_label": "Phone-ID Accuracy",
+                "y_label": "Phone Identity: Accuracy",
                 "x_label": "Layer",
                 "figure_name_suffix": "phoneid_decoding_by_layer",
                 "figure_size": (6, 3),

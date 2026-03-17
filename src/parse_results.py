@@ -25,19 +25,19 @@ logger = logging.getLogger(__name__)
 
 # Rename config_name
 CONFIG_NAME_RENAME: dict = {
-    "AllFeatures": r"$Y_{\mathit{full}}$",
+    "AllFeatures": r"$\mathit{Full}$",
     "AcousticOnly": "Acoustics Only",
-    "eGeMAPSv02": r"$Y_{\mathit{full}} \setminus Y_{\mathit{acoustic}}$",
-    "ChapterID-OH": r"$Y_{\mathit{full}} \setminus Y_{\mathit{chapter}}$",
-    "SpeakerID-OH": r"$Y_{\mathit{full}} \setminus Y_{\mathit{speaker}}$",
-    "word_embedding": r"$Y_{\mathit{full}} \setminus Y_{\mathit{lexicon}}$",
-    "ppg_feature": r"$Y_{\mathit{full}} \setminus Y_{\mathit{phonetic}}$",
-    "syntax_feature": r"$Y_{\mathit{full}} \setminus Y_{\mathit{syntax}}$",
-    "syntax_feature+word_embedding": r"$Y_{\mathit{full}} \setminus Y_{\mathit{syntax}} \setminus Y_{\mathit{lexicon}}$",
-    "ppg_feature+eGeMAPSv02": r"$Y_{\mathit{full}} \setminus Y_{\mathit{phonetic}} \setminus Y_{\mathit{acoustic}}$",
-    "ppg_feature+SpeakerID-OH": r"$Y_{\mathit{full}} \setminus Y_{\mathit{phonetic}} \setminus Y_{\mathit{speaker}}$",
-    "SpeakerID-OH+eGeMAPSv02": r"$Y_{\mathit{full}} \setminus Y_{\mathit{acoustic}} \setminus Y_{\mathit{speaker}}$",
-    "SpeakerID-OH+eGeMAPSv02+ppg_feature": r"$Y_{\mathit{full}} \setminus Y_{\mathit{acoustic}} \setminus Y_{\mathit{phonetic}} \setminus Y_{\mathit{speaker}}$",
+    "eGeMAPSv02": r"$\mathit{Full} \setminus \mathit{Acoustics}$",
+    "ChapterID-OH": r"$\mathit{Full} \setminus\mathit{Chapter}$",
+    "SpeakerID-OH": r"$\mathit{Full} \setminus \mathit{Speaker}$",
+    "word_embedding": r"$\mathit{Full} \setminus \mathit{Lexicon}$",
+    "ppg_feature": r"$\mathit{Full} \setminus \mathit{Phone}$",
+    "syntax_feature": r"$\mathit{Full} \setminus \mathit{Syntax}$",
+    "syntax_feature+word_embedding": r"$\mathit{Full} \setminus \mathit{Syntax} \setminus \mathit{Lexicon}$",
+    "ppg_feature+eGeMAPSv02": r"$\mathit{Full} \setminus \mathit{Phone} \setminus \mathit{Acoustics}$",
+    "ppg_feature+SpeakerID-OH": r"$\mathit{Full} \setminus \mathit{Phone} \setminus \mathit{Speaker}$",
+    "SpeakerID-OH+eGeMAPSv02": r"$\mathit{Full} \setminus \mathit{Acoustics} \setminus \mathit{Speaker}$",
+    "SpeakerID-OH+eGeMAPSv02+ppg_feature": r"$\mathit{Full} \setminus \mathit{Acoustics} \setminus \mathit{Phone} \setminus \mathit{Speaker}$",
 }
 
 ALLFEATURE_NAME = CONFIG_NAME_RENAME.get("AllFeatures", "AllFeatures")
@@ -130,17 +130,17 @@ MODELNAME_RENAME: dict[str, str] = {
 MODELNAME_RENAME_BACKWARD: dict[str, str] = {v: k for k, v in MODELNAME_RENAME.items()}
 
 SYNTAX_COMPONENT_RENAME: dict[str, str] = {
-    "syntax_POS_OH": r"\setminus Y_{\mathit{Syntax-POS}}",
-    "syntax_Dependency_Label_OH": r"\setminus Y_{\mathit{Syntax-Dependency}}",
-    "syntax_Tree_Depth": r"\setminus Y_{\mathit{Syntax-Tree-Depth}}",
-    "syntax_Word_Position": r"\setminus Y_{\mathit{Syntax-Word-Position}}",
-    "syntax_Total_Tree_Depth": r"\setminus Y_{\mathit{Syntax-Total-Tree-Depth}}",
-    "syntax_Total_Word_Count": r"\setminus Y_{\mathit{Syntax-Total-Word-Count}}",
+    "syntax_POS_OH": r"\setminus \mathit{Syntax-POS}",
+    "syntax_Dependency_Label_OH": r"\setminus \mathit{Syntax-Dependency}",
+    "syntax_Tree_Depth": r"\setminus \mathit{Syntax-Tree-Depth}",
+    "syntax_Word_Position": r"\setminus \mathit{Syntax-Word-Position}",
+    "syntax_Total_Tree_Depth": r"\setminus \mathit{Syntax-Total-Tree-Depth}",
+    "syntax_Total_Word_Count": r"\setminus \mathit{Syntax-Total-Word-Count}",
 }
 
 
 def _rename_syntax_component_config(config_name: str) -> str:
-    base_str = r"Y_{\mathit{full}} \setminus Y_{\mathit{lexicon}}"
+    base_str = r"\mathit{Full} \setminus \mathit{lexicon}"
     for component, label in SYNTAX_COMPONENT_RENAME.items():
         token = f"word_embedding+{component}"
         if config_name == token:

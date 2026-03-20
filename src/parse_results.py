@@ -336,36 +336,10 @@ PLOTTING_CONFIGS: dict[str, dict] = {
         "y_col": "test_score",
         "figure_size": (8, 8),
         "legend_n_row": 5,
-        "facet": "config_name",
+        "facet": "plot_config_name",
         "color_mapping": None,
     },
 }
-
-
-def _to_plot_config_label(config_name: str) -> str:
-    # if config_name in JOINT_REMOVAL_CONFIGS:
-    #     return JOINT_REMOVAL_LABEL
-    # return config_name
-    return config_name
-
-
-def _count_setminus(label: str) -> int:
-    return label.count("\\setminus")
-
-
-def _sort_labels_by_setminus(labels: list[str]) -> list[str]:
-    config_order_index = {
-        _to_plot_config_label(name): idx for idx, name in enumerate(CONFIG_NAME_ORDER)
-    }
-    unique_labels = list(dict.fromkeys(labels))
-    return sorted(
-        unique_labels,
-        key=lambda label: (
-            _count_setminus(label),
-            config_order_index.get(label, len(config_order_index)),
-            label,
-        ),
-    )
 
 
 def _get_run_group(experiment: str) -> str:
@@ -465,21 +439,35 @@ def _read_results_impl(
         return pd.DataFrame()
 
     all_results_df = pd.concat(all_results, ignore_index=True)
-    all_results_df["config_name"] = all_results_df["config_name"].map(
+
+    # Make new column for plotting the amount of variance unexplained by probe reconstruction
+    # Since we use R^2 as the metric, we can calculate this as 1 - R^2
+    all_results_df["unexplained_variance"] = 1 - all_results_df["test_score"]
+
+    # Make new column for plotting the amount of departure from the topline score
+    # We calculate this by taking the difference between the topline score and the current score.
+    # Topline results are the ones with config_name AllFeatures, which represents the full feature set without any removals.
+    topline_score_per_model_per_experiment = all_results_df[
+        all_results_df["config_name"] == ALLFEATURE_NAME
+    ]
+
+    all_results_df["plot_config_name"] = all_results_df["config_name"].map(
         lambda x: CONFIG_NAME_RENAME.get(x, x)
     )
-    all_results_df["config_name"] = all_results_df["config_name"].map(
+    all_results_df["plot_config_name"] = all_results_df["plot_config_name"].map(
         _rename_syntax_component_config
     )
     all_results_df["modelname"] = all_results_df["modelname"].map(_shorten_modelname)
     all_results_df["normalized_layer"] = all_results_df.groupby("modelname")[
         "layer"
     ].transform(lambda x: x / x.max())
+
     order_config_name = all_results_df["config_name"].unique().tolist()
-    order_config_name.sort(key=lambda x: (x.count("-"), x))
+    order_config_name.sort(key=lambda x: (x.count("mathit"), x))
     all_results_df["config_name"] = pd.Categorical(
         all_results_df["config_name"], categories=order_config_name, ordered=True
     )
+
     return all_results_df
 
 
@@ -999,18 +987,15 @@ def plot_helper(
         ordered=True,
     )
 
-    results_df["plot_config_name"] = results_df["config_name"].map(
-        _to_plot_config_label
-    )
-    comparison_results_df["plot_config_name"] = comparison_results_df[
-        "config_name"
-    ].map(_to_plot_config_label)
-
     all_plot_config_names = list(results_df["plot_config_name"].unique()) + list(
         comparison_results_df["plot_config_name"].unique()
     )
-    plot_config_name_order = _sort_labels_by_setminus(
-        [x for x in all_plot_config_names if isinstance(x, str)]
+
+    def _sort_labels_by_amount_of_mathit(x: list[str]) -> list[str]:
+        return sorted(x, key=lambda label: (label.count("mathit"), label))
+
+    plot_config_name_order = _sort_labels_by_amount_of_mathit(
+        [x for x in all_plot_config_names]
     )
 
     results_df["plot_config_name"] = pd.Categorical(
@@ -1299,7 +1284,9 @@ def _filter_focus_to_complete_experiments(
     if not required_configs:
         return subset_df.copy(), subset_comparison_df.copy()
 
-    group_coverage = subset_df.groupby(group_col)["config_name"].apply(set).to_dict()
+    group_coverage = (
+        subset_df.groupby(group_col)["plot_config_name"].apply(set).to_dict()
+    )
 
     valid_groups = [
         group_name
@@ -1312,7 +1299,7 @@ def _filter_focus_to_complete_experiments(
         return subset_df.iloc[0:0].copy(), subset_comparison_df.iloc[0:0].copy()
 
     comparison_group_coverage = (
-        subset_comparison_df.groupby(group_col)["config_name"].apply(set).to_dict()
+        subset_comparison_df.groupby(group_col)["plot_config_name"].apply(set).to_dict()
     )
     valid_groups = [
         group_name
@@ -1344,10 +1331,10 @@ def plot_main_figures(
     comparison_configs = [ALLFEATURE_NAME, "Acoustics Only"]
     mode_results_df = all_results_df[all_results_df["mode"] == mode]
     mode_comparison_results_df = mode_results_df[
-        mode_results_df["config_name"].isin(comparison_configs)
+        mode_results_df["plot_config_name"].isin(comparison_configs)
     ].copy()
     mode_results_df = mode_results_df[
-        ~mode_results_df["config_name"].isin(comparison_configs)
+        ~mode_results_df["plot_config_name"].isin(comparison_configs)
     ].copy()
 
     for featname, plotting_config in PLOTTING_CONFIGS.items():
@@ -1375,11 +1362,8 @@ def plot_main_figures(
             color_mapping = color_mapping_value
 
         plot_df = mode_results_df.copy()
-        plot_df["config_name"] = plot_df["config_name"].map(
-            _rename_syntax_component_config
-        )
         plot_df = plot_df[
-            (plot_df["config_name"].isin(target_configs))
+            (plot_df["plot_config_name"].isin(target_configs))
             & (plot_df["modelname"].isin(target_models))
         ]
         if plot_df.empty:
@@ -1433,7 +1417,7 @@ def plot_main_figures(
             y_col=y_col,
             legend_n_row=legend_n_row,
             include_sum_of_individual=False,
-            order_facet_by_topline=(facet == "config_name"),
+            order_facet_by_topline=(facet == "plot_config_name"),
         )
 
         p += p9.labs(
@@ -1475,28 +1459,20 @@ def plot_focus_random_seed(
     focus_configs = [*single_configs, joint_config]
 
     subset_results_df = random_seed_results_df[
-        random_seed_results_df["config_name"].isin(focus_configs)
+        random_seed_results_df["plot_config_name"].isin(focus_configs)
     ].copy()
-    available_comparison_configs = [
-        config_name
-        for config_name in [ALLFEATURE_NAME, "Acoustics Only"]
-        if config_name in set(random_seed_results_df["config_name"])
-    ]
-    if not available_comparison_configs:
+
+    subset_results_comparison_df = random_seed_results_df[
+        random_seed_results_df["plot_config_name"].isin(
+            [ALLFEATURE_NAME, "Acoustics Only"]
+        )
+    ].copy()
+    if subset_results_comparison_df.empty:
         logger.warning(
-            "No baseline rows available for focus '%s'; skipping random-seed plot.",
+            "No baseline rows for focus '%s'; skipping random-seed plot.",
             focus,
         )
         return
-    if "Acoustics Only" not in available_comparison_configs:
-        logger.warning(
-            "'Acoustics Only' baseline missing for focus '%s'; using '%s' only.",
-            focus,
-            ALLFEATURE_NAME,
-        )
-    subset_results_comparison_df = random_seed_results_df[
-        random_seed_results_df["config_name"].isin(available_comparison_configs)
-    ].copy()
 
     subset_results_df, subset_results_comparison_df = (
         _filter_focus_to_complete_experiments(
@@ -1527,13 +1503,6 @@ def plot_focus_random_seed(
         )
         return
 
-    subset_results_df["config_name"] = subset_results_df["config_name"].map(
-        _to_plot_config_label
-    )
-    subset_results_comparison_df["config_name"] = subset_results_comparison_df[
-        "config_name"
-    ].map(_to_plot_config_label)
-
     subset_results_df["layer"] = subset_results_df["normalized_layer"] * 12
     subset_results_comparison_df["layer"] = (
         subset_results_comparison_df["normalized_layer"] * 12
@@ -1546,7 +1515,7 @@ def plot_focus_random_seed(
         if "experiment" in subset_results_df.columns
         else None
     )
-    mean_group_cols = ["config_name", "modelname"]
+    mean_group_cols = ["plot_config_name", "modelname", "config_name"]
     if group_col is not None:
         mean_group_cols.append(group_col)
     mean_group_cols.append("layer")
@@ -1575,19 +1544,19 @@ def plot_focus_random_seed(
     )
     if line_group_col is None:
         subset_results_df_mean["line_group"] = subset_results_df_mean[
-            "config_name"
+            "plot_config_name"
         ].astype(str)
         subset_results_comparison_df_mean["line_group"] = (
-            subset_results_comparison_df_mean["config_name"].astype(str)
+            subset_results_comparison_df_mean["plot_config_name"].astype(str)
         )
     else:
         subset_results_df_mean["line_group"] = (
-            subset_results_df_mean["config_name"].astype(str)
+            subset_results_df_mean["plot_config_name"].astype(str)
             + "__"
             + subset_results_df_mean[line_group_col].astype(str)
         )
         subset_results_comparison_df_mean["line_group"] = (
-            subset_results_comparison_df_mean["config_name"].astype(str)
+            subset_results_comparison_df_mean["plot_config_name"].astype(str)
             + "__"
             + subset_results_comparison_df_mean[line_group_col].astype(str)
         )
@@ -1596,18 +1565,10 @@ def plot_focus_random_seed(
         subset=["test_score_mean"]
     )
 
-    subset_results_comparison_df_mean["config_name"] = pd.Categorical(
-        subset_results_comparison_df_mean["config_name"],
+    subset_results_comparison_df_mean["plot_config_name"] = pd.Categorical(
+        subset_results_comparison_df_mean["plot_config_name"],
         categories=CONFIG_NAME_ORDER,
         ordered=True,
-    )
-
-    # Drop the unused categories to avoid plotting empty facets
-    subset_results_df_mean["config_name"] = subset_results_df_mean[
-        "config_name"
-    ].cat.remove_unused_categories()
-    subset_results_comparison_df_mean["config_name"] = (
-        subset_results_comparison_df_mean["config_name"].cat.remove_unused_categories()
     )
 
     # Print the mean std of the test_score for each config_name and layer across different random seeds
@@ -1687,8 +1648,8 @@ def plot_focus_random_seed(
         ALLFEATURE_NAME: "dashed",
         "Acoustics Only": "dashed",
     }
-    all_config_names = list(subset_results_df_mean["config_name"].unique()) + list(
-        subset_results_comparison_df_mean["config_name"].unique()
+    all_config_names = list(subset_results_df_mean["plot_config_name"].unique()) + list(
+        subset_results_comparison_df_mean["plot_config_name"].unique()
     )
     linetype_mapping = {
         config: linetype_mapping.get(config, "solid") for config in all_config_names
@@ -1704,9 +1665,9 @@ def plot_focus_random_seed(
             mapping=p9.aes(
                 x="layer",
                 y="test_score_mean",
-                color="config_name",
+                color="plot_config_name",
                 group="line_group",
-                linetype="config_name",
+                linetype="plot_config_name",
             ),
         )
         + p9.geom_point(
@@ -1714,8 +1675,8 @@ def plot_focus_random_seed(
             mapping=p9.aes(
                 x="layer",
                 y="test_score_mean",
-                color="config_name",
-                shape="config_name",
+                color="plot_config_name",
+                shape="plot_config_name",
             ),
             size=0.7,
         )
@@ -1725,7 +1686,7 @@ def plot_focus_random_seed(
                 x="layer",
                 ymin="ci_lower",
                 ymax="ci_upper",
-                color="config_name",
+                color="plot_config_name",
             ),
             width=0.02,
         )
@@ -1830,14 +1791,14 @@ def summarize_random_seed_line_differences(
             comparison_configs = [ALLFEATURE_NAME, "Acoustics Only"]
 
         subset = random_seed_results_df[
-            random_seed_results_df["config_name"].isin(line_configs)
+            random_seed_results_df["plot_config_name"].isin(line_configs)
         ].copy()
         if subset.empty:
             logger.warning("No rows found for focus '%s'; skipping summary.", focus)
             continue
 
         subset_comparison = random_seed_results_df[
-            random_seed_results_df["config_name"].isin(comparison_configs)
+            random_seed_results_df["plot_config_name"].isin(comparison_configs)
         ].copy()
 
         subset, subset_comparison = _filter_focus_to_complete_experiments(
@@ -1901,7 +1862,7 @@ def summarize_random_seed_line_differences(
         if (
             len(single_configs) >= 2
             and isinstance(joint_config, str)
-            and joint_config in subset["config_name"].unique()
+            and joint_config in subset["plot_config_name"].unique()
             and not subset_comparison.empty
         ):
             subset = get_combined_single_results(
@@ -1917,7 +1878,7 @@ def summarize_random_seed_line_differences(
 
         pivot_df = subset.pivot_table(
             index=pivot_index_cols,
-            columns="config_name",
+            columns="plot_config_name",
             values="test_score",
             aggfunc="mean",
         )
@@ -2138,6 +2099,8 @@ def parse_args() -> argparse.Namespace:
 
 def main():
     args = parse_args()
+    librispeech_split = "train-clean-100"
+
     librispeech_split = args.librispeech_split
     all_results_df = read_all_results(librispeech_split)
     plot_main_figures(
@@ -2181,7 +2144,7 @@ def main():
                 "include_baseline": True,
             },
         },
-        "syntax_hidden": {
+        "syntax_decomp_hidden": {
             "config_filter": {
                 "target_variable": "syntax_",
                 "x_filter_pattern": "hidden_state_L",
@@ -2192,11 +2155,45 @@ def main():
                 ],
             },
             "plot_config": {
-                "y_label": "Syntax Decoding Metrics",
+                "y_label": "Decomposed Syntax Decoding Metrics",
                 "x_label": "Layer",
-                "figure_name_suffix": "syntax_decoding_by_layer",
+                "figure_name_suffix": "syntax_decomposition_decoding_by_layer",
                 "figure_size": (6, 3),
                 "include_baseline": True,
+            },
+        },
+        "syntax_full_hidden": {
+            "config_filter": {
+                "target_variable": "syntax_feature",
+                "x_filter_pattern": "hidden_state_L",
+                "target_models": [
+                    "bert-base-uncased",
+                    "wav2vec2-base",
+                    "wav2vec2-base-960h",
+                ],
+            },
+            "plot_config": {
+                "y_label": r"Syntax Decoding $R^2$ Score",
+                "x_label": "Layer",
+                "figure_name_suffix": "syntax_full_decoding_by_layer",
+                "figure_size": (6, 3),
+            },
+        },
+        "lexicon_hidden": {
+            "config_filter": {
+                "target_variable": "word_embedding",
+                "x_filter_pattern": "hidden_state_L",
+                "target_models": [
+                    "bert-base-uncased",
+                    "wav2vec2-base",
+                    "wav2vec2-base-960h",
+                ],
+            },
+            "plot_config": {
+                "y_label": r"Lexicon Decoding $R^2$ Score",
+                "x_label": "Layer",
+                "figure_name_suffix": "lexicon_decoding_by_layer",
+                "figure_size": (6, 3),
             },
         },
     }

@@ -31,13 +31,13 @@ CONFIG_NAME_RENAME: dict = {
     "ChapterID-OH": r"$\mathit{Full} \setminus\mathit{Chapter}$",
     "SpeakerID-OH": r"$\mathit{Full} \setminus \mathit{Speaker}$",
     "word_embedding": r"$\mathit{Full} \setminus \mathit{Lexicon}$",
-    "ppg_feature": r"$\mathit{Full} \setminus \mathit{Phone}$",
+    "ppg_feature": r"$\mathit{Full} \setminus \mathit{Phonetics}$",
     "syntax_feature": r"$\mathit{Full} \setminus \mathit{Syntax}$",
     "syntax_feature+word_embedding": r"$\mathit{Full} \setminus \mathit{Syntax} \setminus \mathit{Lexicon}$",
-    "ppg_feature+eGeMAPSv02": r"$\mathit{Full} \setminus \mathit{Phone} \setminus \mathit{Acoustics}$",
-    "ppg_feature+SpeakerID-OH": r"$\mathit{Full} \setminus \mathit{Phone} \setminus \mathit{Speaker}$",
+    "ppg_feature+eGeMAPSv02": r"$\mathit{Full} \setminus \mathit{Phonetics} \setminus \mathit{Acoustics}$",
+    "ppg_feature+SpeakerID-OH": r"$\mathit{Full} \setminus \mathit{Phonetics} \setminus \mathit{Speaker}$",
     "SpeakerID-OH+eGeMAPSv02": r"$\mathit{Full} \setminus \mathit{Acoustics} \setminus \mathit{Speaker}$",
-    "SpeakerID-OH+eGeMAPSv02+ppg_feature": r"$\mathit{Full} \setminus \mathit{Acoustics} \setminus \mathit{Phone} \setminus \mathit{Speaker}$",
+    "SpeakerID-OH+eGeMAPSv02+ppg_feature": r"$\mathit{Full} \setminus \mathit{Acoustics} \setminus \mathit{Phonetics} \setminus \mathit{Speaker}$",
 }
 
 ALLFEATURE_NAME = CONFIG_NAME_RENAME.get("AllFeatures", "AllFeatures")
@@ -180,6 +180,12 @@ PLOT_COLOR_MAPPING: dict = {
     "Sum of Individual Effects": "#76B7B2",
 }
 
+Y_COL_NAME_MAPPING = {
+    "test_score": r"HRS ($R^2$) Score",
+    "unexplained_variance": r"Unexplained Variance (1 - $R^2$)",
+    "departure_from_topline": r"Departure from Topline ($R^2$ difference)",
+}
+
 PLOTTING_CONFIGS: dict[str, dict] = {
     "syntax_lexical": {
         "target_configs": [
@@ -191,6 +197,7 @@ PLOTTING_CONFIGS: dict[str, dict] = {
             "bert-base-uncased",
             "wav2vec2-base",
         ],
+        "y_col": "unexplained_variance",
     },
     "syntax_lexical_2": {
         "target_configs": [
@@ -202,6 +209,7 @@ PLOTTING_CONFIGS: dict[str, dict] = {
             "wav2vec2-base",
             "wav2vec2-base-960h",
         ],
+        "y_col": "unexplained_variance",
     },
     "acoustics_speaker_id": {
         "target_configs": [
@@ -213,6 +221,7 @@ PLOTTING_CONFIGS: dict[str, dict] = {
             "wav2vec2-base",
             "wav2vec2-ls100-sid",
         ],
+        "y_col": "unexplained_variance",
     },
     "phonetic_speaker_id": {
         "target_configs": [
@@ -224,6 +233,7 @@ PLOTTING_CONFIGS: dict[str, dict] = {
             "wav2vec2-base",
             "wav2vec2-ls100-sid",
         ],
+        "y_col": "unexplained_variance",
     },
     "acoustics_speaker_id_2": {
         "target_configs": [
@@ -235,6 +245,7 @@ PLOTTING_CONFIGS: dict[str, dict] = {
             "wav2vec2-base",
             "wav2vec2-base-960h",
         ],
+        "y_col": "unexplained_variance",
     },
     "phonetic_speaker_id_2": {
         "target_configs": [
@@ -246,6 +257,7 @@ PLOTTING_CONFIGS: dict[str, dict] = {
             "wav2vec2-base",
             "wav2vec2-base-960h",
         ],
+        "y_col": "unexplained_variance",
     },
     "all_models_syntax_lexical": {
         "target_configs": [
@@ -450,6 +462,26 @@ def _read_results_impl(
     topline_score_per_model_per_experiment = all_results_df[
         all_results_df["config_name"] == ALLFEATURE_NAME
     ]
+    # Calculate departure from topline for each model, config_name, layer, and experiment
+    all_results_df["departure_from_topline"] = all_results_df.apply(
+        lambda row: row["test_score"]
+        - topline_score_per_model_per_experiment[
+            (topline_score_per_model_per_experiment["modelname"] == row["modelname"])
+            & (
+                topline_score_per_model_per_experiment["experiment"]
+                == row["experiment"]
+            )
+        ]["test_score"].values[0]
+        if not topline_score_per_model_per_experiment[
+            (topline_score_per_model_per_experiment["modelname"] == row["modelname"])
+            & (
+                topline_score_per_model_per_experiment["experiment"]
+                == row["experiment"]
+            )
+        ].empty
+        else np.nan,
+        axis=1,
+    )
 
     all_results_df["plot_config_name"] = all_results_df["config_name"].map(
         lambda x: CONFIG_NAME_RENAME.get(x, x)
@@ -1422,7 +1454,7 @@ def plot_main_figures(
 
         p += p9.labs(
             x="Layer (From bottom to top)",
-            y=r"HRS ($R^2$) Score",
+            y=Y_COL_NAME_MAPPING.get(y_col, y_col),
             color="Feature Group",
             shape="Feature Group",
             linetype="Feature Group",
@@ -1449,6 +1481,7 @@ def plot_main_figures(
 def plot_focus_random_seed(
     random_seed_results_df: pd.DataFrame,
     focus: str = "syntax_lexical",
+    y_col: str = "test_score",
     show_plot: bool = False,
     print_ttest: bool = False,
     librispeech_split: str = "train-clean-100",
@@ -1523,16 +1556,12 @@ def plot_focus_random_seed(
     # Compute the mean and std of the test_score for each config_name and layer across different random seeds
     subset_results_df_mean = (
         subset_results_df.groupby(mean_group_cols, observed=True)
-        .agg(
-            test_score_mean=("test_score", "mean"), test_score_std=("test_score", "std")
-        )
+        .agg(test_score_mean=(y_col, "mean"), test_score_std=(y_col, "std"))
         .reset_index()
     )
     subset_results_comparison_df_mean = (
         subset_results_comparison_df.groupby(mean_group_cols, observed=True)
-        .agg(
-            test_score_mean=("test_score", "mean"), test_score_std=("test_score", "std")
-        )
+        .agg(test_score_mean=(y_col, "mean"), test_score_std=(y_col, "std"))
         .reset_index()
     )
     line_group_col = (
@@ -1562,7 +1591,7 @@ def plot_focus_random_seed(
         )
 
     subset_results_comparison_df_mean = subset_results_comparison_df_mean.dropna(
-        subset=["test_score_mean"]
+        subset=[f"{y_col}_mean"]
     )
 
     subset_results_comparison_df_mean["plot_config_name"] = pd.Categorical(
@@ -1576,7 +1605,7 @@ def plot_focus_random_seed(
     logger.info(
         "\n%s",
         subset_results_df_mean.groupby(["config_name"])[
-            ["test_score_mean", "test_score_std"]
+            [f"{y_col}_mean", f"{y_col}_std"]
         ]
         .mean()
         .dropna(),
@@ -1584,7 +1613,7 @@ def plot_focus_random_seed(
     logger.info(
         "\n%s",
         subset_results_comparison_df_mean.groupby(["config_name"])[
-            ["test_score_mean", "test_score_std"]
+            [f"{y_col}_mean", f"{y_col}_std"]
         ]
         .mean()
         .dropna(),
@@ -1594,20 +1623,20 @@ def plot_focus_random_seed(
     num_random_seeds = random_seed_results_df["random_seed"].nunique()
     logger.info("Number of random seeds: %s", num_random_seeds)
     subset_results_df_mean["ci_lower"] = subset_results_df_mean[
-        "test_score_mean"
-    ] - 1.96 * subset_results_df_mean["test_score_std"] / np.sqrt(num_random_seeds)
+        f"{y_col}_mean"
+    ] - 1.96 * subset_results_df_mean[f"{y_col}_std"] / np.sqrt(num_random_seeds)
     subset_results_df_mean["ci_upper"] = subset_results_df_mean[
-        "test_score_mean"
-    ] + 1.96 * subset_results_df_mean["test_score_std"] / np.sqrt(num_random_seeds)
+        f"{y_col}_mean"
+    ] + 1.96 * subset_results_df_mean[f"{y_col}_std"] / np.sqrt(num_random_seeds)
 
     subset_results_comparison_df_mean["ci_lower"] = subset_results_comparison_df_mean[
-        "test_score_mean"
-    ] - 1.96 * subset_results_comparison_df_mean["test_score_std"] / np.sqrt(
+        f"{y_col}_mean"
+    ] - 1.96 * subset_results_comparison_df_mean[f"{y_col}_std"] / np.sqrt(
         num_random_seeds
     )
     subset_results_comparison_df_mean["ci_upper"] = subset_results_comparison_df_mean[
-        "test_score_mean"
-    ] + 1.96 * subset_results_comparison_df_mean["test_score_std"] / np.sqrt(
+        f"{y_col}_mean"
+    ] + 1.96 * subset_results_comparison_df_mean[f"{y_col}_std"] / np.sqrt(
         num_random_seeds
     )
 
@@ -1664,7 +1693,7 @@ def plot_focus_random_seed(
             data=plot_df,
             mapping=p9.aes(
                 x="layer",
-                y="test_score_mean",
+                y=f"{y_col}_mean",
                 color="plot_config_name",
                 group="line_group",
                 linetype="plot_config_name",
@@ -1674,7 +1703,7 @@ def plot_focus_random_seed(
             data=plot_df,
             mapping=p9.aes(
                 x="layer",
-                y="test_score_mean",
+                y=f"{y_col}_mean",
                 color="plot_config_name",
                 shape="plot_config_name",
             ),
@@ -1707,7 +1736,7 @@ def plot_focus_random_seed(
         )
         + p9.labs(
             x="Layer (From bottom to top)",
-            y=r"HRS ($R^2$) Score",
+            y=Y_COL_NAME_MAPPING.get(y_col, y_col),
         )
         + p9.scale_color_manual(values=PLOT_COLOR_MAPPING)
         + p9.scale_linetype_manual(values=linetype_mapping)
@@ -1740,6 +1769,7 @@ def summarize_random_seed_line_differences(
     random_seed_results_df: pd.DataFrame,
     focus_lookup: dict,
     output_dir: str = FIGURES_ROOT,
+    y_col: str = "test_score",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Summarize pairwise line differences across random seeds and layers.
 
@@ -1879,7 +1909,7 @@ def summarize_random_seed_line_differences(
         pivot_df = subset.pivot_table(
             index=pivot_index_cols,
             columns="plot_config_name",
-            values="test_score",
+            values=y_col,
             aggfunc="mean",
         )
 
@@ -1943,6 +1973,7 @@ def summarize_random_seed_line_differences(
                     {
                         "focus": focus,
                         "pair": pair_name,
+                        "y_col": y_col,
                         "config_a": cfg_a,
                         "config_b": cfg_b,
                         "joint_config": joint_config,
@@ -1989,6 +2020,7 @@ def summarize_random_seed_line_differences(
                         {
                             "focus": focus,
                             "pair": pair_name,
+                            "y_col": y_col,
                             "config_a": cfg_a,
                             "config_b": cfg_b,
                             "joint_config": joint_config,
@@ -2045,6 +2077,7 @@ def summarize_random_seed_line_differences(
                 interaction_rows[
                     [
                         "pair",
+                        "y_col",
                         "mean_delta",
                         "ci_low",
                         "ci_high",
@@ -2062,6 +2095,7 @@ def summarize_random_seed_line_differences(
             .head(3)[
                 [
                     "pair",
+                    "y_col",
                     "mean_delta",
                     "ci_low",
                     "ci_high",

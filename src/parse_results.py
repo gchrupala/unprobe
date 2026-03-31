@@ -129,6 +129,27 @@ MODELNAME_RENAME: dict[str, str] = {
 
 MODELNAME_RENAME_BACKWARD: dict[str, str] = {v: k for k, v in MODELNAME_RENAME.items()}
 
+# Fixed color mapping for model names to ensure consistency across plots
+# Uses the display names from MODELNAME_RENAME
+# IBM Design Library colorblind-safe palette
+# Primary focus models (wav2vec2-sid, wav2vec2-base, wav2vec2-960h, bert-base)
+# use the most distinct colors
+MODEL_COLOR_MAPPING: dict[str, str] = {
+    # Primary focus models - most distinct colors
+    "wav2vec2 (base)": "#648FFF",  # Blue
+    "wav2vec2 (ASR)": "#DC267F",  # Magenta
+    "wav2vec2 (SID)": "#FE6100",  # Orange
+    "BERT (base)": "#009E73",  # Teal
+    # Secondary models
+    "wav2vec2 (large)": "#785EF0",  # Purple
+    "HuBERT (base)": "#FFB000",  # Gold
+    "HuBERT (large)": "#E69F00",  # Amber
+    "WavLM (base)": "#56B4E9",  # Sky blue
+    "wav2vec2 (SID-superb)": "#CC79A7",  # Pink
+    "RoBERTa (base)": "#D55E00",  # Vermillion
+    "ModernBERT (base)": "#0072B2",  # Dark blue
+}
+
 SYNTAX_COMPONENT_RENAME: dict[str, str] = {
     "syntax_POS_OH": r"\setminus \mathit{Syntax-POS}",
     "syntax_Dependency_Label_OH": r"\setminus \mathit{Syntax-Dependency}",
@@ -464,22 +485,30 @@ def _read_results_impl(
     ]
     # Calculate departure from topline for each model, config_name, layer, and experiment
     all_results_df["departure_from_topline"] = all_results_df.apply(
-        lambda row: row["test_score"]
-        - topline_score_per_model_per_experiment[
-            (topline_score_per_model_per_experiment["modelname"] == row["modelname"])
-            & (
-                topline_score_per_model_per_experiment["experiment"]
-                == row["experiment"]
-            )
-        ]["test_score"].values[0]
-        if not topline_score_per_model_per_experiment[
-            (topline_score_per_model_per_experiment["modelname"] == row["modelname"])
-            & (
-                topline_score_per_model_per_experiment["experiment"]
-                == row["experiment"]
-            )
-        ].empty
-        else np.nan,
+        lambda row: (
+            row["test_score"]
+            - topline_score_per_model_per_experiment[
+                (
+                    topline_score_per_model_per_experiment["modelname"]
+                    == row["modelname"]
+                )
+                & (
+                    topline_score_per_model_per_experiment["experiment"]
+                    == row["experiment"]
+                )
+            ]["test_score"].values[0]
+            if not topline_score_per_model_per_experiment[
+                (
+                    topline_score_per_model_per_experiment["modelname"]
+                    == row["modelname"]
+                )
+                & (
+                    topline_score_per_model_per_experiment["experiment"]
+                    == row["experiment"]
+                )
+            ].empty
+            else np.nan
+        ),
         axis=1,
     )
 
@@ -728,6 +757,10 @@ def plot_decoding_by_layer(
     librispeech_split: str = "train-clean-100",
     plot_config: dict | None = None,
     config_filter: dict | None = None,
+    use_facet_grid: bool = False,
+    facet_row: str | None = None,
+    facet_col: str | None = None,
+    baseline_target_variables: dict[str, str] | None = None,
 ) -> None:
     if decoding_df.empty:
         return
@@ -774,16 +807,6 @@ def plot_decoding_by_layer(
     )
     decoding_df["is_baseline"] = False
 
-    # If there are multiple "config_names"
-    if len(decoding_df["config_name"].unique()) > 1:
-        color_mapping = None
-    else:
-        # Keep all colors black
-        color_mapping = {
-            config_name: "#000000"
-            for config_name in decoding_df["config_name"].unique()
-        }
-
     include_baseline = (
         plot_config.get("include_baseline", False) if plot_config else False
     )
@@ -799,23 +822,45 @@ def plot_decoding_by_layer(
         ordered=True,
     )
 
+    # Determine color variable and faceting based on use_facet_grid
+    if use_facet_grid:
+        # Models as colors, facet_grid layout
+        color_var = "modelname"
+        shape_var = "modelname"
+        # Build facet formula
+        row_formula = facet_row if facet_row else "."
+        col_formula = facet_col if facet_col else "."
+        facet_formula = f"{row_formula} ~ {col_formula}"
+        # Use fixed model color mapping for consistency
+        color_mapping = MODEL_COLOR_MAPPING
+    else:
+        # Original behavior: models as facets, config_name as color
+        color_var = "config_name"
+        shape_var = "config_name"
+        # If there are multiple "config_names"
+        if len(decoding_df["config_name"].unique()) > 1:
+            color_mapping = None
+        else:
+            # Keep all colors black
+            color_mapping = {
+                config_name: "#000000"
+                for config_name in decoding_df["config_name"].unique()
+            }
+
     figure = (
         p9.ggplot(decoding_df)
         + p9.geom_line(
-            p9.aes(
-                x="layer", y="test_score", color="config_name", linetype="is_baseline"
-            )
+            p9.aes(x="layer", y="test_score", color=color_var, linetype="is_baseline")
         )
         + p9.geom_point(
             p9.aes(
                 x="layer",
                 y="test_score",
-                color="config_name",
-                shape="config_name",
+                color=color_var,
+                shape=shape_var,
             ),
             size=0.8,
         )
-        + p9.facet_wrap("modelname")
         + p9.scale_x_continuous(
             breaks=np.arange(
                 decoding_df["layer"].min(), decoding_df["layer"].max() + 1, 6
@@ -824,7 +869,7 @@ def plot_decoding_by_layer(
         + p9.theme_minimal()
         + p9.theme(
             figure_size=figure_size,
-            dpi=200,
+            dpi=300,
             legend_position="bottom",
             legend_justification="center",
             legend_title=p9.element_blank(),
@@ -834,75 +879,147 @@ def plot_decoding_by_layer(
             y=y_label,
         )
     )
+
+    # Add faceting based on mode
+    if use_facet_grid:
+        figure += p9.facet_grid(facet_formula)
+    else:
+        figure += p9.facet_wrap("modelname")
+
     if color_mapping is not None:
         figure += p9.scale_color_manual(values=color_mapping)
-    if len(decoding_df["config_name"].unique()) == 1:
+
+    # Hide legend if only one unique value for color variable
+    unique_color_values = decoding_df[color_var].nunique()
+    if unique_color_values == 1:
         figure += p9.theme(legend_position="none")
 
     if include_baseline:
-        target_variable = _safe_str(
-            config_filter.get("target_variable", "SpeakerID")
-            if config_filter
-            else "SpeakerID",
-            "SpeakerID",
-        )
         exact_match = (
             plot_config.get("baseline_exact_match", False) if plot_config else False
         )
         plot_models = list(decoding_df["modelname"].unique())
         # Revert plot_models back to their original modelnames for baseline lookup
         original_modelnames = [MODELNAME_RENAME_BACKWARD.get(x, x) for x in plot_models]
+
+        # Determine if we need to handle multiple decoding types
+        has_multiple_decoding_types = (
+            use_facet_grid
+            and "decoding_type" in decoding_df.columns
+            and baseline_target_variables is not None
+        )
+
         baselines_per_model = []
         for model in original_modelnames:
-            model_baseline = read_classification_baselines(
-                librispeech_split=librispeech_split,
-                target_variable=target_variable,
-                exact_match=exact_match,
-                modelname=model,
-            )
-            plot_model = MODELNAME_RENAME.get(
-                model, model
-            )  # Map back to plot model name for consistency with decoding_df
-            model_baseline["modelname"] = plot_model
-            model_baseline["config_name"] = model_baseline["target_variable"].map(
-                lambda x: x.replace("syntax_", "").replace("OH", "").replace("_", " ")
-            )
-            # duplicate model_baseline rows for each layer in decoding_df for this model
+            plot_model = MODELNAME_RENAME.get(model, model)
             model_layers = decoding_df[decoding_df["modelname"] == plot_model][
                 "layer"
             ].unique()
-            model_baseline = model_baseline.loc[
-                model_baseline.index.repeat(len(model_layers))
-            ].copy()
-            model_baseline["layer"] = np.tile(
-                model_layers, len(model_baseline) // len(model_layers)
+
+            if has_multiple_decoding_types:
+                # Handle multiple decoding types with different target variables
+                assert baseline_target_variables is not None  # Already checked above
+                for decoding_type, target_var in baseline_target_variables.items():
+                    model_baseline = read_classification_baselines(
+                        librispeech_split=librispeech_split,
+                        target_variable=target_var,
+                        exact_match=exact_match,
+                        modelname=model,
+                    )
+                    if model_baseline.empty:
+                        logger.warning(
+                            "No baseline found for target variable '%s' and model '%s'.",
+                            target_var,
+                            model,
+                        )
+                        continue
+                    model_baseline["modelname"] = plot_model
+                    model_baseline["config_name"] = model_baseline[
+                        "target_variable"
+                    ].map(
+                        lambda x: (
+                            x.replace("syntax_", "").replace("OH", "").replace("_", " ")
+                        )
+                    )
+                    # Duplicate baseline rows for each layer
+                    model_baseline = model_baseline.loc[
+                        model_baseline.index.repeat(len(model_layers))
+                    ].copy()
+                    model_baseline["layer"] = np.tile(
+                        model_layers, len(model_baseline) // len(model_layers)
+                    )
+                    model_baseline["is_baseline"] = True
+                    model_baseline["decoding_type"] = decoding_type
+                    baselines_per_model.append(model_baseline)
+            else:
+                # Original single target variable handling
+                target_variable = _safe_str(
+                    config_filter.get("target_variable", "SpeakerID")
+                    if config_filter
+                    else "SpeakerID",
+                    "SpeakerID",
+                )
+                model_baseline = read_classification_baselines(
+                    librispeech_split=librispeech_split,
+                    target_variable=target_variable,
+                    exact_match=exact_match,
+                    modelname=model,
+                )
+                if model_baseline.empty:
+                    logger.warning(
+                        "No baseline found for target variable '%s' and model '%s'.",
+                        target_variable,
+                        model,
+                    )
+                    continue
+                model_baseline["modelname"] = plot_model
+                model_baseline["config_name"] = model_baseline["target_variable"].map(
+                    lambda x: (
+                        x.replace("syntax_", "").replace("OH", "").replace("_", " ")
+                    )
+                )
+                # Duplicate baseline rows for each layer
+                model_baseline = model_baseline.loc[
+                    model_baseline.index.repeat(len(model_layers))
+                ].copy()
+                model_baseline["layer"] = np.tile(
+                    model_layers, len(model_baseline) // len(model_layers)
+                )
+                model_baseline["is_baseline"] = True
+                # Propagate decoding_type column if present
+                if "decoding_type" in decoding_df.columns:
+                    decoding_types = decoding_df[
+                        decoding_df["modelname"] == plot_model
+                    ]["decoding_type"].unique()
+                    if len(decoding_types) > 0:
+                        model_baseline["decoding_type"] = decoding_types[0]
+                baselines_per_model.append(model_baseline)
+
+        if baselines_per_model:
+            model_baseline = pd.concat(baselines_per_model, ignore_index=True)
+            # Fix the order of the facets to be the same as the order of the models in MODELNAME_ORDER
+            model_baseline["modelname"] = pd.Categorical(
+                model_baseline["modelname"],
+                categories=[
+                    MODELNAME_RENAME.get(m, m)
+                    for m in MODELNAME_ORDER
+                    if MODELNAME_RENAME.get(m, m)
+                    in model_baseline["modelname"].unique()
+                ],
+                ordered=True,
             )
-            model_baseline["is_baseline"] = True
-            baselines_per_model.append(model_baseline)
-        model_baseline = pd.concat(baselines_per_model, ignore_index=True)
-        if model_baseline.empty:
-            raise ValueError(
-                f"No baseline found for target variable '{target_variable}' with exact_match={exact_match} in split '{librispeech_split}'."
+            # Use color_var for baseline as well to match the main plot
+            figure += p9.geom_line(
+                data=model_baseline,
+                mapping=p9.aes(
+                    x="layer",
+                    y="baseline_score",
+                    color=color_var,
+                    linetype="is_baseline",
+                ),
             )
-        # Fix the order of the facets to be the same as the order of the models in MODELNAME_ORDER
-        model_baseline["modelname"] = pd.Categorical(
-            model_baseline["modelname"],
-            categories=[
-                MODELNAME_RENAME.get(m, m)
-                for m in MODELNAME_ORDER
-                if MODELNAME_RENAME.get(m, m) in model_baseline["modelname"].unique()
-            ],
-            ordered=True,
-        )
-        figure += p9.geom_line(
-            data=model_baseline,
-            mapping=p9.aes(
-                x="layer",
-                y="baseline_score",
-                color="config_name",
-                linetype="is_baseline",
-            ),
-        )
+        else:
+            logger.warning("No baselines found for any model. Skipping baseline lines.")
     figure += p9.scale_linetype_manual(values={True: "dashed", False: "solid"})
     # remove linetype from legend
     figure += p9.guides(linetype="none")
@@ -2246,6 +2363,132 @@ def main():
             plot_config=plot_config,
             config_filter=config_filter,
         )
+
+    # Combined Syntax + Lexicon decoding plot with facet_grid
+    # Read syntax decoding results
+    syntax_config_filter = {
+        "target_variable": "syntax_feature",
+        "x_filter_pattern": "hidden_state_L",
+        "target_models": [
+            "bert-base-uncased",
+            "wav2vec2-base",
+            "wav2vec2-base-960h",
+        ],
+    }
+    syntax_df = read_decoding_results(
+        librispeech_split,
+        config_filter=syntax_config_filter,
+    )
+    if not syntax_df.empty:
+        syntax_df["decoding_type"] = "Syntax Decoding Probe"
+
+    # Read lexicon decoding results
+    lexicon_config_filter = {
+        "target_variable": "word_embedding",
+        "x_filter_pattern": "hidden_state_L",
+        "target_models": [
+            "bert-base-uncased",
+            "wav2vec2-base",
+            "wav2vec2-base-960h",
+        ],
+    }
+    lexicon_df = read_decoding_results(
+        librispeech_split,
+        config_filter=lexicon_config_filter,
+    )
+    if not lexicon_df.empty:
+        lexicon_df["decoding_type"] = "Lexicon Decoding Probe"
+
+    # Combine and plot if both have data
+    if not syntax_df.empty and not lexicon_df.empty:
+        combined_df = pd.concat([syntax_df, lexicon_df], ignore_index=True)
+        combined_plot_config = {
+            "y_label": r"$R^2$ Score",
+            "x_label": "Layer",
+            "figure_name_suffix": "syntax_lexicon_combined_decoding_by_layer",
+            "figure_size": (6, 3),
+        }
+        plot_decoding_by_layer(
+            combined_df,
+            show_plot=args.show_plots,
+            librispeech_split=librispeech_split,
+            plot_config=combined_plot_config,
+            config_filter=None,
+            use_facet_grid=True,
+            # facet_row="config_name",
+            facet_col="decoding_type",
+        )
+    elif syntax_df.empty:
+        logger.warning("No syntax decoding results found for combined plot.")
+    elif lexicon_df.empty:
+        logger.warning("No lexicon decoding results found for combined plot.")
+
+    # Combined Speaker + Phonetics decoding plot with facet_grid
+    # Read speaker decoding results
+    speaker_config_filter = {
+        "target_variable": "SpeakerID",
+        "x_filter_pattern": "hidden_state_L",
+        "target_models": [
+            "wav2vec2-base",
+            "wav2vec2-base-960h",
+            "wav2vec2-ls100-sid",
+        ],
+    }
+    speaker_df = read_decoding_results(
+        librispeech_split,
+        config_filter=speaker_config_filter,
+    )
+    if not speaker_df.empty:
+        speaker_df["decoding_type"] = "Speaker Decoding Probe"
+
+    # Read phonetics decoding results
+    phonetics_config_filter = {
+        "target_variable": "PhoneID",
+        "x_filter_pattern": "hidden_state_L",
+        "target_models": [
+            "wav2vec2-base",
+            "wav2vec2-base-960h",
+            "wav2vec2-ls100-sid",
+        ],
+    }
+    phonetics_df = read_decoding_results(
+        librispeech_split,
+        config_filter=phonetics_config_filter,
+    )
+    if not phonetics_df.empty:
+        phonetics_df["decoding_type"] = "Phonetics Decoding Probe"
+
+    # Combine and plot if both have data
+    if not speaker_df.empty and not phonetics_df.empty:
+        combined_speaker_phonetics_df = pd.concat(
+            [speaker_df, phonetics_df], ignore_index=True
+        )
+        combined_speaker_phonetics_plot_config = {
+            "y_label": "Accuracy",
+            "x_label": "Layer",
+            "figure_name_suffix": "speaker_phonetics_combined_decoding_by_layer",
+            "figure_size": (6, 3),
+            "include_baseline": True,
+        }
+        # Map decoding_type to target_variable for baseline lookup
+        speaker_phonetics_baseline_targets = {
+            "Speaker Decoding Probe": "SpeakerID",
+            "Phonetics Decoding Probe": "PhoneID",
+        }
+        plot_decoding_by_layer(
+            combined_speaker_phonetics_df,
+            show_plot=args.show_plots,
+            librispeech_split=librispeech_split,
+            plot_config=combined_speaker_phonetics_plot_config,
+            config_filter=None,
+            use_facet_grid=True,
+            facet_col="decoding_type",
+            baseline_target_variables=speaker_phonetics_baseline_targets,
+        )
+    elif speaker_df.empty:
+        logger.warning("No speaker decoding results found for combined plot.")
+    elif phonetics_df.empty:
+        logger.warning("No phonetics decoding results found for combined plot.")
 
     if librispeech_split != "train-clean-100":
         logger.info(

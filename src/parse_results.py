@@ -80,15 +80,18 @@ def _read_results_impl(
             target_models = [
                 "facebook/wav2vec2-base",
                 "facebook/wav2vec2-base-960h",
-                "superb/wav2vec2-base-superb-sid",
                 "facebook/wav2vec2-large",
+                "facebook/wav2vec2-large-960h",
+                "facebook/wav2vec2-large-xlsr-53",
                 "facebook/hubert-base-ls960",
                 "facebook/hubert-large-ll60k",
+                "facebook/hubert-large-ls960-ft",
                 "microsoft/wavlm-base",
+                "superb/wav2vec2-base-superb-sid",
+                "techsword/wav2vec2-ls100-sid",
                 "FacebookAI/roberta-base",
                 "google-bert/bert-base-uncased",
                 "answerdotai/ModernBERT-base",
-                "techsword/wav2vec2-ls100-sid",
             ]
         else:
             target_models = modelnames
@@ -470,6 +473,9 @@ def plot_decoding_by_layer(
     decoding_df["config_name"] = decoding_df["config_name"].map(
         lambda x: x.replace("_", " ")
     )
+    decoding_df["config_name"] = decoding_df["config_name"].map(
+        lambda x: x.replace("feature", "Syntax-Vector")
+    )
     decoding_df["is_baseline"] = False
 
     include_baseline = (
@@ -543,6 +549,8 @@ def plot_decoding_by_layer(
             x=x_label,
             y=y_label,
         )
+        # Make the legend text bigger for better readability
+        + p9.theme(legend_text=p9.element_text(size=8))
     )
 
     # Add faceting based on mode
@@ -1248,6 +1256,8 @@ def plot_main_figures(
             dpi=300,
             legend_title=p9.element_blank(),
         )
+        # Make the legend text bigger for better readability
+        p += p9.theme(legend_text=p9.element_text(size=8))
         if show_plots:
             p.show()
 
@@ -1520,6 +1530,8 @@ def plot_focus_random_seed(
             x="Layer (From bottom to top)",
             y=Y_COL_NAME_MAPPING.get(y_col, y_col),
         )
+        # make the legend text bigger for better readability
+        + p9.theme(legend_text=p9.element_text(size=8))
         + p9.scale_color_manual(values=PLOT_COLOR_MAPPING)
         + p9.scale_linetype_manual(values=linetype_mapping)
         + p9.guides(

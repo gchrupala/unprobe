@@ -79,13 +79,16 @@ MODELNAME_ORDER: list = [
     "wav2vec2-base",
     "wav2vec2-base-960h",
     "wav2vec2-large",
+    "wav2vec2-large-960h",
+    "wav2vec2-large-xlsr-53",
     "hubert-base-ls960",
     "hubert-large-ll60k",
+    "hubert-large-ls960-ft",
     "wavlm-base",
     "wav2vec2-base-superb-sid",
     "wav2vec2-ls100-sid",
-    "bert-base-uncased",
     "roberta-base",
+    "bert-base-uncased",
     "ModernBERT-base",
 ]
 
@@ -93,8 +96,10 @@ MODELNAME_RENAME: dict[str, str] = {
     "wav2vec2-base": "wav2vec2 (base)",
     "wav2vec2-base-960h": "wav2vec2 (ASR)",
     "wav2vec2-large": "wav2vec2 (large)",
+    "wav2vec2-large-960h": "wav2vec2 (large-ASR)",
     "hubert-base-ls960": "HuBERT (base)",
     "hubert-large-ll60k": "HuBERT (large)",
+    "hubert-large-ls960-ft": "HuBERT (large-ASR)",
     "wavlm-base": "WavLM (base)",
     "roberta-base": "RoBERTa (base)",
     "bert-base-uncased": "BERT (base)",
@@ -276,8 +281,13 @@ PLOTTING_CONFIGS: dict[str, dict] = {
             SYNTAX_LEXICON_NAME,
         ],
         "target_models": None,
-        "exclude_models": ["wav2vec2-ls100-sid"],
+        "exclude_models": [
+            "wav2vec2-ls100-sid",
+            "wav2vec2-large-xlsr-53",
+            "wav2vec2-base-superb-sid",
+        ],
         "x_col": "normalized_layer",
+        "y_col": "unexplained_variance",
         "figure_size": (8, 8),
     },
     "all_models_acoustic_speaker": {
@@ -286,10 +296,21 @@ PLOTTING_CONFIGS: dict[str, dict] = {
             SPEAKERID_NAME,
             SPEAKERID_ACOUSTIC_NAME,
         ],
-        "target_models": None,
+        "target_models": [
+            "wav2vec2-base",
+            "wav2vec2-base-960h",
+            "wav2vec2-large",
+            "wav2vec2-large-960h",
+            "hubert-base-ls960",
+            "hubert-large-ll60k",
+            "hubert-large-ls960-ft",
+            "wavlm-base",
+            "wav2vec2-base-superb-sid",
+        ],
         "exclude_models": ["wav2vec2-ls100-sid"],
         "x_col": "normalized_layer",
-        "figure_size": (8, 8),
+        "y_col": "unexplained_variance",
+        "figure_size": (8, 6),
     },
     "all_models_phonetic_speaker": {
         "target_configs": [
@@ -297,10 +318,21 @@ PLOTTING_CONFIGS: dict[str, dict] = {
             SPEAKERID_NAME,
             PHONETIC_SPEAKERID_NAME,
         ],
-        "target_models": None,
+        "target_models": [
+            "wav2vec2-base",
+            "wav2vec2-base-960h",
+            "wav2vec2-large",
+            "wav2vec2-large-960h",
+            "hubert-base-ls960",
+            "hubert-large-ll60k",
+            "hubert-large-ls960-ft",
+            "wavlm-base",
+            "wav2vec2-base-superb-sid",
+        ],
         "exclude_models": ["wav2vec2-ls100-sid"],
         "x_col": "normalized_layer",
-        "figure_size": (8, 8),
+        "y_col": "unexplained_variance",
+        "figure_size": (8, 6),
     },
     "syntax_lexical_wav2vec2": {
         "target_configs": [
@@ -361,6 +393,28 @@ PLOTTING_CONFIGS: dict[str, dict] = {
         "facet": "plot_config_name",
         "color_mapping": None,
     },
+    "syntax_lexicon_decomposition": {
+        "target_configs": [
+            LEXICON_NAME,
+            # "—Lexicon —Syntax POS",
+            # "—Lexicon —Syntax Dependency",
+            # "—Lexicon —Syntax Tree Depth",
+            # "—Lexicon —Syntax Position",
+            # "—Lexicon —Syntax Total Tree Depth",
+            # "—Lexicon —Syntax Total Word Count",
+            SYNTAX_LEXICON_NAME,
+        ]
+        + [
+            _rename_syntax_component_config("word_embedding+" + x)
+            for x in SYNTAX_COMPONENT_RENAME.keys()
+        ],
+        "target_models": ["wav2vec2-base", "wav2vec2-base-960h", "bert-base-uncased"],
+        "x_col": "layer",
+        "y_col": "unexplained_variance",
+        "figure_size": (6, 4),
+        "legend_n_row": 5,
+        "color_mapping": None,
+    },
 }
 
 # Decoding plot configurations
@@ -416,7 +470,7 @@ DECODING_PLOT_CONFIGS: dict[str, dict] = {
             ],
         },
         "plot_config": {
-            "y_label": "Decomposed Syntax Decoding Metrics",
+            "y_label": "Syntax Decoding Metric",
             "x_label": "Layer",
             "figure_name_suffix": "syntax_decomposition_decoding_by_layer",
             "figure_size": (6, 3),

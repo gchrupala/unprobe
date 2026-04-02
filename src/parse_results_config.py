@@ -131,7 +131,7 @@ MODEL_COLOR_MAPPING: dict[str, str] = {
     "ModernBERT (base)": "#0072B2",  # Dark blue
 }
 
-# Syntax component renaming
+# Syntax component renaming (LaTeX format - kept for backward compatibility)
 SYNTAX_COMPONENT_RENAME: dict[str, str] = {
     "syntax_POS_OH": r"\setminus \mathit{Syntax-POS}",
     "syntax_Dependency_Label_OH": r"\setminus \mathit{Syntax-Dependency}",
@@ -141,22 +141,90 @@ SYNTAX_COMPONENT_RENAME: dict[str, str] = {
     "syntax_Total_Word_Count": r"\setminus \mathit{Syntax-Total-Word-Count}",
 }
 
+# Plain-text display names for syntax components
+SYNTAX_COMPONENT_DISPLAY_NAMES: dict[str, str] = {
+    "syntax_POS_OH": "POS",
+    "syntax_Dependency_Label_OH": "Dependency Label",
+    "syntax_Tree_Depth": "Tree Depth",
+    "syntax_Word_Position": "Word Position",
+    "syntax_Total_Tree_Depth": "Total Tree Depth",
+    "syntax_Total_Word_Count": "Total Word Count",
+}
 
-def _rename_syntax_component_config(config_name: str) -> str:
-    """Rename syntax component config names to LaTeX format.
+# Set2 color-blind friendly palette for syntax components
+SYNTAX_COMPONENT_COLORS: dict[str, str] = {
+    "syntax_Dependency_Label_OH": "#66c2a5",  # teal
+    "syntax_POS_OH": "#fc8d62",  # orange
+    "syntax_Total_Tree_Depth": "#8da0cb",  # lavender
+    "syntax_Total_Word_Count": "#e78ac3",  # pink
+    "syntax_Tree_Depth": "#a6d854",  # green
+    "syntax_Word_Position": "#ffd92f",  # yellow
+}
+
+# Color mapping for decoding syntax decomposition plots (cleaned config_name keys)
+DECODING_SYNTAX_COLOR_MAPPING: dict[str, str] = {
+    "POS": "#fc8d62",
+    "Dependency Label": "#66c2a5",
+    "Tree Depth": "#a6d854",
+    "Word Position": "#ffd92f",
+    "Total Tree Depth": "#8da0cb",
+    "Total Word Count": "#e78ac3",
+    "Syntax-Vector": "#2F2F2F",  # dark grey for the full syntax feature
+}
+
+
+def _rename_syntax_component_config(
+    config_name: str, include_lexicon: bool = True, plain_text: bool = False
+) -> str:
+    """Rename syntax component config names to plain text format.
 
     Args:
         config_name: The config name to rename (e.g., "word_embedding+syntax_POS_OH")
+        include_lexicon: Whether to include "Lexicon+" prefix
+        plain_text: Whether to return plain text format
 
     Returns:
-        LaTeX-formatted string if matched, otherwise the original config_name
+        Formatted string if matched, otherwise the original config_name
     """
     base_str = r"\mathit{Full} \setminus \mathit{lexicon}"
-    for component, label in SYNTAX_COMPONENT_RENAME.items():
+
+    for component, display in SYNTAX_COMPONENT_DISPLAY_NAMES.items():
         token = f"word_embedding+{component}"
         if config_name == token:
-            return "$" + base_str + " " + label + "$"
+            if plain_text:
+                if include_lexicon:
+                    return f"Lexicon+{display}"
+                else:
+                    return display
+            else:
+                return "$" + base_str + " " + display + "$"
     return config_name
+
+
+# Plain-text labels for decomposition plots (maps LaTeX and raw config names to plain text)
+# Used in encoding decomposition plots
+DECOMPOSITION_PLAIN_TEXT_LABELS: dict[str, str] = {
+    # Lexicon configs (LaTeX → plain text)
+    LEXICON_NAME: "Lexicon removal",
+    SYNTAX_LEXICON_NAME: "Lexicon+Syntax removal",
+}
+# Add component-removal configs (LaTeX → plain text)
+for _comp, _display in SYNTAX_COMPONENT_DISPLAY_NAMES.items():
+    _latex_key = _rename_syntax_component_config(
+        f"word_embedding+{_comp}", include_lexicon=True, plain_text=False
+    )
+    DECOMPOSITION_PLAIN_TEXT_LABELS[_latex_key] = f"{_display}"
+
+# Color mapping for encoding decomposition plots (plain-text keys)
+DECOMPOSITION_COLOR_MAPPING: dict[str, str] = {
+    "Lexicon removal": "#59A14F",  # existing green
+    "Lexicon+Syntax removal": "#2F2F2F",  # existing dark grey
+    # Add syntax component colors
+    **{
+        f"{display}": SYNTAX_COMPONENT_COLORS[comp]
+        for comp, display in SYNTAX_COMPONENT_DISPLAY_NAMES.items()
+    },
+}
 
 
 # Config name ordering (computed from CONFIG_NAME_RENAME)
@@ -391,7 +459,8 @@ PLOTTING_CONFIGS: dict[str, dict] = {
         "figure_size": (8, 8),
         "legend_n_row": 5,
         "facet": "plot_config_name",
-        "color_mapping": None,
+        "color_mapping": DECOMPOSITION_COLOR_MAPPING,
+        "use_plain_text_labels": True,
     },
     "syntax_lexicon_decomposition": {
         "target_configs": [
@@ -413,7 +482,24 @@ PLOTTING_CONFIGS: dict[str, dict] = {
         "y_col": "unexplained_variance",
         "figure_size": (6, 4),
         "legend_n_row": 5,
-        "color_mapping": None,
+        "color_mapping": DECOMPOSITION_COLOR_MAPPING,
+        "use_plain_text_labels": True,
+    },
+    # Combined encoding plot: syntax components as facets, models as colors
+    "syntax_encoding_decomposition_combined": {
+        "target_configs": [
+            _rename_syntax_component_config("word_embedding+" + x)
+            for x in SYNTAX_COMPONENT_RENAME.keys()
+        ],
+        "target_models": ["wav2vec2-base", "wav2vec2-base-960h", "bert-base-uncased"],
+        "x_col": "layer",
+        "y_col": "unexplained_variance",
+        "figure_size": (12, 6),
+        "use_plain_text_labels": True,
+        "use_facet_grid": True,
+        "facet_col": "plot_config_name",
+        "color_var": "modelname",
+        "color_mapping": MODEL_COLOR_MAPPING,
     },
 }
 
@@ -475,6 +561,7 @@ DECODING_PLOT_CONFIGS: dict[str, dict] = {
             "figure_name_suffix": "syntax_decomposition_decoding_by_layer",
             "figure_size": (6, 3),
             "include_baseline": True,
+            "color_mapping": DECODING_SYNTAX_COLOR_MAPPING,
         },
     },
     "syntax_full_hidden": {
@@ -508,6 +595,109 @@ DECODING_PLOT_CONFIGS: dict[str, dict] = {
             "y_label": r"Lexicon Decoding $R^2$ Score",
             "x_label": "Layer",
             "figure_name_suffix": "lexicon_decoding_by_layer",
+            "figure_size": (6, 3),
+        },
+    },
+    # Individual syntax component decoding configs (for combined plot)
+    "syntax_pos_hidden": {
+        "config_filter": {
+            "target_variable": "syntax_POS_OH",
+            "x_filter_pattern": "hidden_state_L",
+            "target_models": [
+                "bert-base-uncased",
+                "wav2vec2-base",
+                "wav2vec2-base-960h",
+            ],
+        },
+        "plot_config": {
+            "y_label": "POS Accuracy",
+            "x_label": "Layer",
+            "figure_name_suffix": "syntax_pos_decoding_by_layer",
+            "figure_size": (6, 3),
+        },
+    },
+    "syntax_dependency_label_hidden": {
+        "config_filter": {
+            "target_variable": "syntax_Dependency_Label_OH",
+            "x_filter_pattern": "hidden_state_L",
+            "target_models": [
+                "bert-base-uncased",
+                "wav2vec2-base",
+                "wav2vec2-base-960h",
+            ],
+        },
+        "plot_config": {
+            "y_label": "Dependency Label Accuracy",
+            "x_label": "Layer",
+            "figure_name_suffix": "syntax_dependency_label_decoding_by_layer",
+            "figure_size": (6, 3),
+        },
+    },
+    "syntax_tree_depth_hidden": {
+        "config_filter": {
+            "target_variable": "syntax_Tree_Depth",
+            "x_filter_pattern": "hidden_state_L",
+            "target_models": [
+                "bert-base-uncased",
+                "wav2vec2-base",
+                "wav2vec2-base-960h",
+            ],
+        },
+        "plot_config": {
+            "y_label": r"Tree Depth $R^2$ Score",
+            "x_label": "Layer",
+            "figure_name_suffix": "syntax_tree_depth_decoding_by_layer",
+            "figure_size": (6, 3),
+        },
+    },
+    "syntax_word_position_hidden": {
+        "config_filter": {
+            "target_variable": "syntax_Word_Position",
+            "x_filter_pattern": "hidden_state_L",
+            "target_models": [
+                "bert-base-uncased",
+                "wav2vec2-base",
+                "wav2vec2-base-960h",
+            ],
+        },
+        "plot_config": {
+            "y_label": r"Word Position $R^2$ Score",
+            "x_label": "Layer",
+            "figure_name_suffix": "syntax_word_position_decoding_by_layer",
+            "figure_size": (6, 3),
+        },
+    },
+    "syntax_total_tree_depth_hidden": {
+        "config_filter": {
+            "target_variable": "syntax_Total_Tree_Depth",
+            "x_filter_pattern": "hidden_state_L",
+            "target_models": [
+                "bert-base-uncased",
+                "wav2vec2-base",
+                "wav2vec2-base-960h",
+            ],
+        },
+        "plot_config": {
+            "y_label": r"Total Tree Depth $R^2$ Score",
+            "x_label": "Layer",
+            "figure_name_suffix": "syntax_total_tree_depth_decoding_by_layer",
+            "figure_size": (6, 3),
+        },
+    },
+    "syntax_total_word_count_hidden": {
+        "config_filter": {
+            "target_variable": "syntax_Total_Word_Count",
+            "x_filter_pattern": "hidden_state_L",
+            "target_models": [
+                "bert-base-uncased",
+                "wav2vec2-base",
+                "wav2vec2-base-960h",
+            ],
+        },
+        "plot_config": {
+            "y_label": r"Total Word Count $R^2$ Score",
+            "x_label": "Layer",
+            "figure_name_suffix": "syntax_total_word_count_decoding_by_layer",
             "figure_size": (6, 3),
         },
     },
@@ -547,6 +737,43 @@ DECODING_PLOT_CONFIGS: dict[str, dict] = {
             "include_baseline": True,
             "use_facet_grid": True,
             "facet_col": "decoding_type",
+        },
+    },
+    "syntax_decomposition_combined": {
+        "is_combined": True,
+        "constituent_configs": [
+            "syntax_pos_hidden",
+            "syntax_dependency_label_hidden",
+            "syntax_tree_depth_hidden",
+            "syntax_word_position_hidden",
+            "syntax_total_tree_depth_hidden",
+            "syntax_total_word_count_hidden",
+        ],
+        "decoding_type_labels": {
+            "syntax_pos_hidden": "POS",
+            "syntax_dependency_label_hidden": "Dependency Label",
+            "syntax_tree_depth_hidden": "Tree Depth",
+            "syntax_word_position_hidden": "Word Position",
+            "syntax_total_tree_depth_hidden": "Total Tree Depth",
+            "syntax_total_word_count_hidden": "Total Word Count",
+        },
+        "baseline_target_variables": {
+            "POS": "syntax_POS_OH",
+            "Dependency Label": "syntax_Dependency_Label_OH",
+            "Tree Depth": "syntax_Tree_Depth",
+            "Word Position": "syntax_Word_Position",
+            "Total Tree Depth": "syntax_Total_Tree_Depth",
+            "Total Word Count": "syntax_Total_Word_Count",
+        },
+        "plot_config": {
+            "y_label": "Syntax Decoding Metric",
+            "x_label": "Layer",
+            "figure_name_suffix": "syntax_decomposition_combined_decoding_by_layer",
+            "figure_size": (10, 6),
+            "include_baseline": True,
+            "use_facet_grid": True,
+            "facet_col": "decoding_type",
+            "color_mapping": MODEL_COLOR_MAPPING,
         },
     },
 }

@@ -15,6 +15,7 @@ from parse_results_config import (
     CONFIG_NAME_ORDER,
     CONFIG_NAME_RENAME,
     DECODING_PLOT_CONFIGS,
+    DECOMPOSITION_PLAIN_TEXT_LABELS,
     FOCUS_CONFIGS,
     MODEL_COLOR_MAPPING,
     MODELNAME_ORDER,
@@ -508,8 +509,11 @@ def plot_decoding_by_layer(
         # Original behavior: models as facets, config_name as color
         color_var = "config_name"
         shape_var = "config_name"
-        # If there are multiple "config_names"
-        if len(decoding_df["config_name"].unique()) > 1:
+        # Check if plot_config provides a color_mapping
+        config_color_mapping = plot_config.get("color_mapping") if plot_config else None
+        if config_color_mapping is not None:
+            color_mapping = config_color_mapping
+        elif len(decoding_df["config_name"].unique()) > 1:
             color_mapping = None
         else:
             # Keep all colors black
@@ -691,9 +695,13 @@ def plot_decoding_by_layer(
                     linetype="is_baseline",
                 ),
             )
+            # Add color mapping if exists
+            if color_mapping is not None:
+                figure += p9.scale_color_manual(values=color_mapping)
         else:
             logger.warning("No baselines found for any model. Skipping baseline lines.")
     figure += p9.scale_linetype_manual(values={True: "dashed", False: "solid"})
+    # If color mapping is not None, add it to the baseline lines as well
     # remove linetype from legend
     figure += p9.guides(linetype="none")
     if show_plot:
@@ -1229,35 +1237,102 @@ def plot_main_figures(
             )
             continue
 
-        # Plot the results in mode_results_df and use mode_comparison_results_df as the baseline with dashed gray line
-        p = plot_helper(
-            plot_df,
-            plot_compare_df,
-            facet=facet,
-            color_mapping=color_mapping,
-            x_col=x_col,
-            y_col=y_col,
-            legend_n_row=legend_n_row,
-            include_sum_of_individual=False,
-            order_facet_by_topline=(facet == "plot_config_name"),
-        )
+        # Apply plain text labels for decomposition plots
+        use_plain_text_labels = plotting_config.get("use_plain_text_labels", False)
+        if use_plain_text_labels:
+            plot_df["plot_config_name"] = plot_df["plot_config_name"].map(
+                lambda x: DECOMPOSITION_PLAIN_TEXT_LABELS.get(x, x)
+            )
+            plot_compare_df = plot_compare_df.copy()
+            plot_compare_df["plot_config_name"] = plot_compare_df[
+                "plot_config_name"
+            ].map(lambda x: DECOMPOSITION_PLAIN_TEXT_LABELS.get(x, x))
 
-        p += p9.labs(
-            x="Layer (From bottom to top)",
-            y=Y_COL_NAME_MAPPING.get(y_col, y_col),
-            color="Feature Group",
-            shape="Feature Group",
-            linetype="Feature Group",
-        )
-        p += p9.theme(
-            legend_position="bottom",
-            legend_justification="center",
-            figure_size=figure_size,
-            dpi=300,
-            legend_title=p9.element_blank(),
-        )
-        # Make the legend text bigger for better readability
-        p += p9.theme(legend_text=p9.element_text(size=8))
+        # Check if this is a facet grid plot (syntax components as facets, models as colors)
+        use_facet_grid = plotting_config.get("use_facet_grid", False)
+        if use_facet_grid:
+            # Create facet grid plot with models as colors and syntax components as facets
+            facet_col = plotting_config.get("facet_col", "plot_config_name")
+            color_var = plotting_config.get("color_var", "modelname")
+
+            # Rename modelname for display
+            plot_df["modelname"] = plot_df["modelname"].map(
+                lambda x: MODELNAME_RENAME.get(x, x)
+            )
+
+            # Order modelname by MODELNAME_ORDER
+            model_order = [
+                MODELNAME_RENAME.get(m, m)
+                for m in MODELNAME_ORDER
+                if MODELNAME_RENAME.get(m, m) in plot_df["modelname"].unique()
+            ]
+            plot_df["modelname"] = pd.Categorical(
+                plot_df["modelname"], categories=model_order, ordered=True
+            )
+
+            p = (
+                p9.ggplot(plot_df)
+                + p9.geom_line(
+                    p9.aes(x=x_col, y=y_col, color=color_var, group=color_var)
+                )
+                + p9.geom_point(
+                    p9.aes(x=x_col, y=y_col, color=color_var, shape=color_var),
+                    size=0.8,
+                )
+                + p9.facet_wrap(facet_col, scales="free_y")
+                + p9.theme_minimal()
+                + p9.scale_x_continuous(
+                    breaks=np.arange(plot_df[x_col].min(), plot_df[x_col].max() + 1, 3)
+                )
+            )
+
+            if color_mapping is not None:
+                p += p9.scale_color_manual(values=color_mapping)
+
+            p += p9.labs(
+                x="Layer (From bottom to top)",
+                y=Y_COL_NAME_MAPPING.get(y_col, y_col),
+                color="Model",
+                shape="Model",
+            )
+            p += p9.theme(
+                legend_position="bottom",
+                legend_justification="center",
+                figure_size=figure_size,
+                dpi=300,
+                legend_title=p9.element_blank(),
+                legend_text=p9.element_text(size=8),
+            )
+        else:
+            # Plot the results in mode_results_df and use mode_comparison_results_df as the baseline with dashed gray line
+            p = plot_helper(
+                plot_df,
+                plot_compare_df,
+                facet=facet,
+                color_mapping=color_mapping,
+                x_col=x_col,
+                y_col=y_col,
+                legend_n_row=legend_n_row,
+                include_sum_of_individual=False,
+                order_facet_by_topline=(facet == "plot_config_name"),
+            )
+
+            p += p9.labs(
+                x="Layer (From bottom to top)",
+                y=Y_COL_NAME_MAPPING.get(y_col, y_col),
+                color="Feature Group",
+                shape="Feature Group",
+                linetype="Feature Group",
+            )
+            p += p9.theme(
+                legend_position="bottom",
+                legend_justification="center",
+                figure_size=figure_size,
+                dpi=300,
+                legend_title=p9.element_blank(),
+            )
+            # Make the legend text bigger for better readability
+            p += p9.theme(legend_text=p9.element_text(size=8))
         if show_plots:
             p.show()
 

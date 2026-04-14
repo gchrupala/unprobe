@@ -723,11 +723,11 @@ DECODING_PLOT_CONFIGS: dict[str, dict] = {
         "constituent_configs": ["speakerid_hidden", "phoneid_hidden"],
         "decoding_type_labels": {
             "speakerid_hidden": "Speaker Decoding Probe",
-            "phoneid_hidden": "Phonetics Decoding Probe",
+            "phoneid_hidden": "Phone Decoding Probe",
         },
         "baseline_target_variables": {
             "Speaker Decoding Probe": "SpeakerID",
-            "Phonetics Decoding Probe": "PhoneID",
+            "Phone Decoding Probe": "PhoneID",
         },
         "plot_config": {
             "y_label": "Accuracy",

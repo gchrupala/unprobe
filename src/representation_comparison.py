@@ -16,19 +16,17 @@ import os
 
 import numpy as np
 import pandas as pd
-import plotnine as p9
 from sklearn.metrics import f1_score
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from tqdm.auto import tqdm
 
+from parse_results import (
+    plot_decoding_representation,
+    plot_encode_decode_comparison,
+    plot_encoding_legacy_style,
+)
 from probe_runner import evaluate_probe, fit_probe, split_train_test
-from utils import FIGURES_ROOT, RESULTS_ROOT, pick_probe
-
-REPRESENTATION_DISPLAY = {
-    "ppg_feature": "Original PPGs",
-    "ppg_ID": "Phone ID from PPGs",
-    "ppg_feature_onehot": "One-hot Encoded PPGs",
-}
+from utils import RESULTS_ROOT, pick_probe
 
 
 class ExperimentInputs:
@@ -254,175 +252,6 @@ def run_decoding_experiment(
                     }
                 )
     return pd.DataFrame(records)
-
-
-def _decorate_representation_names(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    out["representation_display"] = out["representation"].map(
-        lambda x: REPRESENTATION_DISPLAY.get(x, x)
-    )
-    return out
-
-
-def _decorate_metric_names(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    out["metric_display"] = out["metric_name"].map(
-        {"r2": r"$R^2$", "accuracy": "Accuracy"}
-    )
-    return out
-
-
-def plot_encoding_legacy_style(
-    encoding_df: pd.DataFrame,
-    modelname: str,
-    librispeech_split: str,
-    outdir: str,
-) -> None:
-    plot_df = _decorate_representation_names(encoding_df)
-    plot = (
-        p9.ggplot(plot_df)
-        + p9.geom_line(
-            p9.aes(
-                x="layer",
-                y="test_score",
-                color="representation_display",
-                shape="representation_display",
-                group="representation_display",
-            ),
-            alpha=0.7,
-        )
-        + p9.geom_point(
-            p9.aes(
-                x="layer",
-                y="test_score",
-                color="representation_display",
-                shape="representation_display",
-                group="representation_display",
-            ),
-            alpha=0.7,
-        )
-        + p9.scale_x_continuous(breaks=range(0, int(plot_df["layer"].max()) + 1, 3))
-        + p9.theme(
-            figure_size=(6, 4),
-            dpi=300,
-            legend_position="bottom",
-            legend_title=p9.element_blank(),
-        )
-        + p9.labs(
-            x="Layer (from shallow to deep)",
-            y="Test Score (R²)",
-            color="PPG Representation",
-            shape="PPG Representation",
-        )
-    )
-    filename = f"ppg_feature_representation_{_slug_modelname(modelname)}_{librispeech_split}.png"
-    plot.save(os.path.join(outdir, filename))
-    plot.save(os.path.join(FIGURES_ROOT, filename))
-
-
-def plot_decoding_representation(
-    decoding_df: pd.DataFrame,
-    modelname: str,
-    librispeech_split: str,
-    outdir: str,
-) -> None:
-    plot_df = _decorate_representation_names(decoding_df)
-    plot_df = _decorate_metric_names(plot_df)
-    plot = (
-        p9.ggplot(plot_df)
-        + p9.geom_line(
-            p9.aes(
-                x="layer",
-                y="test_score",
-                color="representation_display",
-                shape="representation_display",
-                group="representation_display",
-            ),
-            alpha=0.7,
-        )
-        + p9.geom_point(
-            p9.aes(
-                x="layer",
-                y="test_score",
-                color="representation_display",
-                shape="representation_display",
-                group="representation_display",
-            ),
-            alpha=0.7,
-        )
-        + p9.facet_wrap("~ metric_display", scales="free_y")
-        + p9.scale_x_continuous(breaks=range(0, int(plot_df["layer"].max()) + 1, 3))
-        + p9.theme_minimal()
-        + p9.theme(
-            figure_size=(7, 4),
-            dpi=300,
-            legend_position="bottom",
-            legend_title=p9.element_blank(),
-        )
-        + p9.labs(
-            x="Layer (from shallow to deep)",
-            y="Metric",
-            color="PPG Representation",
-            shape="PPG Representation",
-        )
-    )
-    filename = f"ppg_decoding_representation_{_slug_modelname(modelname)}_{librispeech_split}.png"
-    plot.save(os.path.join(outdir, filename))
-    plot.save(os.path.join(FIGURES_ROOT, filename))
-
-
-def plot_encode_decode_comparison(
-    combined_df: pd.DataFrame,
-    modelname: str,
-    librispeech_split: str,
-    outdir: str,
-) -> None:
-    plot_df = _decorate_representation_names(combined_df)
-    plot_df = _decorate_metric_names(plot_df)
-    plot_df["direction_metric"] = (
-        plot_df["direction"].str.capitalize() + " (" + plot_df["metric_display"] + ")"
-    )
-    plot = (
-        p9.ggplot(plot_df)
-        + p9.geom_line(
-            p9.aes(
-                x="layer",
-                y="test_score",
-                color="representation_display",
-                shape="representation_display",
-                group="representation_display",
-            ),
-            alpha=0.7,
-        )
-        + p9.geom_point(
-            p9.aes(
-                x="layer",
-                y="test_score",
-                color="representation_display",
-                shape="representation_display",
-                group="representation_display",
-            ),
-            alpha=0.7,
-        )
-        + p9.facet_wrap("~ direction_metric", scales="free_y")
-        + p9.scale_x_continuous(breaks=range(0, int(plot_df["layer"].max()) + 1, 3))
-        + p9.theme_minimal()
-        + p9.theme(
-            figure_size=(9, 4),
-            dpi=300,
-            legend_position="bottom",
-            legend_title=p9.element_blank(),
-        )
-        + p9.labs(
-            x="Layer (from shallow to deep)",
-            y="Metric",
-            color="PPG Representation",
-            shape="PPG Representation",
-        )
-    )
-    filename = f"ppg_encode_decode_comparison_{_slug_modelname(modelname)}_{librispeech_split}.png"
-    plot.save(os.path.join(outdir, filename))
-    plot.save(os.path.join(FIGURES_ROOT, filename))
 
 
 def parse_args() -> argparse.Namespace:

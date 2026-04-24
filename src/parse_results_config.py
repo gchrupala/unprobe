@@ -24,6 +24,12 @@ CONFIG_NAME_RENAME: dict = {
 }
 
 # Derived feature name constants
+REPRESENTATION_DISPLAY: dict[str, str] = {
+    "ppg_feature": "Original PPGs",
+    "ppg_ID": "Phone ID from PPGs",
+    "ppg_feature_onehot": "One-hot Encoded PPGs",
+}
+
 ALLFEATURE_NAME = CONFIG_NAME_RENAME.get("AllFeatures", "AllFeatures")
 SYNTAX_NAME = CONFIG_NAME_RENAME.get("syntax_feature", "syntax_feature")
 PHONETIC_NAME = CONFIG_NAME_RENAME.get("ppg_feature", "ppg_feature")
@@ -264,7 +270,7 @@ PLOT_COLOR_MAPPING: dict = {
 # Y column name mappings for display
 Y_COL_NAME_MAPPING = {
     "test_score": r"HRS ($R^2$) Score",
-    "unexplained_variance": r"Unexplained Variance (1 - $R^2$)",
+    "unexplained_variance": r"Unexplained Variance",
     "departure_from_topline": r"Departure from Topline ($R^2$ difference)",
 }
 
@@ -281,6 +287,7 @@ PLOTTING_CONFIGS: dict[str, dict] = {
             "wav2vec2-base",
         ],
         "y_col": "unexplained_variance",
+        "legend_n_row": 2,
     },
     "syntax_lexical_2": {
         "target_configs": [
@@ -293,6 +300,7 @@ PLOTTING_CONFIGS: dict[str, dict] = {
             "wav2vec2-base-960h",
         ],
         "y_col": "unexplained_variance",
+        "legend_n_row": 2,
     },
     "acoustics_speaker_id": {
         "target_configs": [
@@ -305,6 +313,7 @@ PLOTTING_CONFIGS: dict[str, dict] = {
             "wav2vec2-ls100-sid",
         ],
         "y_col": "unexplained_variance",
+        "legend_n_row": 2,
     },
     "phonetic_speaker_id": {
         "target_configs": [
@@ -317,6 +326,7 @@ PLOTTING_CONFIGS: dict[str, dict] = {
             "wav2vec2-ls100-sid",
         ],
         "y_col": "unexplained_variance",
+        "legend_n_row": 2,
     },
     "acoustics_speaker_id_2": {
         "target_configs": [
@@ -329,6 +339,7 @@ PLOTTING_CONFIGS: dict[str, dict] = {
             "wav2vec2-base-960h",
         ],
         "y_col": "unexplained_variance",
+        "legend_n_row": 2,
     },
     "phonetic_speaker_id_2": {
         "target_configs": [
@@ -341,6 +352,7 @@ PLOTTING_CONFIGS: dict[str, dict] = {
             "wav2vec2-base-960h",
         ],
         "y_col": "unexplained_variance",
+        "legend_n_row": 2,
     },
     "all_models_syntax_lexical": {
         "target_configs": [
@@ -356,7 +368,8 @@ PLOTTING_CONFIGS: dict[str, dict] = {
         ],
         "x_col": "normalized_layer",
         "y_col": "unexplained_variance",
-        "figure_size": (8, 8),
+        "figure_size": (12, 8),
+        "legend_n_row": 2,
     },
     "all_models_acoustic_speaker": {
         "target_configs": [
@@ -378,7 +391,8 @@ PLOTTING_CONFIGS: dict[str, dict] = {
         "exclude_models": ["wav2vec2-ls100-sid"],
         "x_col": "normalized_layer",
         "y_col": "unexplained_variance",
-        "figure_size": (8, 6),
+        "figure_size": (12, 6),
+        "legend_n_row": 2,
     },
     "all_models_phonetic_speaker": {
         "target_configs": [
@@ -400,7 +414,8 @@ PLOTTING_CONFIGS: dict[str, dict] = {
         "exclude_models": ["wav2vec2-ls100-sid"],
         "x_col": "normalized_layer",
         "y_col": "unexplained_variance",
-        "figure_size": (8, 6),
+        "figure_size": (12, 6),
+        "legend_n_row": 2,
     },
     "syntax_lexical_wav2vec2": {
         "target_configs": [
@@ -500,6 +515,7 @@ PLOTTING_CONFIGS: dict[str, dict] = {
         "facet_col": "plot_config_name",
         "color_var": "modelname",
         "color_mapping": MODEL_COLOR_MAPPING,
+        "legend_n_row": 2,
     },
 }
 
@@ -562,6 +578,7 @@ DECODING_PLOT_CONFIGS: dict[str, dict] = {
             "figure_size": (6, 3),
             "include_baseline": True,
             "color_mapping": DECODING_SYNTAX_COLOR_MAPPING,
+            "legend_n_row": 3,
         },
     },
     "syntax_full_hidden": {

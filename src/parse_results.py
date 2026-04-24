@@ -23,6 +23,7 @@ from parse_results_config import (
     MODELNAME_RENAME_BACKWARD,
     PLOT_COLOR_MAPPING,
     PLOTTING_CONFIGS,
+    REPRESENTATION_DISPLAY,
     RESULTS_DIRS,
     RUN_GROUP_BY_EXPERIMENT,
     Y_COL_NAME_MAPPING,
@@ -458,6 +459,9 @@ def plot_decoding_by_layer(
         plot_config.get("figure_size", (6, 3)) if plot_config else (6, 3),
         (6, 3),
     )
+    legend_n_row = _safe_int(
+        plot_config.get("legend_n_row", 2) if plot_config else 2, 2
+    )
     # Remove 'hidden_state_L*->' from config_name using regex
     decoding_df["config_name"] = (
         decoding_df["config_name"]
@@ -548,13 +552,20 @@ def plot_decoding_by_layer(
             legend_position="bottom",
             legend_justification="center",
             legend_title=p9.element_blank(),
+            legend_text=p9.element_text(size=12),
+            axis_title=p9.element_text(size=12),
+            axis_text=p9.element_text(size=12),
+            strip_text=p9.element_text(size=12),
         )
         + p9.labs(
             x=x_label,
             y=y_label,
         )
-        # Make the legend text bigger for better readability
-        + p9.theme(legend_text=p9.element_text(size=8))
+        + p9.guides(
+            color=p9.guide_legend(nrow=legend_n_row, byrow=True),
+            shape=p9.guide_legend(nrow=legend_n_row, byrow=True),
+            linetype=p9.guide_legend(nrow=legend_n_row, byrow=True),
+        )
     )
 
     # Add faceting based on mode
@@ -880,6 +891,12 @@ def plot_helper(
         )
         + p9.facet_wrap(facet)
         + p9.theme_minimal()
+        + p9.theme(
+            legend_text=p9.element_text(size=12),
+            axis_title=p9.element_text(size=12),
+            axis_text=p9.element_text(size=12),
+            strip_text=p9.element_text(size=12),
+        )
         + p9.scale_y_continuous(limits=(y_lim_min, y_lim_max))
         + p9.scale_linetype_manual(values=linetype_mapping)
     )
@@ -1301,8 +1318,16 @@ def plot_main_figures(
                 figure_size=figure_size,
                 dpi=300,
                 legend_title=p9.element_blank(),
-                legend_text=p9.element_text(size=8),
+                legend_text=p9.element_text(size=12),
+                axis_title=p9.element_text(size=12),
+                axis_text=p9.element_text(size=12),
+                strip_text=p9.element_text(size=12),
             )
+            if legend_n_row is not None:
+                p += p9.guides(
+                    color=p9.guide_legend(nrow=legend_n_row, byrow=True),
+                    shape=p9.guide_legend(nrow=legend_n_row, byrow=True),
+                )
         else:
             # Plot the results in mode_results_df and use mode_comparison_results_df as the baseline with dashed gray line
             p = plot_helper(
@@ -1330,9 +1355,11 @@ def plot_main_figures(
                 figure_size=figure_size,
                 dpi=300,
                 legend_title=p9.element_blank(),
+                legend_text=p9.element_text(size=12),
+                axis_title=p9.element_text(size=12),
+                axis_text=p9.element_text(size=12),
+                strip_text=p9.element_text(size=12),
             )
-            # Make the legend text bigger for better readability
-            p += p9.theme(legend_text=p9.element_text(size=8))
         if show_plots:
             p.show()
 
@@ -1593,6 +1620,10 @@ def plot_focus_random_seed(
             legend_position="bottom",
             legend_justification="center",
             legend_title=p9.element_blank(),
+            legend_text=p9.element_text(size=12),
+            axis_title=p9.element_text(size=12),
+            axis_text=p9.element_text(size=12),
+            strip_text=p9.element_text(size=12),
         )
         + p9.scale_x_continuous(
             breaks=np.arange(
@@ -1605,8 +1636,6 @@ def plot_focus_random_seed(
             x="Layer (From bottom to top)",
             y=Y_COL_NAME_MAPPING.get(y_col, y_col),
         )
-        # make the legend text bigger for better readability
-        + p9.theme(legend_text=p9.element_text(size=8))
         + p9.scale_color_manual(values=PLOT_COLOR_MAPPING)
         + p9.scale_linetype_manual(values=linetype_mapping)
         + p9.guides(
@@ -2150,6 +2179,248 @@ def main():
         print_ttest=args.print_ttest,
         librispeech_split=librispeech_split,
     )
+
+    plot_representation_comparison(
+        librispeech_split=librispeech_split,
+    )
+
+
+def plot_representation_comparison(
+    librispeech_split: str = "train-clean-100",
+    modelname: str = "facebook/wav2vec2-base",
+    probe_name: str = "ridge",
+) -> None:
+    model_slug = _shorten_modelname(modelname)
+    outdir = os.path.join(
+        RESULTS_ROOT,
+        "representation_comparison",
+        f"{librispeech_split}_{model_slug}_{probe_name}",
+    )
+    encoding_path = os.path.join(outdir, "encoding_ppg_representation_scores.csv")
+    decoding_path = os.path.join(outdir, "decoding_ppg_representation_scores.csv")
+
+    if not os.path.exists(encoding_path) or not os.path.exists(decoding_path):
+        logger.info(
+            "Representation comparison data not found at '%s'. Skipping.",
+            outdir,
+        )
+        return
+
+    encoding_df = pd.read_csv(encoding_path)
+    decoding_df = pd.read_csv(decoding_path)
+
+    plot_encoding_legacy_style(
+        encoding_df=encoding_df,
+        modelname=modelname,
+        librispeech_split=librispeech_split,
+        outdir=outdir,
+    )
+    plot_decoding_representation(
+        decoding_df=decoding_df,
+        modelname=modelname,
+        librispeech_split=librispeech_split,
+        outdir=outdir,
+    )
+    combined_df = pd.concat([encoding_df, decoding_df], ignore_index=True)
+    plot_encode_decode_comparison(
+        combined_df=combined_df,
+        modelname=modelname,
+        librispeech_split=librispeech_split,
+        outdir=outdir,
+    )
+
+
+def _decorate_representation_names(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["representation_display"] = out["representation"].map(
+        lambda x: REPRESENTATION_DISPLAY.get(x, x)
+    )
+    return out
+
+
+def _decorate_metric_names(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["metric_display"] = out["metric_name"].map(
+        {"r2": r"$R^2$", "accuracy": "Accuracy"}
+    )
+    return out
+
+
+def plot_encoding_legacy_style(
+    encoding_df: pd.DataFrame,
+    modelname: str,
+    librispeech_split: str,
+    outdir: str,
+) -> None:
+    plot_df = _decorate_representation_names(encoding_df)
+    plot = (
+        p9.ggplot(plot_df)
+        + p9.geom_line(
+            p9.aes(
+                x="layer",
+                y="test_score",
+                color="representation_display",
+                shape="representation_display",
+                group="representation_display",
+            ),
+            alpha=0.7,
+        )
+        + p9.geom_point(
+            p9.aes(
+                x="layer",
+                y="test_score",
+                color="representation_display",
+                shape="representation_display",
+                group="representation_display",
+            ),
+            alpha=0.7,
+        )
+        + p9.scale_x_continuous(breaks=range(0, int(plot_df["layer"].max()) + 1, 3))
+        + p9.theme_minimal()
+        + p9.theme(
+            figure_size=(6, 4),
+            dpi=300,
+            legend_position="bottom",
+            legend_title=p9.element_blank(),
+            legend_text=p9.element_text(size=12),
+            axis_title=p9.element_text(size=12),
+            axis_text=p9.element_text(size=12),
+        )
+        + p9.labs(
+            x="Layer (from shallow to deep)",
+            y=r"Test Score ($R^2$)",
+            color="PPG Representation",
+            shape="PPG Representation",
+        )
+        + p9.guides(
+            color=p9.guide_legend(nrow=1, byrow=True),
+            shape=p9.guide_legend(nrow=1, byrow=True),
+        )
+    )
+    filename = f"ppg_feature_representation_{_shorten_modelname(modelname)}_{librispeech_split}.png"
+    plot.save(os.path.join(outdir, filename))
+    plot.save(os.path.join(FIGURES_ROOT, filename))
+
+
+def plot_decoding_representation(
+    decoding_df: pd.DataFrame,
+    modelname: str,
+    librispeech_split: str,
+    outdir: str,
+) -> None:
+    plot_df = _decorate_representation_names(decoding_df)
+    plot_df = _decorate_metric_names(plot_df)
+    plot = (
+        p9.ggplot(plot_df)
+        + p9.geom_line(
+            p9.aes(
+                x="layer",
+                y="test_score",
+                color="representation_display",
+                shape="representation_display",
+                group="representation_display",
+            ),
+            alpha=0.7,
+        )
+        + p9.geom_point(
+            p9.aes(
+                x="layer",
+                y="test_score",
+                color="representation_display",
+                shape="representation_display",
+                group="representation_display",
+            ),
+            alpha=0.7,
+        )
+        + p9.facet_wrap("~ metric_display", scales="free_y")
+        + p9.scale_x_continuous(breaks=range(0, int(plot_df["layer"].max()) + 1, 3))
+        + p9.theme_minimal()
+        + p9.theme(
+            figure_size=(7, 4),
+            dpi=300,
+            legend_position="bottom",
+            legend_title=p9.element_blank(),
+            legend_text=p9.element_text(size=12),
+            axis_title=p9.element_text(size=12),
+            axis_text=p9.element_text(size=12),
+            strip_text=p9.element_text(size=12),
+        )
+        + p9.labs(
+            x="Layer (from shallow to deep)",
+            y="Metric",
+            color="PPG Representation",
+            shape="PPG Representation",
+        )
+        + p9.guides(
+            color=p9.guide_legend(nrow=1, byrow=True),
+            shape=p9.guide_legend(nrow=1, byrow=True),
+        )
+    )
+    filename = f"ppg_decoding_representation_{_shorten_modelname(modelname)}_{librispeech_split}.png"
+    plot.save(os.path.join(outdir, filename))
+    plot.save(os.path.join(FIGURES_ROOT, filename))
+
+
+def plot_encode_decode_comparison(
+    combined_df: pd.DataFrame,
+    modelname: str,
+    librispeech_split: str,
+    outdir: str,
+) -> None:
+    plot_df = _decorate_representation_names(combined_df)
+    plot_df = _decorate_metric_names(plot_df)
+    plot_df["direction_metric"] = (
+        plot_df["direction"].str.capitalize() + " (" + plot_df["metric_display"] + ")"
+    )
+    plot = (
+        p9.ggplot(plot_df)
+        + p9.geom_line(
+            p9.aes(
+                x="layer",
+                y="test_score",
+                color="representation_display",
+                shape="representation_display",
+                group="representation_display",
+            ),
+            alpha=0.7,
+        )
+        + p9.geom_point(
+            p9.aes(
+                x="layer",
+                y="test_score",
+                color="representation_display",
+                shape="representation_display",
+                group="representation_display",
+            ),
+            alpha=0.7,
+        )
+        + p9.facet_wrap("~ direction_metric", scales="free_y")
+        + p9.scale_x_continuous(breaks=range(0, int(plot_df["layer"].max()) + 1, 3))
+        + p9.theme_minimal()
+        + p9.theme(
+            figure_size=(9, 4),
+            dpi=300,
+            legend_position="bottom",
+            legend_title=p9.element_blank(),
+            legend_text=p9.element_text(size=12),
+            axis_title=p9.element_text(size=12),
+            axis_text=p9.element_text(size=12),
+            strip_text=p9.element_text(size=12),
+        )
+        + p9.labs(
+            x="Layer (from shallow to deep)",
+            y="Metric",
+            color="PPG Representation",
+            shape="PPG Representation",
+        )
+        + p9.guides(
+            color=p9.guide_legend(nrow=1, byrow=True),
+            shape=p9.guide_legend(nrow=1, byrow=True),
+        )
+    )
+    filename = f"ppg_encode_decode_comparison_{_shorten_modelname(modelname)}_{librispeech_split}.png"
+    plot.save(os.path.join(outdir, filename))
+    plot.save(os.path.join(FIGURES_ROOT, filename))
 
 
 if __name__ == "__main__":

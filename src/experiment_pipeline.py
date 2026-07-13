@@ -2,8 +2,8 @@ import logging
 import os
 import pickle
 import sys
-from dataclasses import dataclass, field
-from typing import Any, Literal
+from dataclasses import dataclass, field, replace
+from typing import Any, Iterable, Literal
 
 import numpy as np
 from sklearn.model_selection import GridSearchCV, train_test_split
@@ -15,6 +15,8 @@ from probe_runner import (
     drop_feature_groups,
     run_standard_probe,
     select_feature_groups,
+    shuffle_feature_groups,
+    zero_feature_groups,
 )
 from utils import RESULTS_ROOT, parse_args, pick_probe
 
@@ -38,6 +40,7 @@ class ExperimentSpec:
     feature_group_config: list[list[str]]
     do_topline: bool = True
     load_overrides: dict[str, Any] = field(default_factory=dict)
+    manipulation: Literal["drop", "shuffle", "zero"] = "drop"
 
 
 @dataclass(frozen=True)
@@ -125,6 +128,40 @@ def run_acoustic_base_probe(
     return results
 
 
+def _apply_manipulation(
+    feature_sets: np.ndarray,
+    lookup: dict[str, tuple[int, int]],
+    feature_names: Iterable[str],
+    manipulation: str,
+    random_state: int,
+) -> np.ndarray:
+    """Apply the requested manipulation to the targeted feature blocks.
+
+    Args:
+        feature_sets: 2D array of shape ``[n_samples, n_features]``.
+        lookup: Feature-group name to ``(start, end)`` column range.
+        feature_names: Groups to manipulate.
+        manipulation: One of ``"drop"`` (remove columns), ``"shuffle"``
+            (per-column independent permutation, dimensionality-preserving),
+            or ``"zero"`` (set block to 0.0, dimensionality-preserving).
+        random_state: Seed for the shuffle permutation.
+
+    Returns:
+        Transformed feature array. ``"drop"`` shrinks the column count; the
+        other modes preserve it so results stay comparable to the topline.
+    """
+
+    if manipulation == "drop":
+        return drop_feature_groups(feature_sets, lookup, feature_names)
+    if manipulation == "shuffle":
+        return shuffle_feature_groups(
+            feature_sets, lookup, feature_names, random_state=random_state
+        )
+    if manipulation == "zero":
+        return zero_feature_groups(feature_sets, lookup, feature_names)
+    raise ValueError(f"Unknown manipulation: {manipulation}")
+
+
 def run_topdown_probe(
     feature_sets: np.ndarray,
     model_hidden_states: np.ndarray,
@@ -136,18 +173,27 @@ def run_topdown_probe(
     estimator,
     param_grid,
     do_topline: bool = True,
+    manipulation: str = "drop",
+    random_state: int = 42,
 ):
     lookup = build_feature_lookup(section_shapes)
     results: list[dict] = []
 
     logger.info(
-        "Running experiments with top-down approach. Removing features from the full feature set to see how much information is lost by removing each feature group."
+        "Running top-down experiments with manipulation='%s'. Targeted "
+        "feature blocks are %s; the topline uses the full feature set.",
+        manipulation,
+        "removed (ablation)"
+        if manipulation == "drop"
+        else f"{manipulation}d (dimensionality-preserving control)",
     )
     for feature_group in tqdm(
         feature_group_config, desc="Feature Groups", position=0, leave=True
     ):
         config_name = "+".join(feature_group)
-        reduced_features = drop_feature_groups(feature_sets, lookup, feature_group)
+        reduced_features = _apply_manipulation(
+            feature_sets, lookup, feature_group, manipulation, random_state
+        )
         for layer in trange(
             model_hidden_states.shape[1], desc="Layers", position=1, leave=False
         ):
@@ -168,6 +214,7 @@ def run_topdown_probe(
                     "test_score": probe_result["test_score"],
                     "best_params": probe_result["best_params"],
                     "mode": "top-down",
+                    "manipulation": manipulation,
                 }
             )
 
@@ -193,6 +240,7 @@ def run_topdown_probe(
                     "test_score": probe_result["test_score"],
                     "best_params": probe_result["best_params"],
                     "mode": "top-down",
+                    "manipulation": manipulation,
                 }
             )
     return results
@@ -307,17 +355,19 @@ def load_experiment_data(
     return load_data(**kwargs)
 
 
-def build_results_path(context: ExperimentContext, result_subdir: str) -> str:
-    savepath = os.path.join(
+def build_results_path(
+    context: ExperimentContext, result_subdir: str, manipulation: str = "drop"
+) -> str:
+    base = os.path.join(
         RESULTS_ROOT,
         result_subdir,
-        f"{context.librispeech_split}_{context.modelname.replace('/', '-')}_{context.probe_name}_results.pkl",
+        f"{context.librispeech_split}_{context.modelname.replace('/', '-')}_{context.probe_name}_results",
     )
     if context.random_seed != 42:
-        savepath = savepath.replace(
-            "results.pkl", f"results-seed{context.random_seed}.pkl"
-        )
-    return savepath
+        base += f"-seed{context.random_seed}"
+    if manipulation != "drop":
+        base += f"_{manipulation}"
+    return base + ".pkl"
 
 
 def save_results(savepath: str, results: list[dict]) -> None:
@@ -433,6 +483,8 @@ def run_and_save_experiment(
             modelname=context.modelname,
             estimator=estimator,
             param_grid=param_grid,
+            manipulation=spec.manipulation,
+            random_state=context.random_seed,
         )
     elif spec.mode == "acoustic-baseline-addition":
         results = run_acoustic_base_probe(
@@ -452,7 +504,9 @@ def run_and_save_experiment(
     for row in results:
         row["experiment_name"] = spec.name
 
-    savepath = build_results_path(context, spec.result_subdir)
+    savepath = build_results_path(
+        context, spec.result_subdir, manipulation=spec.manipulation
+    )
     save_results(savepath, results)
     logger.info("%s results saved to %s", spec.name, savepath)
 
@@ -482,6 +536,7 @@ def run_combined_topdown_and_save_per_experiment(
 
     speaker_ids = [x[0].split("-")[0] for x in filename_timestamp]
     section_shapes = np.array(get_section_shapes(data_shape=data_shape))
+    manipulation = specs[0].manipulation
     combined_results = run_topdown_probe(
         feature_sets=feature_sets,
         model_hidden_states=model_hidden_states,
@@ -493,6 +548,8 @@ def run_combined_topdown_and_save_per_experiment(
         modelname=context.modelname,
         estimator=estimator,
         param_grid=param_grid,
+        manipulation=manipulation,
+        random_state=context.random_seed,
     )
 
     topline_config_names = {"AllFeatures"}
@@ -510,7 +567,9 @@ def run_combined_topdown_and_save_per_experiment(
                 new_row["experiment_name"] = spec.name
                 spec_results.append(new_row)
 
-        savepath = build_results_path(context, spec.result_subdir)
+        savepath = build_results_path(
+            context, spec.result_subdir, manipulation=spec.manipulation
+        )
         save_results(savepath, spec_results)
         logger.info("%s results saved to %s", spec.name, savepath)
 
@@ -527,6 +586,7 @@ def main():
         normalize_features=args.normalize_features,
     )
 
+    manipulations = args.manipulation or ["drop"]
     estimator, param_grid = pick_probe(probe_name=context.probe_name, n_components=None)
 
     (
@@ -537,43 +597,63 @@ def main():
     ) = load_experiment_data(context=context)
 
     default_specs = build_default_experiment_specs(default_data_shape)
-    run_combined_topdown_and_save_per_experiment(
-        specs=default_specs,
-        context=context,
-        estimator=estimator,
-        param_grid=param_grid,
-        feature_sets=default_feature_sets,
-        model_hidden_states=default_model_hidden_states,
-        filename_timestamp=default_filename_timestamp,
-        data_shape=default_data_shape,
-    )
+    selected_default_specs = [
+        spec
+        for spec in default_specs
+        if args.spec_name is None or spec.name == args.spec_name
+    ]
+    if args.spec_name and not selected_default_specs:
+        available = ", ".join(spec.name for spec in default_specs)
+        raise ValueError(
+            f"No default ExperimentSpec named '{args.spec_name}'. "
+            f"Available: {available} (plus 'syntax_lexicon_decomposition')."
+        )
 
-    (
-        syntax_feature_sets,
-        syntax_model_hidden_states,
-        syntax_filename_timestamp,
-        syntax_data_shape,
-    ) = load_experiment_data(
-        context=context,
-        load_overrides={
-            "one_hot_encode_syntax": False,
-            "one_hot_encode_syntax_separate": True,
-            "overwrite": False,
-        },
-    )
-    syntax_lexicon_spec = build_syntax_lexicon_decomposition_spec(
-        data_shape=syntax_data_shape,
-    )
-    run_and_save_experiment(
-        spec=syntax_lexicon_spec,
-        context=context,
-        estimator=estimator,
-        param_grid=param_grid,
-        feature_sets=syntax_feature_sets,
-        model_hidden_states=syntax_model_hidden_states,
-        filename_timestamp=syntax_filename_timestamp,
-        data_shape=syntax_data_shape,
-    )
+    for manipulation in manipulations:
+        run_combined_topdown_and_save_per_experiment(
+            specs=[
+                replace(spec, manipulation=manipulation)
+                for spec in selected_default_specs
+            ],
+            context=context,
+            estimator=estimator,
+            param_grid=param_grid,
+            feature_sets=default_feature_sets,
+            model_hidden_states=default_model_hidden_states,
+            filename_timestamp=default_filename_timestamp,
+            data_shape=default_data_shape,
+        )
+
+    # Syntax lexicon decomposition uses a separate data load (separated syntax
+    # components). Skip it when filtering to a different spec.
+    if args.spec_name is None or args.spec_name == "syntax_lexicon_decomposition":
+        (
+            syntax_feature_sets,
+            syntax_model_hidden_states,
+            syntax_filename_timestamp,
+            syntax_data_shape,
+        ) = load_experiment_data(
+            context=context,
+            load_overrides={
+                "one_hot_encode_syntax": False,
+                "one_hot_encode_syntax_separate": True,
+                "overwrite": False,
+            },
+        )
+        syntax_lexicon_spec = build_syntax_lexicon_decomposition_spec(
+            data_shape=syntax_data_shape,
+        )
+        for manipulation in manipulations:
+            run_and_save_experiment(
+                spec=replace(syntax_lexicon_spec, manipulation=manipulation),
+                context=context,
+                estimator=estimator,
+                param_grid=param_grid,
+                feature_sets=syntax_feature_sets,
+                model_hidden_states=syntax_model_hidden_states,
+                filename_timestamp=syntax_filename_timestamp,
+                data_shape=syntax_data_shape,
+            )
 
 
 if __name__ == "__main__":

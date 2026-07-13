@@ -8,7 +8,6 @@ experiments can build on the same primitives.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Iterable, Sequence
 
 import numpy as np
@@ -62,6 +61,62 @@ def drop_feature_groups(
     drop_idx = indices_for_features(lookup, feature_names)
     mask[drop_idx] = False
     return feature_sets[:, mask]
+
+
+def shuffle_feature_groups(
+    feature_sets: np.ndarray,
+    lookup: dict[str, tuple[int, int]],
+    feature_names: Iterable[str],
+    *,
+    random_state: int = DEFAULT_RANDOM_STATE,
+) -> np.ndarray:
+    """Return a copy with the requested feature groups per-column shuffled.
+
+    Each dimension inside the targeted blocks is independently permuted along
+    the sample axis (axis=0). This preserves every dimension's marginal
+    distribution while destroying its alignment with the target and with the
+    other dimensions inside the block, yielding a dimensionality-preserving
+    control for ``drop_feature_groups``. The total column count is unchanged
+    so the result stays directly comparable to the full-feature topline.
+
+    Args:
+        feature_sets: 2D array of shape ``[n_samples, n_features]``.
+        lookup: Feature-group name to ``(start, end)`` column range.
+        feature_names: Groups whose columns should be shuffled.
+        random_state: Seed for the per-column permutations; defaults to
+            ``DEFAULT_RANDOM_STATE`` for reproducibility.
+    """
+
+    shuffled = feature_sets.copy()
+    block_idx = indices_for_features(lookup, feature_names)
+    if block_idx.size == 0:
+        return shuffled
+    block = shuffled[:, block_idx]
+    # Independent permutation per column via argsort of random keys: each
+    # column of ``perms`` is a distinct permutation of range(n_samples).
+    perms = np.argsort(np.random.default_rng(random_state).random(block.shape), axis=0)
+    shuffled[:, block_idx] = np.take_along_axis(block, perms, axis=0)
+    return shuffled
+
+
+def zero_feature_groups(
+    feature_sets: np.ndarray,
+    lookup: dict[str, tuple[int, int]],
+    feature_names: Iterable[str],
+) -> np.ndarray:
+    """Return a copy with the requested feature groups set to zero.
+
+    All values inside the targeted blocks are replaced with ``0.0`` while the
+    columns themselves are retained, so the total feature dimensionality is
+    unchanged and the result stays directly comparable to the full-feature
+    topline. This is most meaningful when features are mean-centered
+    (``normalize_features=True``), where zero coincides with the feature mean.
+    """
+
+    zeroed = feature_sets.copy()
+    block_idx = indices_for_features(lookup, feature_names)
+    zeroed[:, block_idx] = 0.0
+    return zeroed
 
 
 def split_train_test(
@@ -192,5 +247,7 @@ __all__ = [
     "indices_for_features",
     "run_standard_probe",
     "select_feature_groups",
+    "shuffle_feature_groups",
     "split_train_test",
+    "zero_feature_groups",
 ]

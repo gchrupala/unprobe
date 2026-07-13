@@ -217,6 +217,27 @@ def parse_args(use_default=False):
         action="store_true",
         help="Whether to run the bottom-up probe analysis.",
     )
+    parser.add_argument(
+        "--spec_name",
+        type=str,
+        default=None,
+        help=(
+            "If set, run only the ExperimentSpec with this name. "
+            "When unset, all default specs plus the syntax lexicon "
+            "decomposition are run (existing behavior)."
+        ),
+    )
+    parser.add_argument(
+        "--manipulation",
+        type=str,
+        nargs="+",
+        default=None,
+        help=(
+            "Manipulation mode(s) to apply to targeted feature blocks: "
+            "'drop' (ablation, default), 'shuffle' (per-column independent "
+            "permutation), 'zero' (set block to 0.0). Defaults to ['drop']."
+        ),
+    )
 
     if use_default:
         args = parser.parse_args([])

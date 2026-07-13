@@ -238,6 +238,17 @@ def parse_args(use_default=False):
             "permutation), 'zero' (set block to 0.0). Defaults to ['drop']."
         ),
     )
+    parser.add_argument(
+        "--result_subdir",
+        type=str,
+        default=None,
+        help=(
+            "Override the ExperimentSpec's result_subdir (and experiment "
+            "name) so results land in an isolated directory without "
+            "overwriting existing outputs. When unset, the spec's default "
+            "result_subdir is used (existing behavior)."
+        ),
+    )
 
     if use_default:
         args = parser.parse_args([])

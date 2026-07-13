@@ -609,10 +609,18 @@ def main():
             f"Available: {available} (plus 'syntax_lexicon_decomposition')."
         )
 
+    # When --result_subdir is set, override both result_subdir and name so the
+    # experiment is fully isolated: files land in a new directory and result
+    # rows carry a distinct experiment_name, leaving existing outputs untouched.
+    override_kwargs: dict[str, Any] = {}
+    if args.result_subdir:
+        override_kwargs["result_subdir"] = args.result_subdir
+        override_kwargs["name"] = args.result_subdir
+
     for manipulation in manipulations:
         run_combined_topdown_and_save_per_experiment(
             specs=[
-                replace(spec, manipulation=manipulation)
+                replace(spec, manipulation=manipulation, **override_kwargs)
                 for spec in selected_default_specs
             ],
             context=context,

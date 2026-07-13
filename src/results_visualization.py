@@ -23,13 +23,12 @@ import seaborn as sns
 from parse_results import (
     _build_main_figure_filename,
     _build_random_seed_figure_filename,
-    _build_sanity_speakerid_figure_filename,
     plot_focus_random_seed,
     plot_main_figures,
-    plot_speakerid_sanity_by_layer,
+    plot_manipulation_comparison,
     read_all_results,
+    read_manipulation_comparison_results,
     read_random_seed_results,
-    read_speakerid_sanity_results,
 )
 from utils import FIGURES_ROOT, RESULTS_ROOT
 
@@ -728,13 +727,8 @@ def run_feature_removal(split: str) -> None:
         )
         for featname in plotting_configs
     ]
-    expected_files.append(
-        _build_sanity_speakerid_figure_filename(librispeech_split=split)
-    )
     logger.info("Expected parse_results naming for main figures: %s", expected_files)
     plot_main_figures(all_results, librispeech_split=split)
-    sanity_df = read_speakerid_sanity_results(librispeech_split=split)
-    plot_speakerid_sanity_by_layer(sanity_df, librispeech_split=split)
 
 
 def run_random_seed_focus(split: str, modelname: str, focuses: Sequence[str]) -> None:
@@ -833,6 +827,48 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sid_parser.add_argument("--save", action="store_true")
 
+    manipulation_parser = subparsers.add_parser(
+        "manipulation-comparison",
+        help=(
+            "Compare ablation vs shuffle/zero controls for a feature block "
+            "across models. Loads separate manipulation pickles produced by "
+            "experiment_pipeline --manipulation and overlays them with the "
+            "AllFeatures topline."
+        ),
+    )
+    manipulation_parser.add_argument("--split", default="train-clean-100")
+    manipulation_parser.add_argument(
+        "--models",
+        nargs="+",
+        default=["facebook/wav2vec2-base", "techsword/wav2vec2-ls100-sid"],
+        help="Full HuggingFace model names to compare.",
+    )
+    manipulation_parser.add_argument("--probe", default="ridge")
+    manipulation_parser.add_argument(
+        "--experiment-subdir",
+        default="speakerid_shuffle_comparison",
+        help="Results subdirectory / experiment name.",
+    )
+    manipulation_parser.add_argument(
+        "--manipulations",
+        nargs="+",
+        default=["drop", "shuffle"],
+        choices=["drop", "shuffle", "zero"],
+        help="Manipulation modes to load and compare.",
+    )
+    manipulation_parser.add_argument(
+        "--target-config",
+        default="SpeakerID-OH",
+        help="Raw config_name of the feature block to compare.",
+    )
+    manipulation_parser.add_argument(
+        "--y-col",
+        default="test_score",
+        choices=["test_score", "unexplained_variance"],
+        help="Y-axis column to plot.",
+    )
+    manipulation_parser.add_argument("--random-seed", type=int, default=42)
+
     return parser
 
 
@@ -867,6 +903,21 @@ def main() -> None:
     elif args.command == "sid-decodability":
         sid_df = load_sid_decodability_results(librispeech_split=args.split)
         plot_sid_decodability(sid_df, metric=args.metric, save=args.save)
+    elif args.command == "manipulation-comparison":
+        comparison_df = read_manipulation_comparison_results(
+            librispeech_split=args.split,
+            modelnames=args.models,
+            probename=args.probe,
+            experiment_subdir=args.experiment_subdir,
+            manipulations=args.manipulations,
+            random_seed=args.random_seed,
+        )
+        plot_manipulation_comparison(
+            comparison_df,
+            target_config=args.target_config,
+            librispeech_split=args.split,
+            y_col=args.y_col,
+        )
     else:
         raise ValueError(f"Unknown command: {args.command}")
 

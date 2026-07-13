@@ -937,6 +937,245 @@ def read_random_seed_results(
     )
 
 
+def _build_manipulation_results_path(
+    librispeech_split: str,
+    modelname: str,
+    probename: str,
+    experiment_subdir: str,
+    manipulation: str,
+    random_seed: int = 42,
+) -> str:
+    """Construct the results pickle path for a given manipulation mode.
+
+    Mirrors the naming convention in
+    ``experiment_pipeline.build_results_path`` so the reader picks up exactly
+    the files the pipeline writes.
+    """
+
+    base = os.path.join(
+        RESULTS_ROOT,
+        experiment_subdir,
+        f"{librispeech_split}_{modelname.replace('/', '-')}_{probename}_results",
+    )
+    if random_seed != 42:
+        base += f"-seed{random_seed}"
+    if manipulation != "drop":
+        base += f"_{manipulation}"
+    return base + ".pkl"
+
+
+def read_manipulation_comparison_results(
+    librispeech_split: str,
+    modelnames: list[str],
+    *,
+    probename: str = "ridge",
+    experiment_subdir: str = "speakerid_phonetic_acoustic_removal",
+    manipulations: list[str] | None = None,
+    random_seed: int = 42,
+) -> pd.DataFrame:
+    """Load and combine results across manipulation modes for comparison.
+
+    For each model × manipulation, reads the pickle produced by
+    ``experiment_pipeline`` and tags rows with a ``manipulation`` column
+    (inheriting the field from the pickle when present, falling back to the
+    requested manipulation for legacy pickles).
+
+    Args:
+        librispeech_split: LibriSpeech split identifier.
+        modelnames: Full HuggingFace model names to load.
+        probename: Probe estimator name (e.g. ``"ridge"``).
+        experiment_subdir: Results subdirectory / experiment name.
+        manipulations: Manipulation modes to load (default
+            ``["drop", "shuffle"]``).
+        random_seed: Random seed used when the results were generated
+            (affects filename suffix when ≠ 42).
+
+    Returns:
+        Combined DataFrame with ``manipulation``, ``modelname`` (shortened),
+        and ``normalized_layer`` columns. Empty if no files were found.
+    """
+
+    if manipulations is None:
+        manipulations = ["drop", "shuffle"]
+
+    all_results: list[pd.DataFrame] = []
+    for modelname in modelnames:
+        for manipulation in manipulations:
+            savepath = _build_manipulation_results_path(
+                librispeech_split=librispeech_split,
+                modelname=modelname,
+                probename=probename,
+                experiment_subdir=experiment_subdir,
+                manipulation=manipulation,
+                random_seed=random_seed,
+            )
+            if not os.path.isfile(savepath):
+                logger.warning(
+                    "Results not found for %s (%s) at %s. Skipping.",
+                    modelname,
+                    manipulation,
+                    savepath,
+                )
+                continue
+            with open(savepath, "rb") as f:
+                results = pickle.load(f)
+            results_df = pd.DataFrame(results)
+            if "manipulation" not in results_df.columns:
+                results_df["manipulation"] = manipulation
+            results_df["experiment"] = experiment_subdir
+            all_results.append(results_df)
+
+    if not all_results:
+        logger.warning(
+            "No manipulation result files found for split '%s'.", librispeech_split
+        )
+        return pd.DataFrame()
+
+    combined = pd.concat(all_results, ignore_index=True)
+    combined["modelname"] = combined["modelname"].map(_shorten_modelname)
+    combined["normalized_layer"] = combined.groupby("modelname")["layer"].transform(
+        lambda x: x / x.max() if x.max() > 0 else 0
+    )
+    return combined
+
+
+MANIPULATION_LABELS: dict[str, str] = {
+    "drop": "Ablation",
+    "shuffle": "Shuffle",
+    "zero": "Zero-fill",
+}
+
+MANIPULATION_COLORS: dict[str, str] = {
+    "Ablation": "#E41A1C",
+    "Shuffle": "#377EB8",
+    "Zero-fill": "#4DAF4A",
+    "Topline": "#000000",
+}
+
+
+def plot_manipulation_comparison(
+    comparison_df: pd.DataFrame,
+    *,
+    target_config: str = "SpeakerID-OH",
+    librispeech_split: str = "train-clean-100",
+    y_col: str = "test_score",
+    show_plot: bool = False,
+) -> None:
+    """Plot ablation vs shuffle/zero controls for a single feature block.
+
+    Produces a line plot of ``y_col`` vs ``layer`` with one line per
+    manipulation mode (ablation, shuffle, zero-fill) plus a dashed black
+    topline (``AllFeatures``) as reference, faceted by model. This lets the
+    viewer directly compare how much each manipulation hurts probe
+    performance: if shuffle ≈ topline the model does not use the block's
+    information; if shuffle ≈ ablation the model relies on the alignment
+    of the feature values, not just the dimensions.
+
+    Args:
+        comparison_df: DataFrame from ``read_manipulation_comparison_results``.
+        target_config: Raw ``config_name`` of the feature block to compare
+            (e.g. ``"SpeakerID-OH"``).
+        librispeech_split: Used for the output filename.
+        y_col: Column to plot on the y-axis (``"test_score"`` or
+            ``"unexplained_variance"``).
+        show_plot: If True, also display the figure interactively.
+    """
+
+    if comparison_df.empty:
+        logger.warning("Empty comparison DataFrame. Skipping plot.")
+        return
+
+    plot_df = comparison_df[
+        (comparison_df["config_name"] == target_config)
+        | (comparison_df["config_name"] == "AllFeatures")
+    ].copy()
+
+    if plot_df.empty:
+        logger.warning("No rows for config '%s' or topline. Skipping.", target_config)
+        return
+
+    is_topline = plot_df["config_name"] == "AllFeatures"
+    plot_df["manipulation_label"] = plot_df["manipulation"].map(
+        lambda x: MANIPULATION_LABELS.get(x, x)
+    )
+    plot_df.loc[is_topline, "manipulation_label"] = "Topline"
+
+    # Each manipulation pickle contains its own topline; they should be
+    # identical, so keep one copy per model/layer.
+    topline_df = plot_df[is_topline].drop_duplicates(subset=["modelname", "layer"])
+    manipulation_df = plot_df[~is_topline]
+    plot_df = pd.concat([manipulation_df, topline_df], ignore_index=True)
+
+    # Order + rename modelnames for display
+    plot_df["modelname"] = pd.Categorical(
+        plot_df["modelname"],
+        categories=[m for m in MODELNAME_ORDER if m in plot_df["modelname"].unique()],
+        ordered=True,
+    )
+    plot_df["modelname"] = plot_df["modelname"].map(
+        lambda x: MODELNAME_RENAME.get(x, x)
+    )
+
+    linetype_mapping = {
+        label: "dashed" if label == "Topline" else "solid"
+        for label in plot_df["manipulation_label"].unique()
+    }
+    y_label = Y_COL_NAME_MAPPING.get(y_col, y_col)
+
+    figure = (
+        p9.ggplot(plot_df)
+        + p9.geom_line(
+            p9.aes(
+                x="layer",
+                y=y_col,
+                color="manipulation_label",
+                linetype="manipulation_label",
+                group="manipulation_label",
+            ),
+            size=1,
+        )
+        + p9.geom_point(
+            p9.aes(
+                x="layer",
+                y=y_col,
+                color="manipulation_label",
+                shape="manipulation_label",
+            ),
+            size=1.5,
+        )
+        + p9.facet_wrap("~ modelname")
+        + p9.theme_minimal()
+        + p9.theme(
+            figure_size=(8, 4),
+            dpi=300,
+            legend_position="bottom",
+            legend_title=p9.element_blank(),
+            legend_text=p9.element_text(size=12),
+            axis_title=p9.element_text(size=12),
+            axis_text=p9.element_text(size=12),
+            strip_text=p9.element_text(size=12),
+        )
+        + p9.labs(
+            x="Layer (from bottom to top)",
+            y=y_label,
+        )
+        + p9.scale_color_manual(values=MANIPULATION_COLORS)
+        + p9.scale_linetype_manual(values=linetype_mapping)
+        + p9.guides(
+            color=p9.guide_legend(nrow=2, byrow=True),
+            linetype=p9.guide_legend(nrow=2, byrow=True),
+            shape=p9.guide_legend(nrow=2, byrow=True),
+        )
+    )
+
+    filename = f"manipulation_comparison_{target_config}_{librispeech_split}.png"
+    figure.save(os.path.join(FIGURES_ROOT, filename))
+    logger.info("Saved manipulation comparison plot to %s", filename)
+
+    if show_plot:
+        figure.show()
+
+
 def get_combined_single_results(
     mode_results_df,
     mode_comparison_results_df,

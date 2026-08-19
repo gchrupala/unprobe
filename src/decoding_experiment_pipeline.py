@@ -6,7 +6,11 @@ import sys
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import r2_score as sklearn_r2_score
+from sklearn.metrics import (
+    balanced_accuracy_score,
+    f1_score,
+    r2_score as sklearn_r2_score,
+)
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -269,9 +273,12 @@ def _run_classification_probe(
         cv=cv_splits,
     )
     best_model = grid.best_estimator_
+    y_pred = best_model.predict(x_test)
     return {
         "train_score": float(best_model.score(x_train, y_train)),
         "test_score": float(best_model.score(x_test, y_test)),
+        "balanced_accuracy": float(balanced_accuracy_score(y_test, y_pred)),
+        "f1_macro": float(f1_score(y_test, y_pred, average="macro", zero_division=0)),
         "best_params": grid.best_params_,
     }
 
@@ -455,6 +462,8 @@ def _get_csv_fieldnames() -> list[str]:
         "layer",
         "train_score",
         "test_score",
+        "balanced_accuracy",
+        "f1_macro",
         "best_params",
         "n_samples",
     ]
@@ -511,6 +520,8 @@ def _build_probe_row(
     test_score: float,
     best_params: dict,
     layer: int | None = None,
+    balanced_accuracy: float | None = None,
+    f1_macro: float | None = None,
 ) -> dict:
     row = {
         "librispeech_split": args.librispeech_split,
@@ -524,6 +535,10 @@ def _build_probe_row(
         "best_params": best_params,
         "n_samples": n_samples,
     }
+    if balanced_accuracy is not None:
+        row["balanced_accuracy"] = balanced_accuracy
+    if f1_macro is not None:
+        row["f1_macro"] = f1_macro
     if layer is not None:
         row["layer"] = int(layer)
     return row
@@ -748,6 +763,8 @@ def _run_category_experiment(
                 test_score=probe_result["test_score"],
                 best_params=probe_result["best_params"],
                 layer=spec.get("layer"),
+                balanced_accuracy=probe_result.get("balanced_accuracy"),
+                f1_macro=probe_result.get("f1_macro"),
             )
         )
 

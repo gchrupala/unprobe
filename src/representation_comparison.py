@@ -89,7 +89,6 @@ def load_experiment_inputs(
     speaker_ids = [x[0].split("-")[0] for x in filename_timestamp]
     representations = {
         "ppg_feature": ppg_feature,
-        "ppg_ID": ppg_id,
         "ppg_feature_onehot": ppg_feature_onehot,
     }
 

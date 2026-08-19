@@ -9,10 +9,13 @@ import pandas as pd
 from sklearn.metrics import (
     balanced_accuracy_score,
     f1_score,
+)
+from sklearn.metrics import (
     r2_score as sklearn_r2_score,
 )
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from tqdm.auto import tqdm
 
 from load_probe_data import get_section_shapes, load_data
 from probe_runner import (
@@ -428,9 +431,11 @@ def aggregate_saved_results(
 
     combined_df["layer"] = combined_df["layer"].fillna(-1)
     combined_df["modelname"] = combined_df.apply(
-        lambda row: "input-feature"
-        if "hidden_state" not in str(row.get("x_groups", ""))
-        else row["modelname"],
+        lambda row: (
+            "input-feature"
+            if "hidden_state" not in str(row.get("x_groups", ""))
+            else row["modelname"]
+        ),
         axis=1,
     )
     combined_df = combined_df.drop_duplicates()
@@ -738,7 +743,12 @@ def _run_category_experiment(
         return 0
 
     rows = []
-    for spec in _build_probe_specs_for_experiment(experiment, context):
+    for spec in tqdm(
+        _build_probe_specs_for_experiment(experiment, context),
+        pos=1,
+        desc="Spec:",
+        leave=False,
+    ):
         logger.info("Running probe: %s", spec["config_name"])
         probe_result, metric = _run_probe_task(
             task_type=spec["task_type"],
@@ -845,7 +855,7 @@ def main() -> None:
     }
 
     category_counts = {}
-    for experiment in EXPERIMENTAL_CONFIG:
+    for experiment in tqdm(EXPERIMENTAL_CONFIG, pos=0, desc="Experiments:"):
         category = experiment["category"]
         category_counts[category] = _run_category_experiment(
             args,

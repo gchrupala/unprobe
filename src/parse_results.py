@@ -1046,6 +1046,7 @@ def read_manipulation_comparison_results(
         return pd.DataFrame()
 
     combined = pd.concat(all_results, ignore_index=True)
+    combined["unexplained_variance"] = 1 - combined["test_score"]
     combined["modelname"] = combined["modelname"].map(_shorten_modelname)
     combined["normalized_layer"] = combined.groupby("modelname")["layer"].transform(
         lambda x: x / x.max() if x.max() > 0 else 0

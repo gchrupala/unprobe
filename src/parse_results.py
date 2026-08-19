@@ -944,16 +944,25 @@ def _build_manipulation_results_path(
     experiment_subdir: str,
     manipulation: str,
     random_seed: int = 42,
+    results_root: str | None = None,
 ) -> str:
     """Construct the results pickle path for a given manipulation mode.
 
     Mirrors the naming convention in
     ``experiment_pipeline.build_results_path`` so the reader picks up exactly
     the files the pipeline writes.
+
+    Args:
+        results_root: Override for the results root directory. When ``None``,
+            uses the module-level ``RESULTS_ROOT`` (auto-detected from
+            hostname). Useful when results have been copied to a non-default
+            location (e.g. Snellius outputs retrieved to
+            ``experimental_results/`` on a local machine).
     """
 
+    root = results_root if results_root is not None else RESULTS_ROOT
     base = os.path.join(
-        RESULTS_ROOT,
+        root,
         experiment_subdir,
         f"{librispeech_split}_{modelname.replace('/', '-')}_{probename}_results",
     )
@@ -969,9 +978,10 @@ def read_manipulation_comparison_results(
     modelnames: list[str],
     *,
     probename: str = "ridge",
-    experiment_subdir: str = "speakerid_phonetic_acoustic_removal",
+    experiment_subdir: str = "speakerid_shuffle_comparison",
     manipulations: list[str] | None = None,
     random_seed: int = 42,
+    results_root: str | None = None,
 ) -> pd.DataFrame:
     """Load and combine results across manipulation modes for comparison.
 
@@ -989,10 +999,13 @@ def read_manipulation_comparison_results(
             ``["drop", "shuffle"]``).
         random_seed: Random seed used when the results were generated
             (affects filename suffix when ≠ 42).
+        results_root: Override for the results root directory. When ``None``,
+            uses the module-level ``RESULTS_ROOT``.
 
     Returns:
         Combined DataFrame with ``manipulation``, ``modelname`` (shortened),
-        and ``normalized_layer`` columns. Empty if no files were found.
+        ``plot_config_name``, and ``normalized_layer`` columns. Empty if no
+        files were found.
     """
 
     if manipulations is None:
@@ -1008,6 +1021,7 @@ def read_manipulation_comparison_results(
                 experiment_subdir=experiment_subdir,
                 manipulation=manipulation,
                 random_seed=random_seed,
+                results_root=results_root,
             )
             if not os.path.isfile(savepath):
                 logger.warning(
@@ -1036,6 +1050,10 @@ def read_manipulation_comparison_results(
     combined["normalized_layer"] = combined.groupby("modelname")["layer"].transform(
         lambda x: x / x.max() if x.max() > 0 else 0
     )
+    # Build a display label for config_name (reuse existing rename mapping)
+    combined["plot_config_name"] = combined["config_name"].map(
+        lambda x: CONFIG_NAME_RENAME.get(x, x)
+    )
     return combined
 
 
@@ -1056,25 +1074,28 @@ MANIPULATION_COLORS: dict[str, str] = {
 def plot_manipulation_comparison(
     comparison_df: pd.DataFrame,
     *,
-    target_config: str = "SpeakerID-OH",
+    target_configs: list[str] | None = None,
     librispeech_split: str = "train-clean-100",
     y_col: str = "test_score",
     show_plot: bool = False,
 ) -> None:
-    """Plot ablation vs shuffle/zero controls for a single feature block.
+    """Plot ablation vs shuffle/zero controls across feature-block configs.
 
     Produces a line plot of ``y_col`` vs ``layer`` with one line per
     manipulation mode (ablation, shuffle, zero-fill) plus a dashed black
-    topline (``AllFeatures``) as reference, faceted by model. This lets the
-    viewer directly compare how much each manipulation hurts probe
-    performance: if shuffle ≈ topline the model does not use the block's
-    information; if shuffle ≈ ablation the model relies on the alignment
-    of the feature values, not just the dimensions.
+    topline (``AllFeatures``) as reference. The plot is faceted by
+    ``config_name x modelname`` so every feature-block removal in the
+    experiment grid is shown side by side. This lets the viewer directly
+    compare how much each manipulation hurts probe performance: if shuffle
+    ~= topline the model does not use the block's information; if shuffle ~=
+    ablation the model relies on the alignment of the feature values, not
+    just the dimensions.
 
     Args:
         comparison_df: DataFrame from ``read_manipulation_comparison_results``.
-        target_config: Raw ``config_name`` of the feature block to compare
-            (e.g. ``"SpeakerID-OH"``).
+        target_configs: Raw ``config_name`` values to include. When ``None``,
+            all non-topline configs in ``comparison_df`` are plotted. Use this
+            to focus on a subset (e.g. ``["SpeakerID-OH+eGeMAPSv02"]``).
         librispeech_split: Used for the output filename.
         y_col: Column to plot on the y-axis (``"test_score"`` or
             ``"unexplained_variance"``).
@@ -1085,14 +1106,23 @@ def plot_manipulation_comparison(
         logger.warning("Empty comparison DataFrame. Skipping plot.")
         return
 
+    # Select configs: either the requested subset or all non-topline configs.
+    all_configs = [
+        c for c in comparison_df["config_name"].unique() if c != "AllFeatures"
+    ]
+    if target_configs is not None:
+        all_configs = [c for c in all_configs if c in target_configs]
+    if not all_configs:
+        logger.warning(
+            "No non-topline configs found to plot (target_configs=%s).",
+            target_configs,
+        )
+        return
+
     plot_df = comparison_df[
-        (comparison_df["config_name"] == target_config)
+        (comparison_df["config_name"].isin(all_configs))
         | (comparison_df["config_name"] == "AllFeatures")
     ].copy()
-
-    if plot_df.empty:
-        logger.warning("No rows for config '%s' or topline. Skipping.", target_config)
-        return
 
     is_topline = plot_df["config_name"] == "AllFeatures"
     plot_df["manipulation_label"] = plot_df["manipulation"].map(
@@ -1106,7 +1136,8 @@ def plot_manipulation_comparison(
     manipulation_df = plot_df[~is_topline]
     plot_df = pd.concat([manipulation_df, topline_df], ignore_index=True)
 
-    # Order + rename modelnames for display
+    # Build a composite facet label: "model | config" so each panel shows
+    # one model x one feature-block removal.
     plot_df["modelname"] = pd.Categorical(
         plot_df["modelname"],
         categories=[m for m in MODELNAME_ORDER if m in plot_df["modelname"].unique()],
@@ -1114,6 +1145,12 @@ def plot_manipulation_comparison(
     )
     plot_df["modelname"] = plot_df["modelname"].map(
         lambda x: MODELNAME_RENAME.get(x, x)
+    )
+    # Use plot_config_name (LaTeX-renamed) for the facet label
+    plot_df["facet_label"] = (
+        plot_df["modelname"].astype(str)
+        + "\n"
+        + plot_df["plot_config_name"].astype(str)
     )
 
     linetype_mapping = {
@@ -1143,17 +1180,17 @@ def plot_manipulation_comparison(
             ),
             size=1.5,
         )
-        + p9.facet_wrap("~ modelname")
+        + p9.facet_wrap("~ facet_label", scales="free_y")
         + p9.theme_minimal()
         + p9.theme(
-            figure_size=(8, 4),
+            figure_size=(12, 8),
             dpi=300,
             legend_position="bottom",
             legend_title=p9.element_blank(),
             legend_text=p9.element_text(size=12),
             axis_title=p9.element_text(size=12),
-            axis_text=p9.element_text(size=12),
-            strip_text=p9.element_text(size=12),
+            axis_text=p9.element_text(size=10),
+            strip_text=p9.element_text(size=10),
         )
         + p9.labs(
             x="Layer (from bottom to top)",
@@ -1168,7 +1205,8 @@ def plot_manipulation_comparison(
         )
     )
 
-    filename = f"manipulation_comparison_{target_config}_{librispeech_split}.png"
+    config_tag = "_".join(all_configs) if len(all_configs) <= 2 else "multi"
+    filename = f"manipulation_comparison_{config_tag}_{librispeech_split}.png"
     figure.save(os.path.join(FIGURES_ROOT, filename))
     logger.info("Saved manipulation comparison plot to %s", filename)
 

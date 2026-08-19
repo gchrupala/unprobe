@@ -857,9 +857,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Manipulation modes to load and compare.",
     )
     manipulation_parser.add_argument(
-        "--target-config",
-        default="SpeakerID-OH",
-        help="Raw config_name of the feature block to compare.",
+        "--target-configs",
+        nargs="+",
+        default=None,
+        help=(
+            "Raw config_name values to include (e.g. 'SpeakerID-OH+eGeMAPSv02'). "
+            "When unset, all non-topline configs in the results are plotted."
+        ),
     )
     manipulation_parser.add_argument(
         "--y-col",
@@ -868,6 +872,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Y-axis column to plot.",
     )
     manipulation_parser.add_argument("--random-seed", type=int, default=42)
+    manipulation_parser.add_argument(
+        "--results-root",
+        default=None,
+        help=(
+            "Override the results root directory. When unset, uses the "
+            "auto-detected RESULTS_ROOT (results/ locally, "
+            "/projects/prjs1586/experimental_results on Snellius). Use this "
+            "when results have been copied to a non-default location."
+        ),
+    )
 
     return parser
 
@@ -911,10 +925,11 @@ def main() -> None:
             experiment_subdir=args.experiment_subdir,
             manipulations=args.manipulations,
             random_seed=args.random_seed,
+            results_root=args.results_root,
         )
         plot_manipulation_comparison(
             comparison_df,
-            target_config=args.target_config,
+            target_configs=args.target_configs,
             librispeech_split=args.split,
             y_col=args.y_col,
         )

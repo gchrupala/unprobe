@@ -438,7 +438,7 @@ def parse_cli_args():
         default="hiddenstate_decode",
     )
     parser.add_argument("--librispeech_split", type=str, default="train-clean-100")
-    parser.add_argument("--num_samples", type=int, default=1000)
+    parser.add_argument("--num_samples", type=int, default=2500)
     parser.add_argument("--random_seed", type=int, default=42)
     parser.add_argument("--overwrite_cache", action="store_true")
     parser.add_argument("--cache_dir", type=str, default=None)

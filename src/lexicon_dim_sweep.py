@@ -4,7 +4,7 @@ Usage
 -----
     python src/lexicon_dim_sweep.py --librispeech_split train-clean-100 \
         --modelname facebook/wav2vec2-base --probe_name ridge \
-        --k_values 10 25 50 100 300 --random_seed 42
+        --k_values 10 25 50 100 --random_seed 42
 """
 
 from __future__ import annotations
@@ -16,6 +16,9 @@ import sys
 
 import numpy as np
 import pandas as pd
+
+import matplotlib  # noqa: E402
+import matplotlib.colors as mcolors  # noqa: E402
 
 # Make sibling modules importable regardless of the current working directory
 # (the repo's scripts are normally run from inside src/).
@@ -47,7 +50,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Name of the lexicon block as it appears in data_shape / section_shapes.
-# format_data stores both "word_embedding" (fastText, 300-dim) and
+# format_data stores both "word_embedding" (fastText, 100-dim) and
 # "dnn_word_embedding" (DNN), but only "word_embedding" is part of
 # selected_input_components, so it is the only one that survives
 # further_process's final filtering and appears in get_section_shapes.
@@ -251,23 +254,78 @@ def plot_sweep(
     librispeech_split: str,
     out_dir: str = FIGURES_ROOT,
 ) -> str | None:
-    """Plot lexicon contribution (UV gap) vs PCA dimensionality k.
+    """Plot the lexicon dimensionality sweep as a two-panel figure.
 
-    One line per layer, colored by layer (factor), x-axis on a log10 scale.
-    Saves to ``lexicon_dim_sweep_{modelname-slug}_{split}.png`` inside
-    ``out_dir`` (defaults to FIGURES_ROOT, i.e. ``<repo>/figures``).
+    Left panel: absolute unexplained variance (1 - R^2) against layer, with one
+    line per PCA dimensionality k for the Full probe and a dashed
+    Full-minus-lexicon baseline. Right panel: the lexicon ablation gap as a
+    percentage of the full (maximum-k) gap, against layer, one line per k.
+    Saves to
+    ``lexicon_dim_sweep_{modelname-slug}_{split}.png`` inside ``out_dir``
+    (defaults to FIGURES_ROOT, i.e. ``<repo>/figures``).
     """
     if results_df is None or results_df.empty:
         logger.warning("Empty results DataFrame; skipping sweep plot.")
         return None
 
-    plot_df = results_df.copy()
-    # Treat layer as a discrete factor, ordered numerically for the legend.
-    plot_df["layer"] = pd.Categorical(
-        plot_df["layer"].astype(str),
-        categories=[str(layer) for layer in sorted(plot_df["layer"].unique())],
-        ordered=True,
+    df = results_df.copy()
+    ks = sorted(df["k"].unique(), key=int)
+    k_labels = [str(int(k)) for k in ks]
+    ablated_label = "Full \u2216 lexicon"
+    uv_panel = "Unexplained variance (1 \u2212 R\u00b2)"
+    gap_panel = f"Lexicon contribution (% of {int(max(ks))}-dim)"
+
+    # Left panel: absolute UV. One Full(k) line per k plus the ablated baseline.
+    full_rows = []
+    for k in ks:
+        sub = df.loc[df["k"] == k, ["layer", "uv_full"]].copy()
+        sub["k"] = str(int(k))
+        sub["value"] = sub["uv_full"]
+        sub["linetype"] = "solid"
+        full_rows.append(sub[["layer", "k", "value", "linetype"]])
+    full = pd.concat(full_rows, ignore_index=True)
+
+    ablated = df[["layer", "uv_ablated"]].drop_duplicates().copy()
+    ablated["k"] = ablated_label
+    ablated["value"] = ablated["uv_ablated"]
+    ablated["linetype"] = "dashed"
+    ablated = ablated[["layer", "k", "value", "linetype"]]
+
+    panel_uv = pd.concat([full, ablated], ignore_index=True)
+    panel_uv["panel"] = uv_panel
+
+    # Right panel: ablation gap per k, as a percentage of the full (maximum-k)
+    # gap, so each reduced dimensionality is shown relative to the unreduced
+    # (100-dim) lexicon contribution.
+    ref_gap = df.loc[df["k"] == max(ks), ["layer", "gap"]].rename(
+        columns={"gap": "ref_gap"}
     )
+    gap_rows = []
+    for k in ks:
+        sub = df.loc[df["k"] == k, ["layer", "gap"]].merge(ref_gap, on="layer")
+        sub["value"] = sub["gap"] / sub["ref_gap"] * 100.0
+        sub["k"] = str(int(k))
+        sub["linetype"] = "solid"
+        gap_rows.append(sub[["layer", "k", "value", "linetype"]])
+    gap = pd.concat(gap_rows, ignore_index=True)
+    gap["panel"] = gap_panel
+
+    plot_df = pd.concat([panel_uv, gap], ignore_index=True)
+    plot_df["k"] = pd.Categorical(
+        plot_df["k"], categories=k_labels + [ablated_label], ordered=True
+    )
+    plot_df["panel"] = pd.Categorical(
+        plot_df["panel"], categories=[uv_panel, gap_panel], ordered=True
+    )
+
+    # Sequential palette for k (higher k = deeper color) + grey for the ablated
+    # baseline.
+    n_k = len(ks)
+    cmap = matplotlib.colormaps["viridis"]
+    k_colors = [
+        mcolors.to_hex(cmap(i / max(n_k - 1, 1))) for i in range(n_k)
+    ]
+    colors = k_colors + ["#404040"]
 
     slug = modelname.replace("/", "-")
     filename = f"lexicon_dim_sweep_{slug}_{librispeech_split}.png"
@@ -275,22 +333,40 @@ def plot_sweep(
     os.makedirs(out_dir, exist_ok=True)
 
     figure = (
-        p9.ggplot(plot_df, p9.aes(x="k", y="gap", color="layer", group="layer"))
+        p9.ggplot(
+            plot_df,
+            p9.aes(
+                x="layer",
+                y="value",
+                color="k",
+                linetype="linetype",
+                group="k",
+            ),
+        )
         + p9.geom_line(size=0.8)
-        + p9.geom_point(size=1.5)
-        + p9.scale_x_log10()
-        + p9.labs(x="PCA components (k)", y="Lexicon contribution (UV gap)")
+        + p9.geom_point(size=1.3)
+        + p9.scale_color_manual(values=colors)
+        + p9.scale_linetype_manual(
+            values={"solid": "solid", "dashed": "dashed"}
+        )
+        + p9.facet_wrap("~ panel", scales="free_y", nrow=1)
+        + p9.scale_x_continuous(breaks=list(range(0, 13, 2)))
+        + p9.labs(x="Layer", y="", color="PCA components (k)")
         + p9.theme_minimal()
         + p9.theme(
-            figure_size=(6, 4),
+            figure_size=(9.5, 4),
             dpi=300,
             legend_position="bottom",
-            legend_title=p9.element_blank(),
-            legend_text=p9.element_text(size=12),
-            axis_title=p9.element_text(size=12),
-            axis_text=p9.element_text(size=12),
+            legend_title=p9.element_text(size=11),
+            legend_text=p9.element_text(size=11),
+            axis_title=p9.element_text(size=11),
+            axis_text=p9.element_text(size=11),
+            strip_text=p9.element_text(size=11),
         )
-        + p9.guides(color=p9.guide_legend(nrow=2, byrow=True))
+        + p9.guides(
+            color=p9.guide_legend(nrow=1, byrow=True),
+            linetype=False,
+        )
     )
     figure.save(savepath)
     logger.info("Saved sweep plot to %s", savepath)
@@ -327,7 +403,7 @@ def main() -> None:
         "--k_values",
         type=int,
         nargs="+",
-        default=[10, 25, 50, 100, 300],
+        default=[10, 25, 50, 100],
         help="PCA dimensionalities to sweep for the lexicon block.",
     )
     parser.add_argument(
@@ -341,6 +417,11 @@ def main() -> None:
         action="store_true",
         help="Recompute and overwrite an existing results CSV.",
     )
+    parser.add_argument(
+        "--plot-only",
+        action="store_true",
+        help="Re-plot from an existing results CSV without rerunning the sweep.",
+    )
     args = parser.parse_args()
 
     modelname_slug = args.modelname.replace("/", "-")
@@ -349,6 +430,18 @@ def main() -> None:
         "lexicon_dim_sweep",
         f"{args.librispeech_split}_{modelname_slug}_{args.probe_name}.csv",
     )
+
+    if args.plot_only:
+        if not os.path.exists(csv_path):
+            logger.error("No results CSV at %s to plot; run the sweep first.", csv_path)
+            sys.exit(1)
+        results_df = pd.read_csv(csv_path)
+        plot_sweep(
+            results_df,
+            modelname=args.modelname,
+            librispeech_split=args.librispeech_split,
+        )
+        return
 
     if os.path.exists(csv_path) and not args.overwrite:
         logger.info(
@@ -359,7 +452,7 @@ def main() -> None:
         return
 
     # Load data ONCE with the word-embedding reduction DISABLED so we get the
-    # full 300-dim lexicon block (mirrors get_default_load_kwargs in
+    # full 100-dim lexicon block (mirrors get_default_load_kwargs in
     # experiment_pipeline.py except for reduce_dnn_word_embedding and
     # normalize_features).
     feature_sets, model_hidden_states, filename_timestamp, data_shape = load_data(

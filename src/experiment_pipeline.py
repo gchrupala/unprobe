@@ -416,6 +416,22 @@ def build_default_experiment_specs(data_shape: dict[str, Any]) -> list[Experimen
             ],
             do_topline=True,
         ),
+        # Focused ablation-vs-permutation control for the speaker case study.
+        # Produces exactly the three configurations shown in the control figure:
+        # a Full topline plus Full \ Acoustics (eGeMAPSv02) and
+        # Full \ Acoustics \ Speaker (SpeakerID-OH+eGeMAPSv02), under both the
+        # drop (ablation) and shuffle (permutation) manipulations. Run with
+        # `--spec_name acoustic_speaker_control --manipulation drop shuffle`.
+        ExperimentSpec(
+            name="acoustic_speaker_control",
+            mode="top-down",
+            result_subdir="speakerid_control",
+            feature_group_config=[
+                ["eGeMAPSv02"],
+                ["SpeakerID-OH", "eGeMAPSv02"],
+            ],
+            do_topline=True,
+        ),
     ]
 
 

@@ -1077,26 +1077,27 @@ def plot_manipulation_comparison(
     *,
     target_configs: list[str] | None = None,
     librispeech_split: str = "train-clean-100",
-    y_col: str = "test_score",
+    y_col: str = "unexplained_variance",
     show_plot: bool = False,
 ) -> None:
-    """Plot ablation vs shuffle/zero controls across feature-block configs.
+    """Plot ablation vs shuffle controls across feature-block configs.
 
-    Produces a line plot of ``y_col`` vs ``layer`` with one line per
-    manipulation mode (ablation, shuffle, zero-fill) plus a dashed black
-    topline (``AllFeatures``) as reference. The plot is faceted by
-    ``config_name x modelname`` so every feature-block removal in the
-    experiment grid is shown side by side. This lets the viewer directly
-    compare how much each manipulation hurts probe performance: if shuffle
-    ~= topline the model does not use the block's information; if shuffle ~=
-    ablation the model relies on the alignment of the feature values, not
-    just the dimensions.
+    Produces a one-panel-per-model figure (facet by model) in which the
+    feature configuration is encoded by colour (e.g. ``Full``,
+    ``Full \\ Acoustics``, ``Full \\ Acoustics \\ Speaker``) and the control
+    type is encoded by marker shape and line style: a dashed grey topline
+    (un-ablated ``Full``) plus, for each ablated config, a solid line with
+    circle markers for the ablation and a solid line with triangle markers
+    for the shuffle (permutation) control. Because ablation and shuffle
+    nearly coincide, the overlapping markers make the control's claim
+    directly readable. The figure is restricted to a small number of
+    configurations (pass ``target_configs``) so it stays readable.
 
     Args:
         comparison_df: DataFrame from ``read_manipulation_comparison_results``.
         target_configs: Raw ``config_name`` values to include. When ``None``,
             all non-topline configs in ``comparison_df`` are plotted. Use this
-            to focus on a subset (e.g. ``["SpeakerID-OH+eGeMAPSv02"]``).
+            to focus on a subset (e.g. ``["eGeMAPSv02", "SpeakerID-OH+eGeMAPSv02"]``).
         librispeech_split: Used for the output filename.
         y_col: Column to plot on the y-axis (``"test_score"`` or
             ``"unexplained_variance"``).
@@ -1137,8 +1138,10 @@ def plot_manipulation_comparison(
     manipulation_df = plot_df[~is_topline]
     plot_df = pd.concat([manipulation_df, topline_df], ignore_index=True)
 
-    # Build a composite facet label: "model | config" so each panel shows
-    # one model x one feature-block removal.
+    # Build display labels. Colour encodes the feature configuration; marker
+    # shape (and line style) distinguishes the Topline / Ablation / Shuffle
+    # controls. The figure is faceted by model so each panel shows all
+    # configurations for one model.
     plot_df["modelname"] = pd.Categorical(
         plot_df["modelname"],
         categories=[m for m in MODELNAME_ORDER if m in plot_df["modelname"].unique()],
@@ -1147,17 +1150,33 @@ def plot_manipulation_comparison(
     plot_df["modelname"] = plot_df["modelname"].map(
         lambda x: MODELNAME_RENAME.get(x, x)
     )
-    # Use plot_config_name (LaTeX-renamed) for the facet label
-    plot_df["facet_label"] = (
-        plot_df["modelname"].astype(str)
-        + "\n"
-        + plot_df["plot_config_name"].astype(str)
+    # Group each (config, control) pair separately so lines are drawn per
+    # series rather than connecting across the ablation and shuffle controls.
+    plot_df["serie"] = (
+        plot_df["plot_config_name"].astype(str) + "|" + plot_df["manipulation_label"]
     )
 
-    linetype_mapping = {
-        label: "dashed" if label == "Topline" else "solid"
-        for label in plot_df["manipulation_label"].unique()
+    # Config ordering + colours: Full first, then the ablated variants.
+    config_order = [
+        r"$\mathit{Full}$",
+        r"$\mathit{Full} \setminus \mathit{Acoustics}$",
+        r"$\mathit{Full} \setminus \mathit{Acoustics} \setminus \mathit{Speaker}$",
+    ]
+    present_configs = [
+        c for c in config_order if c in set(plot_df["plot_config_name"].astype(str))
+    ]
+    plot_df["plot_config_name"] = pd.Categorical(
+        plot_df["plot_config_name"].astype(str),
+        categories=present_configs,
+        ordered=True,
+    )
+    config_colors = {
+        r"$\mathit{Full}$": "#404040",
+        r"$\mathit{Full} \setminus \mathit{Acoustics}$": "#4E79A7",
+        r"$\mathit{Full} \setminus \mathit{Acoustics} \setminus \mathit{Speaker}$": "#E15759",
     }
+    method_linetype = {"Topline": "dashed", "Ablation": "solid", "Shuffle": "solid"}
+    method_shape = {"Topline": "s", "Ablation": "o", "Shuffle": "^"}
     y_label = Y_COL_NAME_MAPPING.get(y_col, y_col)
 
     figure = (
@@ -1166,50 +1185,50 @@ def plot_manipulation_comparison(
             p9.aes(
                 x="layer",
                 y=y_col,
-                color="manipulation_label",
+                group="serie",
+                color="plot_config_name",
                 linetype="manipulation_label",
-                group="manipulation_label",
             ),
-            size=1,
+            size=0.8,
         )
         + p9.geom_point(
             p9.aes(
                 x="layer",
                 y=y_col,
-                color="manipulation_label",
+                color="plot_config_name",
                 shape="manipulation_label",
+                group="serie",
             ),
-            size=1.5,
+            size=1.6,
         )
-        + p9.facet_wrap("~ facet_label", scales="free_y")
+        + p9.facet_wrap("~ modelname", scales="free_y")
+        + p9.scale_x_continuous(breaks=list(range(0, 13, 2)))
+        + p9.scale_color_manual(values=config_colors)
+        + p9.scale_linetype_manual(values=method_linetype)
+        + p9.scale_shape_manual(values=method_shape)
         + p9.theme_minimal()
         + p9.theme(
-            figure_size=(12, 8),
+            figure_size=(9.5, 4),
             dpi=300,
             legend_position="bottom",
             legend_title=p9.element_blank(),
-            legend_text=p9.element_text(size=12),
-            axis_title=p9.element_text(size=12),
-            axis_text=p9.element_text(size=10),
-            strip_text=p9.element_text(size=10),
+            legend_text=p9.element_text(size=11),
+            axis_title=p9.element_text(size=11),
+            axis_text=p9.element_text(size=11),
+            strip_text=p9.element_text(size=11),
+            panel_spacing=0.2,
         )
-        + p9.labs(
-            x="Layer (from bottom to top)",
-            y=y_label,
-        )
-        + p9.scale_color_manual(values=MANIPULATION_COLORS)
-        + p9.scale_linetype_manual(values=linetype_mapping)
+        + p9.labs(x="Layer", y=y_label, color="", linetype="", shape="")
         + p9.guides(
-            color=p9.guide_legend(nrow=2, byrow=True),
-            linetype=p9.guide_legend(nrow=2, byrow=True),
-            shape=p9.guide_legend(nrow=2, byrow=True),
+            color=p9.guide_legend(nrow=1, byrow=True),
+            linetype=p9.guide_legend(nrow=1, byrow=True),
+            shape=p9.guide_legend(nrow=1, byrow=True),
         )
     )
 
-    config_tag = "_".join(all_configs) if len(all_configs) <= 2 else "multi"
-    filename = f"manipulation_comparison_{config_tag}_{librispeech_split}.png"
+    filename = f"ablation_shuffle_control_acoustic_speaker_{librispeech_split}.png"
     figure.save(os.path.join(FIGURES_ROOT, filename))
-    logger.info("Saved manipulation comparison plot to %s", filename)
+    logger.info("Saved ablation/shuffle control plot to %s", filename)
 
     if show_plot:
         figure.show()

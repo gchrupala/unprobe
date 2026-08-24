@@ -867,7 +867,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     manipulation_parser.add_argument(
         "--y-col",
-        default="test_score",
+        default="unexplained_variance",
         choices=["test_score", "unexplained_variance"],
         help="Y-axis column to plot.",
     )
